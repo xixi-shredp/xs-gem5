@@ -51,7 +51,9 @@
 #include <cassert>
 #include <cstdint>
 #include <queue>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/addr_range.hh"
@@ -590,6 +592,21 @@ class BaseCache : public ClockedObject, public CacheAccessor
      * @return True if arbitration succeeds, false otherwise.
      */
     bool checkAndAllocateMSHRCycle(PacketPtr pkt);
+
+    /**
+     * Check whether this request can be satisfied by the ideal L1 DCache path.
+     */
+    bool isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const;
+
+    /**
+     * Satisfy an ordinary L1 DCache miss by functionally filling the whole
+     * cache block and completing the request through the normal hit path.
+     */
+    bool trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
+                               Cycles tag_latency, Cycles &lat,
+                               PacketList &writebacks);
+    Cycles calculateIdealDCacheHitLatency(PacketPtr pkt,
+                                          Cycles tag_latency) const;
 
     /*
      * Handle a timing request that hit in the cache
@@ -1642,8 +1659,10 @@ class BaseCache : public ClockedObject, public CacheAccessor
 
     // std::set<Addr> forceHitPCs{0x11474, 0x11470, 0x11472, 0x119fa, 0x119fe, 0x119ea};
     std::set<Addr> forceHitPCs{};
+    std::set<std::pair<Addr, bool>> idealDCacheBlocks{};
 
     const bool forceHit;
+    const bool idealDCache;
     const bool simulateDcacheRefill;
 
 public:

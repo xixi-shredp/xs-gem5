@@ -186,6 +186,7 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       stats(*this),
       cacheLevel(p.cache_level),
       forceHit(p.force_hit),
+      idealDCache(p.ideal_dcache),
       simulateDcacheRefill(p.simulate_dcache_refill),
       doFastWriteline(p.do_fast_writeline),
       Prefetch_CanOffload(p.prefetch_can_offload)
@@ -1746,6 +1747,133 @@ BaseCache::calculateAccessLatency(const CacheBlk* blk, const uint32_t delay,
     return lat;
 }
 
+Cycles
+BaseCache::calculateIdealDCacheHitLatency(PacketPtr pkt,
+                                          Cycles tag_latency) const
+{
+    if (pkt->isRead() || pkt->isWrite()) {
+        if (sequentialAccess) {
+            return ticksToCycles(pkt->headerDelay) + tag_latency + dataLatency;
+        }
+        return ticksToCycles(pkt->headerDelay) +
+            std::max(tag_latency, dataLatency);
+    }
+
+    return calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
+}
+
+bool
+BaseCache::isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const
+{
+    if (!idealDCache || cacheLevel != 1 || isReadOnly) {
+        return false;
+    }
+
+    if (!pkt->isRequest() || !pkt->needsResponse() || pkt->fromCache()) {
+        return false;
+    }
+
+    if (pkt->req->isInstFetch() || pkt->req->isUncacheable() ||
+        pkt->req->isCacheMaintenance() || pkt->req->isPrefetch() ||
+        pkt->req->isStrictlyOrdered() || pkt->req->isMemMgmt()) {
+        return false;
+    }
+
+    if (pkt->isEviction() || pkt->isLLSC() || pkt->isLockedRMW() ||
+        pkt->req->isReadModifyWrite() || pkt->cmd == MemCmd::SwapReq ||
+        pkt->isAtomicOp()) {
+        return false;
+    }
+
+    const bool ordinary_read = pkt->cmd == MemCmd::ReadReq;
+    const bool ordinary_write = pkt->cmd == MemCmd::WriteReq ||
+        pkt->cmd == MemCmd::WriteLineReq;
+    const bool in_single_block =
+        pkt->getOffset(blkSize) + pkt->getSize() <= blkSize;
+
+    // If a block exists but cannot satisfy the request, preserve the normal
+    // coherence/upgrade path instead of silently bypassing stale local state.
+    return (ordinary_read || ordinary_write) && in_single_block && blk == nullptr;
+}
+
+bool
+BaseCache::trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
+                                 Cycles tag_latency, Cycles &lat,
+                                 PacketList &writebacks)
+{
+    if (!isIdealDCacheCandidate(pkt, blk)) {
+        return false;
+    }
+
+    const Addr blk_addr = pkt->getBlockAddr(blkSize);
+    const bool mshr_hit =
+        mshrQueue.findMatch(blk_addr, pkt->isSecure()) != nullptr;
+    const bool wb_hit =
+        writeBuffer.findMatch(blk_addr, pkt->isSecure()) != nullptr;
+
+    if (mshr_hit || wb_hit) {
+        DPRINTF(Cache,
+                "%s: ideal DCache backs off for %s, mshr_hit: %d, wb_hit: %d\n",
+                __func__, pkt->print(), mshr_hit, wb_hit);
+        return false;
+    }
+
+    Request::Flags fill_flags;
+    if (pkt->isSecure()) {
+        fill_flags.set(Request::SECURE);
+    }
+
+    RequestPtr fill_req = std::make_shared<Request>(
+        blk_addr, blkSize, fill_flags, pkt->requestorId());
+    fill_req->taskId(pkt->req->taskId());
+
+    Request::XsMetadata fill_meta;
+    if (pkt->req->hasXsMetadata()) {
+        fill_meta = pkt->req->getXsMetadata();
+    }
+    fill_meta.prefetchSource = pkt->req->getPFSource();
+    fill_meta.prefetchDepth = pkt->req->getPFDepth();
+    fill_req->setXsMetadata(fill_meta);
+    fill_req->setPFSource(pkt->req->getPFSource());
+    fill_req->setPFDepth(pkt->req->getPFDepth());
+
+    Packet fill_pkt(fill_req, MemCmd::ReadReq, blkSize);
+    fill_pkt.allocate();
+
+    DPRINTF(Cache, "%s: ideal DCache functional fill for %s\n",
+            __func__, pkt->print());
+    memSidePort.sendFunctional(&fill_pkt);
+
+    if (!fill_pkt.isResponse() || fill_pkt.isError() || !fill_pkt.hasData()) {
+        DPRINTF(Cache,
+                "%s: ideal DCache functional fill did not produce data for %s\n",
+                __func__, pkt->print());
+        return false;
+    }
+
+    blk = allocateBlock(&fill_pkt, writebacks);
+    if (!blk) {
+        DPRINTF(Cache, "%s: ideal DCache could not allocate block for %s\n",
+                __func__, pkt->print());
+        return false;
+    }
+
+    blk->setCoherenceBits(CacheBlk::ReadableBit);
+    blk->setCoherenceBits(CacheBlk::WritableBit);
+    blk->setXsMetadata(fill_req->getXsMetadata());
+    updateBlockData(blk, &fill_pkt, false);
+    blk->setWhenReady(curTick());
+    idealDCacheBlocks.insert({regenerateBlkAddr(blk), blk->isSecure()});
+
+    lat = calculateIdealDCacheHitLatency(pkt, tag_latency);
+    incHitCount(pkt);
+    incSquashedDemandHitCount(pkt, blk);
+    satisfyRequest(pkt, blk);
+    assert(!blk->needInvalidate());
+
+    return true;
+}
+
 void
 BaseCache::calculateSliceBusy(PacketPtr pkt, bool isOnlyTag)
 {
@@ -2047,6 +2175,9 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         } else {
             DPRINTF(Cache, "%s: mshr hit for force hit PC %#lx, forced to miss\n", __func__, pkt->req->getPC());
         }
+    } else if (trySatisfyIdealDCache(pkt, blk, tag_latency, lat,
+                                      writebacks)) {
+        return true;
     }
 
     if (blk && (pkt->needsWritable() && !blk->isSet(CacheBlk::WritableBit))) {
@@ -2266,6 +2397,10 @@ BaseCache::allocateBlock(const PacketPtr pkt, PacketList &writebacks)
 void
 BaseCache::invalidateBlock(CacheBlk *blk)
 {
+    if (blk && blk->isValid()) {
+        idealDCacheBlocks.erase({regenerateBlkAddr(blk), blk->isSecure()});
+    }
+
     static uint64_t _inval_cnt{0};
     // notify prefetcher to send some info to lower level per 128 cache invalidations
     if ((_inval_cnt++ % 128) == 127) {
@@ -2300,6 +2435,34 @@ BaseCache::evictBlock(CacheBlk *blk, PacketList &writebacks)
     }
 
     DPRINTF(CacheTrace, "Evicting block %#llx\n", regenerateBlkAddr(blk));
+
+    const auto ideal_it = idealDCacheBlocks.find(
+        {regenerateBlkAddr(blk), blk->isSecure()});
+    if (ideal_it != idealDCacheBlocks.end()) {
+        if (blk->isSet(CacheBlk::DirtyBit)) {
+            Request::Flags wb_flags;
+            if (blk->isSecure()) {
+                wb_flags.set(Request::SECURE);
+            }
+            RequestPtr wb_req = std::make_shared<Request>(
+                regenerateBlkAddr(blk), blkSize, wb_flags,
+                Request::wbRequestorId);
+            wb_req->taskId(blk->getTaskId());
+            wb_req->setXsMetadata(blk->getXsMetadata());
+
+            Packet wb_pkt(wb_req, MemCmd::WriteReq);
+            wb_pkt.allocate();
+            wb_pkt.setDataFromBlock(blk->data, blkSize);
+
+            DPRINTF(Cache,
+                    "%s: functional write for dirty ideal DCache block %s\n",
+                    __func__, wb_pkt.print());
+            memSidePort.sendFunctional(&wb_pkt);
+            stats.writebacks[Request::wbRequestorId]++;
+        }
+        invalidateBlock(blk);
+        return;
+    }
 
     PacketPtr pkt = evictBlock(blk);
 
