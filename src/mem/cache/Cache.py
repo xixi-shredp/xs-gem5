@@ -169,6 +169,9 @@ class BaseCache(ClockedObject):
     ideal_dcache = Param.Bool(
         False,
         "Satisfy ordinary L1 DCache misses with functional memory at hit latency")
+    inf_dcache = Param.Bool(
+        False,
+        "Model an infinite-capacity L1 DCache; only cold data misses remain")
     way_entries = Param.MemorySize(
         "64",
         "num of active generation table entries"

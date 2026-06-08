@@ -187,10 +187,15 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       cacheLevel(p.cache_level),
       forceHit(p.force_hit),
       idealDCache(p.ideal_dcache),
+      infDCache(p.inf_dcache),
       simulateDcacheRefill(p.simulate_dcache_refill),
       doFastWriteline(p.do_fast_writeline),
       Prefetch_CanOffload(p.prefetch_can_offload)
 {
+    fatal_if(idealDCache && infDCache,
+             "%s: ideal_dcache and inf_dcache are mutually exclusive",
+             name());
+
     // the MSHR queue has no reserve entries as we check the MSHR
     // queue on every single allocation, whereas the write queue has
     // as many reserve entries as we have MSHRs, since every MSHR may
@@ -1697,6 +1702,8 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
         DPRINTF(CacheVerbose, "%s for %s (invalidation)\n", __func__,
                 pkt->print());
     }
+
+    updateInfDCacheShadow(pkt, blk);
 }
 
 /////////////////////////////////////////////////////
@@ -1748,8 +1755,8 @@ BaseCache::calculateAccessLatency(const CacheBlk* blk, const uint32_t delay,
 }
 
 Cycles
-BaseCache::calculateIdealDCacheHitLatency(PacketPtr pkt,
-                                          Cycles tag_latency) const
+BaseCache::calculateFunctionalDCacheHitLatency(PacketPtr pkt,
+                                               Cycles tag_latency) const
 {
     if (pkt->isRead() || pkt->isWrite()) {
         if (sequentialAccess) {
@@ -1763,9 +1770,9 @@ BaseCache::calculateIdealDCacheHitLatency(PacketPtr pkt,
 }
 
 bool
-BaseCache::isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const
+BaseCache::isFunctionalDCacheAccess(PacketPtr pkt) const
 {
-    if (!idealDCache || cacheLevel != 1 || isReadOnly) {
+    if ((!idealDCache && !infDCache) || cacheLevel != 1 || isReadOnly) {
         return false;
     }
 
@@ -1780,7 +1787,9 @@ BaseCache::isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const
     }
 
     if (pkt->isEviction() || pkt->isLLSC() || pkt->isLockedRMW() ||
-        pkt->req->isReadModifyWrite() || pkt->cmd == MemCmd::SwapReq ||
+        pkt->req->isLLSC() || pkt->req->isLockedRMW() ||
+        pkt->req->isReadModifyWrite() || pkt->req->isSwap() ||
+        pkt->req->isAtomic() || pkt->cmd == MemCmd::SwapReq ||
         pkt->isAtomicOp()) {
         return false;
     }
@@ -1791,17 +1800,69 @@ BaseCache::isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const
     const bool in_single_block =
         pkt->getOffset(blkSize) + pkt->getSize() <= blkSize;
 
-    // If a block exists but cannot satisfy the request, preserve the normal
-    // coherence/upgrade path instead of silently bypassing stale local state.
-    return (ordinary_read || ordinary_write) && in_single_block && blk == nullptr;
+    return (ordinary_read || ordinary_write) && in_single_block;
 }
 
 bool
-BaseCache::trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
-                                 Cycles tag_latency, Cycles &lat,
-                                 PacketList &writebacks)
+BaseCache::isInfDCacheShadowAccess(PacketPtr pkt) const
 {
-    if (!isIdealDCacheCandidate(pkt, blk)) {
+    if (!infDCache || cacheLevel != 1 || isReadOnly) {
+        return false;
+    }
+
+    if (!pkt->isRequest() || !pkt->needsResponse() || pkt->fromCache()) {
+        return false;
+    }
+
+    if (pkt->req->isInstFetch() || pkt->req->isUncacheable() ||
+        pkt->req->isCacheMaintenance() || pkt->req->isPrefetch() ||
+        pkt->req->isStrictlyOrdered() || pkt->req->isMemMgmt()) {
+        return false;
+    }
+
+    if (pkt->isEviction()) {
+        return false;
+    }
+
+    const bool data_access = pkt->isRead() || pkt->isWrite() ||
+        pkt->cmd == MemCmd::SwapReq || pkt->isLLSC() ||
+        pkt->isLockedRMW() || pkt->isAtomicOp() ||
+        pkt->req->isLLSC() || pkt->req->isLockedRMW() ||
+        pkt->req->isReadModifyWrite() || pkt->req->isSwap() ||
+        pkt->req->isAtomic();
+    const bool in_single_block =
+        pkt->getOffset(blkSize) + pkt->getSize() <= blkSize;
+
+    return data_access && in_single_block;
+}
+
+bool
+BaseCache::isFunctionalDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const
+{
+    // If a block exists but cannot satisfy the request, preserve the normal
+    // coherence/upgrade path instead of silently bypassing stale local state.
+    return isFunctionalDCacheAccess(pkt) && blk == nullptr;
+}
+
+void
+BaseCache::updateInfDCacheShadow(PacketPtr pkt, CacheBlk *blk)
+{
+    if (!blk || !blk->isValid() || !isInfDCacheShadowAccess(pkt)) {
+        return;
+    }
+
+    auto &line = infDCacheShadowLines[
+        {regenerateBlkAddr(blk), blk->isSecure()}];
+    line.resize(blkSize);
+    std::copy(blk->data, blk->data + blkSize, line.begin());
+}
+
+bool
+BaseCache::trySatisfyFunctionalDCache(PacketPtr pkt, CacheBlk *&blk,
+                                      Cycles tag_latency, Cycles &lat,
+                                      PacketList &writebacks)
+{
+    if (!isFunctionalDCacheCandidate(pkt, blk)) {
         return false;
     }
 
@@ -1813,9 +1874,31 @@ BaseCache::trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
 
     if (mshr_hit || wb_hit) {
         DPRINTF(Cache,
-                "%s: ideal DCache backs off for %s, mshr_hit: %d, wb_hit: %d\n",
+                "%s: functional DCache backs off for %s, "
+                "mshr_hit: %d, wb_hit: %d\n",
                 __func__, pkt->print(), mshr_hit, wb_hit);
         return false;
+    }
+
+    const auto block_key = std::make_pair(blk_addr, pkt->isSecure());
+    const char *mode = idealDCache ? "ideal" : "inf";
+
+    const std::vector<uint8_t> *inf_shadow_line = nullptr;
+    if (infDCache) {
+        const auto shadow_it = infDCacheShadowLines.find(block_key);
+        if (shadow_it == infDCacheShadowLines.end()) {
+            DPRINTF(Cache, "%s: inf DCache allows cold miss for %s\n",
+                    __func__, pkt->print());
+            return false;
+        }
+        inf_shadow_line = &shadow_it->second;
+        if (inf_shadow_line->size() != blkSize) {
+            DPRINTF(Cache,
+                    "%s: inf DCache shadow line has unexpected size %lu "
+                    "for %s\n",
+                    __func__, inf_shadow_line->size(), pkt->print());
+            return false;
+        }
     }
 
     Request::Flags fill_flags;
@@ -1840,21 +1923,26 @@ BaseCache::trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
     Packet fill_pkt(fill_req, MemCmd::ReadReq, blkSize);
     fill_pkt.allocate();
 
-    DPRINTF(Cache, "%s: ideal DCache functional fill for %s\n",
-            __func__, pkt->print());
-    memSidePort.sendFunctional(&fill_pkt);
+    DPRINTF(Cache, "%s: %s DCache functional fill for %s\n",
+            __func__, mode, pkt->print());
+    if (infDCache) {
+        fill_pkt.setData(inf_shadow_line->data());
+        fill_pkt.makeResponse();
+    } else {
+        memSidePort.sendFunctional(&fill_pkt);
+    }
 
     if (!fill_pkt.isResponse() || fill_pkt.isError() || !fill_pkt.hasData()) {
         DPRINTF(Cache,
-                "%s: ideal DCache functional fill did not produce data for %s\n",
-                __func__, pkt->print());
+                "%s: %s DCache functional fill did not produce data for %s\n",
+                __func__, mode, pkt->print());
         return false;
     }
 
     blk = allocateBlock(&fill_pkt, writebacks);
     if (!blk) {
-        DPRINTF(Cache, "%s: ideal DCache could not allocate block for %s\n",
-                __func__, pkt->print());
+        DPRINTF(Cache, "%s: %s DCache could not allocate block for %s\n",
+                __func__, mode, pkt->print());
         return false;
     }
 
@@ -1863,9 +1951,9 @@ BaseCache::trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
     blk->setXsMetadata(fill_req->getXsMetadata());
     updateBlockData(blk, &fill_pkt, false);
     blk->setWhenReady(curTick());
-    idealDCacheBlocks.insert({regenerateBlkAddr(blk), blk->isSecure()});
+    functionalDCacheBlocks.insert({regenerateBlkAddr(blk), blk->isSecure()});
 
-    lat = calculateIdealDCacheHitLatency(pkt, tag_latency);
+    lat = calculateFunctionalDCacheHitLatency(pkt, tag_latency);
     incHitCount(pkt);
     incSquashedDemandHitCount(pkt, blk);
     satisfyRequest(pkt, blk);
@@ -2175,8 +2263,8 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         } else {
             DPRINTF(Cache, "%s: mshr hit for force hit PC %#lx, forced to miss\n", __func__, pkt->req->getPC());
         }
-    } else if (trySatisfyIdealDCache(pkt, blk, tag_latency, lat,
-                                      writebacks)) {
+    } else if (trySatisfyFunctionalDCache(pkt, blk, tag_latency, lat,
+                                          writebacks)) {
         return true;
     }
 
@@ -2398,7 +2486,7 @@ void
 BaseCache::invalidateBlock(CacheBlk *blk)
 {
     if (blk && blk->isValid()) {
-        idealDCacheBlocks.erase({regenerateBlkAddr(blk), blk->isSecure()});
+        functionalDCacheBlocks.erase({regenerateBlkAddr(blk), blk->isSecure()});
     }
 
     static uint64_t _inval_cnt{0};
@@ -2436,9 +2524,9 @@ BaseCache::evictBlock(CacheBlk *blk, PacketList &writebacks)
 
     DPRINTF(CacheTrace, "Evicting block %#llx\n", regenerateBlkAddr(blk));
 
-    const auto ideal_it = idealDCacheBlocks.find(
+    const auto functional_it = functionalDCacheBlocks.find(
         {regenerateBlkAddr(blk), blk->isSecure()});
-    if (ideal_it != idealDCacheBlocks.end()) {
+    if (functional_it != functionalDCacheBlocks.end()) {
         if (blk->isSet(CacheBlk::DirtyBit)) {
             Request::Flags wb_flags;
             if (blk->isSecure()) {
@@ -2455,7 +2543,7 @@ BaseCache::evictBlock(CacheBlk *blk, PacketList &writebacks)
             wb_pkt.setDataFromBlock(blk->data, blkSize);
 
             DPRINTF(Cache,
-                    "%s: functional write for dirty ideal DCache block %s\n",
+                    "%s: functional write for dirty functional DCache block %s\n",
                     __func__, wb_pkt.print());
             memSidePort.sendFunctional(&wb_pkt);
             stats.writebacks[Request::wbRequestorId]++;

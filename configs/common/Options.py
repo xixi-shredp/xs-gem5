@@ -171,6 +171,9 @@ def addNoISAOptions(parser, configure_xiangshan=False):
     parser.add_argument("--ideal-dcache", action="store_true",
                         help="Satisfy ordinary L1 DCache data misses with "
                              "functional memory using DCache hit latency")
+    parser.add_argument("--inf-dcache", action="store_true",
+                        help="Model an infinite-capacity L1 DCache by "
+                             "allowing only cold data misses")
 
     parser.add_argument("--no-pf", default=False,
                         action="store_true", help="L1 icache hardware prefetcher")

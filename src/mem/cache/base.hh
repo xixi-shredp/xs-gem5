@@ -50,6 +50,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <map>
 #include <queue>
 #include <set>
 #include <string>
@@ -594,19 +595,37 @@ class BaseCache : public ClockedObject, public CacheAccessor
     bool checkAndAllocateMSHRCycle(PacketPtr pkt);
 
     /**
-     * Check whether this request can be satisfied by the ideal L1 DCache path.
+     * Check whether this packet is an ordinary data access that can be modeled
+     * by the ideal/inf L1 DCache paths.
      */
-    bool isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const;
+    bool isFunctionalDCacheAccess(PacketPtr pkt) const;
+
+    /**
+     * Check whether an L1 DCache packet should refresh the infinite DCache
+     * shadow contents after it is satisfied normally.
+     */
+    bool isInfDCacheShadowAccess(PacketPtr pkt) const;
+
+    /**
+     * Check whether this miss can be satisfied by functional L1 DCache refill.
+     */
+    bool isFunctionalDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const;
+
+    /**
+     * Refresh the infinite DCache shadow copy after an access has updated or
+     * consumed an L1 DCache block.
+     */
+    void updateInfDCacheShadow(PacketPtr pkt, CacheBlk *blk);
 
     /**
      * Satisfy an ordinary L1 DCache miss by functionally filling the whole
      * cache block and completing the request through the normal hit path.
      */
-    bool trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
-                               Cycles tag_latency, Cycles &lat,
-                               PacketList &writebacks);
-    Cycles calculateIdealDCacheHitLatency(PacketPtr pkt,
-                                          Cycles tag_latency) const;
+    bool trySatisfyFunctionalDCache(PacketPtr pkt, CacheBlk *&blk,
+                                    Cycles tag_latency, Cycles &lat,
+                                    PacketList &writebacks);
+    Cycles calculateFunctionalDCacheHitLatency(PacketPtr pkt,
+                                               Cycles tag_latency) const;
 
     /*
      * Handle a timing request that hit in the cache
@@ -1659,10 +1678,12 @@ class BaseCache : public ClockedObject, public CacheAccessor
 
     // std::set<Addr> forceHitPCs{0x11474, 0x11470, 0x11472, 0x119fa, 0x119fe, 0x119ea};
     std::set<Addr> forceHitPCs{};
-    std::set<std::pair<Addr, bool>> idealDCacheBlocks{};
+    std::set<std::pair<Addr, bool>> functionalDCacheBlocks{};
+    std::map<std::pair<Addr, bool>, std::vector<uint8_t>> infDCacheShadowLines{};
 
     const bool forceHit;
     const bool idealDCache;
+    const bool infDCache;
     const bool simulateDcacheRefill;
 
 public:

@@ -197,6 +197,10 @@ def config_aligned_l2(options, system, l2_cache_class):
         l2_wrapper.cpu_side = system.tol2bus_list[i].mem_side_ports
 
 def config_cache(options, system):
+    assert not (getattr(options, 'inf_dcache', False) and
+                getattr(options, 'ideal_dcache', False)), \
+        "--inf-dcache and --ideal-dcache are mutually exclusive."
+
     if options.external_memory_system and (options.caches or options.l2cache):
         print("External caches and internal caches are exclusive options.\n")
         sys.exit(1)
@@ -310,6 +314,9 @@ def config_cache(options, system):
 
             if getattr(options, 'ideal_dcache', False):
                 dcache.ideal_dcache = True
+
+            if getattr(options, 'inf_dcache', False):
+                dcache.inf_dcache = True
 
             dcache.do_fast_writeline = not options.kmh_align
             dcache.pipe_latency = 3 if options.kmh_align else 0
