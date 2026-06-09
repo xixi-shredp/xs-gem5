@@ -76,7 +76,7 @@ L2CompositeWithWorkerPrefetcher::calculatePrefetch(const PrefetchInfo &pfi, std:
 void
 L2CompositeWithWorkerPrefetcher::rxHint(BaseMMU::Translation *dpp)
 {
-    if (offloadLowAccuracy) {
+    if (offloadLowAccuracy && !noPfahead) {
         auto ptr = reinterpret_cast<DeferredPacket *>(dpp);
         float cdp_ratio =
             (prefetchStats.pfIssued_srcs[PrefetchSourceType::CDP].value()) / (prefetchStats.pfIssued.total());

@@ -146,6 +146,14 @@ def addNoISAOptions(parser, configure_xiangshan=False):
     parser.add_argument("--no-l3cache", action="store_true")
     parser.add_argument("--l1-to-l2-pf-hint", action="store_true")
     parser.add_argument("--l2-to-l3-pf-hint", action="store_true")
+    # Completely disable the pf-ahead (cross cache-level prefetch) mechanism.
+    # --no-pfahead          : drop prefetch requests that target a deeper level.
+    # --no-pfahead-reserved : keep them but demote to a local (L1) prefetch.
+    parser.add_argument("--no-pfahead", action="store_true", default=False,
+        help="Completely disable pf-ahead: drop cross-level prefetch requests")
+    parser.add_argument("--no-pfahead-reserved", action="store_true",
+        default=False,
+        help="Disable pf-ahead offloading but keep requests as local prefetches")
 
     parser.add_argument("--num-dirs", type=int, default=1)
     parser.add_argument("--num-l2caches", type=int, default=1)

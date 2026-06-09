@@ -232,6 +232,8 @@ Base::Base(const BasePrefetcherParams &p)
       prefetchOnAccess(p.prefetch_on_access),
       prefetchOnPfHit(p.prefetch_on_pf_hit),
       useVirtualAddresses(p.use_virtual_addresses),
+      noPfahead(p.no_pfahead),
+      noPfaheadReserved(p.no_pfahead_reserved),
       prefetchStats(this), issuedPrefetches(0),
       usefulPrefetches(0), streamlatenum(0),tlb(nullptr)
 {

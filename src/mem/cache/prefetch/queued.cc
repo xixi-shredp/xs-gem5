@@ -652,6 +652,25 @@ Queued::insert(const PacketPtr &pkt, PrefetchInfo &new_pfi, const AddrPriority &
     DeferredPacket dpp(this, new_pfi, 0, priority);
     dpp.pfahead = addr_prio.pfahead;
     dpp.pfahead_host = addr_prio.pfahead_host;
+    // pf-ahead disabled: a request that wants to go deeper than this cache
+    // is either dropped (--no-pfahead) or demoted to a local prefetch
+    // (--no-pfahead-reserved).
+    if (dpp.pfahead && dpp.pfahead_host > cache->level()) {
+        if (noPfahead) {
+            DPRINTF(HWPrefetchOther,
+                    "no-pfahead: drop pfahead req addr:%#x host:%d (self l%d)\n",
+                    new_pfi.getAddr(), dpp.pfahead_host, cache->level());
+            return;
+        }
+        if (noPfaheadReserved) {
+            DPRINTF(HWPrefetchOther,
+                    "no-pfahead-reserved: demote pfahead req addr:%#x host:%d "
+                    "to local prefetch (self l%d)\n",
+                    new_pfi.getAddr(), dpp.pfahead_host, cache->level());
+            dpp.pfahead = false;
+            dpp.pfahead_host = 0;
+        }
+    }
     if (dpp.pfahead) {
         DPRINTF(HWPrefetchOther, "Create one pfahead request\n");
     }
@@ -684,6 +703,25 @@ Queued::addToQueue(std::list<DeferredPacket> &queue,
     unsigned queue_size;
     const char *queue_name;
     if (&queue == &pfq) {
+        // pf-ahead disabled: never offload a deeper-targeted request. Drop it
+        // (--no-pfahead) or keep it locally (--no-pfahead-reserved). This is a
+        // safety net for packets that bypass insert() (e.g. Worker re-inject).
+        if ((noPfahead || noPfaheadReserved) && dpp.pfahead &&
+            (dpp.pfahead_host > cache->level())) {
+            if (noPfahead) {
+                DPRINTF(HWPrefetchOther,
+                        "no-pfahead: drop queued pfahead host:%d (self l%d)\n",
+                        dpp.pfahead_host, cache->level());
+                if (dpp.pkt != nullptr) {
+                    delete dpp.pkt;
+                    dpp.pkt = nullptr;
+                }
+                return;
+            }
+            // reserved: demote to local prefetch and fall through to enqueue.
+            dpp.pfahead = false;
+            dpp.pfahead_host = 0;
+        }
         // if found the dpp is pfahead marked
         // send it to next level pfq
         if (hasHintDownStream() && dpp.pfahead && (dpp.pfahead_host > cache->level())) {
@@ -781,6 +819,12 @@ void
 Queued::offloadToDownStream()
 {
     assert(hintDownStream);
+
+    // pf-ahead disabled: do not push prefetches down on back-pressure either.
+    if (noPfahead) {
+        DPRINTF(HWPrefetch, "no-pfahead: skip offloadToDownStream\n");
+        return;
+    }
 
     if (pfq.empty()) {
         DPRINTF(HWPrefetch, "No hardware prefetches available.\n");

@@ -119,4 +119,11 @@ def create_prefetcher(cpu, cache_level, options):
             prefetcher.queue_size = 64
             prefetcher.max_prefetch_requests_with_pending_translation = 128
 
+    # Propagate the pf-ahead master switches to every prefetcher (all levels).
+    if getattr(options, 'no_pfahead', False) and hasattr(prefetcher, 'no_pfahead'):
+        prefetcher.no_pfahead = True
+    if getattr(options, 'no_pfahead_reserved', False) and \
+            hasattr(prefetcher, 'no_pfahead_reserved'):
+        prefetcher.no_pfahead_reserved = True
+
     return prefetcher

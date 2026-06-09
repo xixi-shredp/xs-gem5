@@ -887,6 +887,19 @@ class Base : public ClockedObject
     /** Use Virtual Addresses for prefetching */
     const bool useVirtualAddresses;
 
+    // pf-ahead (cross cache-level prefetch) master switches, plumbed from
+    // the --no-pfahead / --no-pfahead-reserved config options.
+    //   noPfahead         : completely disable pf-ahead. Prefetch requests
+    //                       targeting a level deeper than the owning cache are
+    //                       dropped (never generated, never offloaded).
+    //   noPfaheadReserved : disable cross-level offloading, but keep the
+    //                       request by demoting it to a normal current-level
+    //                       (e.g. L1) prefetch instead of dropping it.
+    // Declared here (not lower) so the declaration order matches the ctor
+    // init-list order (after useVirtualAddresses, before prefetchStats).
+    const bool noPfahead;
+    const bool noPfaheadReserved;
+
     /**
      * Determine if this access should be observed
      * @param pkt The memory request causing the event

@@ -89,6 +89,14 @@ class BasePrefetcher(ClockedObject):
 
     is_sub_prefetcher = Param.Bool(False, "Is this a sub-prefetcher")
 
+    # pf-ahead (cross cache-level prefetch) master switches.
+    no_pfahead = Param.Bool(False,
+        "Completely disable pf-ahead: drop prefetch requests that target a "
+        "deeper cache level than the owning cache")
+    no_pfahead_reserved = Param.Bool(False,
+        "Disable pf-ahead cross-level offloading but keep the request as a "
+        "normal current-level prefetch (demote instead of drop)")
+
     training_buffer_size = Param.Unsigned(8,
         "Maximum number of training requests buffered per cycle")
 
