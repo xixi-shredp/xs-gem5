@@ -213,6 +213,12 @@ class Queued : public Base
     /** Percentage of requests that can be throttled */
     const unsigned int throttleControlPct;
 
+    /** Whether I-POP allows this prefetcher to enqueue candidates. */
+    bool ipopEnabled;
+
+    /** Current I-POP aggressiveness level for runtime control. */
+    unsigned int ipopAggressivenessLevel;
+
     EventFunctionWrapper tlbReqEvent;
 
     struct QueuedStats : public statistics::Group
@@ -245,6 +251,20 @@ class Queued : public Base
     PacketPtr getPacket() override;
 
     bool hasPendingPacket() override;
+
+
+    void setIpopEnabled(bool enabled) override;
+    bool
+    getIpopEnabled() const override
+    { return ipopEnabled; }
+
+    void setIpopAggressivenessLevel(unsigned int level) override;
+    unsigned int
+    getIpopAggressivenessLevel() const override
+    { return ipopAggressivenessLevel; }
+    unsigned int
+    getIpopMaxAggressivenessLevel() const override
+    { return 1; }
 
     Tick nextPrefetchReadyTime() const override
     {

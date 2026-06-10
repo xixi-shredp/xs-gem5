@@ -2105,6 +2105,51 @@ class MultiPrefetcher(BasePrefetcher):
     prefetchers = VectorParam.BasePrefetcher([XSCompositePrefetcher(), BOPPrefetcher()],
         "Array of prefetchers")
 
+class IPOPMultiPrefetcher(MultiPrefetcher):
+    type = "IPOPMultiPrefetcher"
+    cxx_class = "gem5::prefetch::IPOPMulti"
+    cxx_header = "mem/cache/prefetch/ipop_multi.hh"
+    record_phase_pe_ipc_csv = Param.Bool(
+        False,
+        "Record each phase's PE values together with the next phase's IPC",
+    )
+    phase_pe_ipc_csv_path = Param.String(
+        "",
+        "CSV output path for phase PE and next-phase IPC logging",
+    )
+    phase_length = Param.Unsigned(1024, "Demand accesses per I-POP phase")
+    pfht_entries = Param.Unsigned(512, "Number of PfHT entries")
+    poht_entries = Param.Unsigned(512, "Number of PoHT entries")
+    table_tag_bits = Param.Unsigned(6, "Tag bits stored in PfHT/PoHT")
+    ipop_on_levels = Param.Unsigned(5, "Number of ON aggressiveness levels")
+    ipop_off_levels = Param.Unsigned(3, "Number of OFF cooldown levels")
+    ideal_dram_latency = Param.Cycles(
+        100, "Ideal DRAM access latency used to derive I-POP thresholds"
+    )
+    phase_on_miss = Param.Bool(
+        False,
+        "Advance I-POP phases on completed demand misses instead of all demand accesses",
+    )
+    warmup_phases = Param.Unsigned(
+        0,
+        "Completed I-POP phases during which ON-to-OFF transitions are suppressed",
+    )
+    t_noc = Param.Cycles(0, "I-POP NoC contention penalty")
+    t_bus = Param.Cycles(1, "I-POP DRAM bus contention penalty")
+    t_bank = Param.Cycles(1, "I-POP DRAM bank contention penalty")
+    channel_shift = Param.Unsigned(
+        0, "Bit position of the least-significant I-POP channel index bit"
+    )
+    channel_bits = Param.Unsigned(
+        0, "Number of I-POP channel index bits; 0 models a single channel"
+    )
+    bank_shift = Param.Unsigned(
+        10,
+        "Bit position of the least-significant I-POP bank index bit",
+    )
+    bank_bits = Param.Unsigned(5, "Number of I-POP bank index bits")
+
+
 class L2CompositeWithWorkerPrefetcher(CompositeWithWorkerPrefetcher):
     type = 'L2CompositeWithWorkerPrefetcher'
     cxx_class = 'gem5::prefetch::L2CompositeWithWorkerPrefetcher'

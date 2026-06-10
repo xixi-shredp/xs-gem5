@@ -29,7 +29,7 @@
 Import('*')
 
 SimObject('Prefetcher.py', sim_objects=[
-    'CMCPrefetcher', 'BasePrefetcher', 'MultiPrefetcher', 'QueuedPrefetcher',
+    'CMCPrefetcher', 'BasePrefetcher', 'MultiPrefetcher', 'IPOPMultiPrefetcher', 'QueuedPrefetcher',
     'XSCompositePrefetcher', 'XSStridePrefetcher','OptPrefetcher','XsStreamPrefetcher',
     'BertiPrefetcher', 'CDP',
     'StridePrefetcherHashedSetAssociative', 'StridePrefetcher',
@@ -75,6 +75,7 @@ Source('pattern_merging.cc')
 Source('kairos.cc')
 Source('streamline.cc')
 Source('multi.cc')
+Source('ipop_multi.cc')
 Source('bop.cc')
 Source('bingo.cc')
 Source('amd_contiguous_stream.cc')

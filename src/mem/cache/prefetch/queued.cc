@@ -138,6 +138,8 @@ Queued::Queued(const QueuedPrefetcherParams &p)
       queueFilter(p.queue_filter), cacheSnoop(p.cache_snoop),
       tagPrefetch(p.tag_prefetch),
       throttleControlPct(p.throttle_control_percentage),
+      ipopEnabled(true),
+      ipopAggressivenessLevel(1),
       tlbReqEvent(
           [this]{ processMissingTranslations(queueSize); },
           name()),
@@ -212,6 +214,21 @@ Queued::getMaxPermittedPrefetches(size_t total) const
     return max_pfs;
 }
 
+
+void
+Queued::setIpopEnabled(bool enabled)
+{ ipopEnabled = enabled; }
+
+void
+Queued::setIpopAggressivenessLevel(unsigned int level)
+{
+    if (level == 0 || level > getIpopMaxAggressivenessLevel()) {
+        fatal("%s: I-POP aggressiveness level %u is outside [1, %u]",
+              name(), level, getIpopMaxAggressivenessLevel());
+    }
+    ipopAggressivenessLevel = level;
+}
+
 void
 Queued::calculatePrefetch(const PrefetchInfo &pfi,
     std::vector<AddrPriority> &addresses, bool late, PrefetchSourceType source, bool miss_repeat)
@@ -222,6 +239,13 @@ Queued::calculatePrefetch(const PrefetchInfo &pfi,
 void
 Queued::notify(const PacketPtr &pkt, const PrefetchInfo &pfi)
 {
+    if (!ipopEnabled) {
+        DPRINTF(HWPrefetch,
+                "I-POP disabled candidate generation for %s.\n",
+                name());
+        return;
+    }
+
     Addr blk_addr = blockAddress(pfi.getAddr());
 
     bool late_in_mshr = pkt->missOnLatePf;  // hit in pf mshr

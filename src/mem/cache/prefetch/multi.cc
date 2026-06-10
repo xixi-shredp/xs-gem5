@@ -56,6 +56,8 @@ Multi::Multi(const MultiPrefetcherParams &p)
 void
 Multi::setParentInfo(System *sys, ProbeManager *pm, CacheAccessor* _cache, unsigned blk_size)
 {
+    Base::setParentInfo(sys, pm, _cache, blk_size);
+
     for (auto pf : prefetchers)
         pf->setParentInfo(sys, pm, _cache, blk_size);
 }

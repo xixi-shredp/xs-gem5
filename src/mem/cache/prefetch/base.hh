@@ -989,6 +989,38 @@ class Base : public ClockedObject
     BaseTLB * tlb;
 
   public:
+
+    struct IPOPEventInfo
+    {
+        Addr addr;
+        bool isSecure;
+        uint64_t prefetcherIdBits;
+        bool accessDram;
+        Tick latency;
+        bool delayedDemand;
+        bool busContention;
+        bool bankContention;
+        Addr contentionAddr;
+        bool hasContentionAddr;
+
+        IPOPEventInfo(Addr addr, bool is_secure, uint64_t prefetcher_id_bits,
+                      bool access_dram, Tick latency = 0,
+                      bool delayed_demand = false, bool bus_contention = false,
+                      bool bank_contention = false, Addr contention_addr = 0,
+                      bool has_contention_addr = false)
+            : addr(addr),
+              isSecure(is_secure),
+              prefetcherIdBits(prefetcher_id_bits),
+              accessDram(access_dram),
+              latency(latency),
+              delayedDemand(delayed_demand),
+              busContention(bus_contention),
+              bankContention(bank_contention),
+              contentionAddr(contention_addr),
+              hasContentionAddr(has_contention_addr)
+        {}
+    };
+
     Base(const BasePrefetcherParams &p);
     virtual ~Base() = default;
 
@@ -1051,6 +1083,36 @@ class Base : public ClockedObject
         prefetchStats.late_srcs[pf_type]++;
     }
     void streamPflate() { streamlatenum++; }
+
+    virtual void
+    setIpopEnabled(bool enabled)
+    {}
+    virtual bool
+    getIpopEnabled() const
+    { return true; }
+    virtual void
+    setIpopAggressivenessLevel(unsigned int level)
+    {}
+    virtual unsigned int
+    getIpopAggressivenessLevel() const
+    { return 1; }
+    virtual unsigned int
+    getIpopMaxAggressivenessLevel() const
+    { return 1; }
+
+    virtual void
+    notifyIpopPrefetchFill(const IPOPEventInfo &info)
+    {}
+    virtual void
+    notifyIpopPrefetchEviction(const IPOPEventInfo &info)
+    {}
+    virtual void
+    notifyIpopDemandHit(const IPOPEventInfo &info)
+    {}
+    virtual void
+    notifyIpopDemandMissComplete(const IPOPEventInfo &info)
+    {}
+
 
     /**
      * Register probe points for this object.

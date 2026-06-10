@@ -32,6 +32,12 @@ def create_prefetcher(cpu, cache_level, options):
     if prefetcher == NULL:
         return NULL
 
+    if prefetcher_name == 'IPOPMultiPrefetcher':
+        prefetcher.prefetchers = [
+            BOPPrefetcher(is_sub_prefetcher=True),
+            StridePrefetcher(is_sub_prefetcher=True),
+        ]
+
     if cpu != NULL:
         prefetcher.registerTLB(cpu.mmu.dtb, cpu.mmu.functional)
 
