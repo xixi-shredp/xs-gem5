@@ -1285,6 +1285,60 @@ class BOPPrefetcher(QueuedPrefetcher):
     restoreCycle = Param.Int(250000, "Cycles which Restore one offset from victimOffsetsList")
 
 
+class PatternMergingPrefetcher(QueuedPrefetcher):
+    # Paper: Merging Similar Patterns for Hardware Prefetching (MICRO 2022)
+    type = "PatternMergingPrefetcher"
+    cxx_class = "gem5::prefetch::PatternMerging"
+    cxx_header = "mem/cache/prefetch/pattern_merging.hh"
+
+    ft_entries = Param.Unsigned(64, "Number of entries in the Filter Table")
+    at_entries = Param.Unsigned(
+        32, "Number of entries in the Accumulation Table"
+    )
+    opt_entries = Param.Unsigned(
+        64, "Number of entries in the Offset Pattern Table"
+    )
+    ppt_entries = Param.Unsigned(
+        32, "Number of entries in the PC Pattern Table"
+    )
+    pb_entries = Param.Unsigned(16, "Number of entries in the Prefetch Buffer")
+    ft_assoc = Param.Unsigned(8, "Filter Table associativity")
+    at_assoc = Param.Unsigned(2, "Accumulation Table associativity")
+    pb_assoc = Param.Unsigned(1, "Prefetch Buffer associativity")
+    region_size = Param.MemorySize("4KiB", "Spatial region size")
+    pattern_length = Param.Unsigned(
+        64, "Number of cache lines tracked in each spatial pattern"
+    )
+    counter_bits = Param.Unsigned(
+        5, "Number of bits in each OPT/PPT saturating counter"
+    )
+    ppt_monitoring_range = Param.Unsigned(
+        2, "Number of adjacent offsets monitored by each PPT counter"
+    )
+    l1_threshold_percent = Param.Percent(
+        50, "AFE threshold for high-priority prefetch candidates"
+    )
+    l2_threshold_percent = Param.Percent(
+        15, "AFE threshold for L2 prefetch candidates"
+    )
+    l2_prefetch_skip_cache_levels = Param.Unsigned(
+        1, "Cache levels above an L2-targeted PMP prefetch that do not fill"
+    )
+    llc_prefetch_skip_cache_levels = Param.Unsigned(
+        2, "Cache levels above an LLC-targeted PMP prefetch that do not fill"
+    )
+    max_prefetches_per_access = Param.Unsigned(
+        64, "Maximum number of PMP candidates emitted per observed access"
+    )
+
+    queue_squash = True
+    queue_filter = True
+    cache_snoop = True
+    prefetch_on_access = True
+    on_write = False
+    on_inst = False
+
+
 class BingoPrefetcher(QueuedPrefetcher):
     # Paper: Bakhshalipour et al., HPCA 2019
     type = 'BingoPrefetcher'
