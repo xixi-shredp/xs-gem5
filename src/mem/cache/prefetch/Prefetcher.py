@@ -2150,6 +2150,25 @@ class IPOPMultiPrefetcher(MultiPrefetcher):
     bank_bits = Param.Unsigned(5, "Number of I-POP bank index bits")
 
 
+class BanditPrefetcher(MultiPrefetcher):
+    type = "BanditPrefetcher"
+    cxx_class = "gem5::prefetch::Bandit"
+    cxx_header = "mem/cache/prefetch/bandit.hh"
+
+    arm_masks = VectorParam.UInt64(
+        [], "Per-arm bitmask over the sub-prefetcher list"
+    )
+    gamma = Param.Float(0.999, "DUCB discount factor in (0, 1]")
+    c = Param.Float(0.04, "Exploration constant")
+    bandit_step = Param.UInt64(
+        1000, "Main-loop bandit step duration in demand accesses"
+    )
+    bandit_step_rr = Param.UInt64(
+        1000, "Initial round-robin bandit step duration in demand accesses"
+    )
+    cpu = Param.BaseCPU(NULL, "CPU used to read committed instruction counts")
+
+
 class L2CompositeWithWorkerPrefetcher(CompositeWithWorkerPrefetcher):
     type = 'L2CompositeWithWorkerPrefetcher'
     cxx_class = 'gem5::prefetch::L2CompositeWithWorkerPrefetcher'

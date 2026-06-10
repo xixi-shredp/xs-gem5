@@ -38,6 +38,13 @@ def create_prefetcher(cpu, cache_level, options):
             StridePrefetcher(is_sub_prefetcher=True),
         ]
 
+    if prefetcher_name == 'BanditPrefetcher':
+        prefetcher.prefetchers = [
+            BOPPrefetcher(is_sub_prefetcher=True),
+            StridePrefetcher(is_sub_prefetcher=True),
+        ]
+        prefetcher.arm_masks = [1, 2, 3]
+
     if cpu != NULL:
         prefetcher.registerTLB(cpu.mmu.dtb, cpu.mmu.functional)
 
