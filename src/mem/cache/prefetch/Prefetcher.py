@@ -767,6 +767,37 @@ class BOPPrefetcher(QueuedPrefetcher):
     victimOffsetsListSize = Param.Int(10, "The size of victimOffsetsList")
     restoreCycle = Param.Int(250000, "Cycles which Restore one offset from victimOffsetsList")
 
+
+class BingoPrefetcher(QueuedPrefetcher):
+    # Paper: Bakhshalipour et al., HPCA 2019
+    type = 'BingoPrefetcher'
+    cxx_class = 'gem5::prefetch::Bingo'
+    cxx_header = 'mem/cache/prefetch/bingo.hh'
+
+    region_size = Param.Unsigned(2048, 'Spatial region (page) size in bytes')
+    pattern_len = Param.Unsigned(32,
+        'Blocks per region (must equal region_size / blkSize)')
+    ft_size = Param.Unsigned(64, 'FilterTable entries (fully-assoc, LRU)')
+    at_size = Param.Unsigned(128,
+        'AccumulationTable entries (fully-assoc, LRU)')
+    pht_size = Param.Unsigned(16384,
+        'Total PHT entries (must be a multiple of pht_ways, '
+        'pht_size/pht_ways must be power of two)')
+    pht_ways = Param.Unsigned(16, 'PHT associativity')
+    pc_width = Param.Unsigned(16, 'PC bits used in tag/key')
+    min_addr_width = Param.Unsigned(5,
+        'Offset width in bits (log2(pattern_len))')
+    max_addr_width = Param.Unsigned(16,
+        'Address bits used in max (PC+Address) tag')
+    thresh = Param.Float(0.20,
+        'Voting threshold for PC+Offset min-match candidates')
+    rotate_pattern = Param.Bool(True,
+        'Rotate pattern by -offset on insert / +offset on find')
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
 class XSPhysicalSmallBOP(BOPPrefetcher):
     score_max = 31
     round_max = 50

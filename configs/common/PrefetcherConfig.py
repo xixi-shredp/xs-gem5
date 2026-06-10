@@ -73,8 +73,7 @@ def create_prefetcher(cpu, cache_level, options):
         if options.classic_l2:
             if hasattr(prefetcher, 'enable_bop'):
                 prefetcher.enable_bop = True
-            if options.kmh_align:
-                assert prefetcher_name == 'L2CompositeWithWorkerPrefetcher'
+            if options.kmh_align and prefetcher_name == 'L2CompositeWithWorkerPrefetcher':
                 prefetcher.enable_cmc = True
                 prefetcher.enable_bop = True
                 prefetcher.enable_cdp = False
@@ -95,8 +94,7 @@ def create_prefetcher(cpu, cache_level, options):
         if not options.classic_l2:
             if hasattr(prefetcher, 'enable_bop'):
                 prefetcher.enable_bop = True
-            if options.kmh_align:
-                assert prefetcher_name == 'L2CompositeWithWorkerPrefetcher'
+            if options.kmh_align and prefetcher_name == 'L2CompositeWithWorkerPrefetcher':
                 prefetcher.enable_cmc = True
                 prefetcher.enable_bop = True
                 prefetcher.enable_cdp = False
