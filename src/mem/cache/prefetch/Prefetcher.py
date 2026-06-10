@@ -519,6 +519,92 @@ class AMDRegionTypePrefetcher(QueuedPrefetcher):
     cache_snoop = True
 
 
+class AMDAOPPrefetcher(QueuedPrefetcher):
+    type = "AMDAOPPrefetcher"
+    cxx_class = "gem5::prefetch::AMDAOP"
+    cxx_header = "mem/cache/prefetch/amd_aop.hh"
+
+    on_inst = False
+    on_write = True
+    prefetch_on_access = True
+    prefetch_on_pf_hit = True
+    use_virtual_addresses = True
+    cache_snoop = True
+    page_bytes = "4KiB"
+
+    stride_table_entries = Param.Unsigned(
+        128, "Entries in the striding load table corresponding to table 304"
+    )
+    target_table_entries = Param.Unsigned(
+        256,
+        "Entries in the pointer target PC-pair table corresponding to table 306",
+    )
+    recent_pointer_entries = Param.Unsigned(
+        128, "Recently loaded pointer values retained for target-pair learning"
+    )
+    pending_address_load_entries = Param.Unsigned(
+        128, "Outstanding address-load prefetches waiting for fill data"
+    )
+    pointer_value_entries = Param.Unsigned(
+        512, "Cached pointer-array values indexed by element address"
+    )
+
+    confidence_counter_bits = Param.Unsigned(
+        3, "Number of bits in stride and target confidence counters"
+    )
+    initial_confidence = Param.Unsigned(
+        1, "Initial confidence for new entries"
+    )
+    stride_confidence_threshold = Param.Unsigned(
+        3, "Minimum confidence for a load PC to be considered striding"
+    )
+    target_confidence_threshold = Param.Unsigned(
+        3, "Minimum confidence for a pointer target PC pair"
+    )
+
+    use_requestor_id = Param.Bool(False, "Partition tables by requestor id")
+    address_load_degree = Param.Unsigned(
+        2, "Number of future pointer-array elements to prefetch per trigger"
+    )
+    target_degree = Param.Unsigned(
+        4, "Maximum pointer-target prefetches generated per trigger"
+    )
+    lookahead = Param.Unsigned(
+        2, "Number of strides skipped before the first future address load"
+    )
+    pointer_bytes = Param.Unsigned(8, "Pointer element width in bytes")
+    pointer_align_bits = Param.Unsigned(
+        3, "Required low zero bits for values treated as pointers"
+    )
+    index_scale = Param.Unsigned(
+        0,
+        "Scale applied to non-address loaded values used as index operands; "
+        "zero disables index-mode target learning",
+    )
+    min_pointer_addr = Param.Addr(
+        4096, "Minimum loaded value considered as a possible pointer"
+    )
+    max_target_offset = Param.MemorySize(
+        "2KiB",
+        "Maximum absolute pointer-target offset; for index-mode targets this "
+        "bounds the tolerated offset delta during pair matching",
+    )
+    pointer_tracking_window = Param.Unsigned(
+        512, "Maximum accesses before a recent pointer value ages out"
+    )
+    cache_status_threshold = Param.Unsigned(
+        64, "Halve per-target cache hit/miss counters after this many samples"
+    )
+    min_cache_status_for_throttling = Param.Unsigned(
+        16, "Minimum samples before low-miss-rate target throttling"
+    )
+    low_miss_rate_threshold_pct = Param.Unsigned(
+        10, "Detrain target entries below this miss-rate percentage"
+    )
+    prefetch_current_pointer = Param.Bool(
+        False, "Also prefetch the target of the currently loaded pointer"
+    )
+
 class TaggedPrefetcher(QueuedPrefetcher):
     type = 'TaggedPrefetcher'
     cxx_class = 'gem5::prefetch::Tagged'

@@ -88,6 +88,7 @@ enum PrefetchSourceType
     AMDContiguousStream,
     AMDRIPRegion,
     AMDRegionType,
+    AMDAOP,
     Bingo,
     NUM_PF_SOURCES
 };
