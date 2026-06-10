@@ -31,7 +31,8 @@ Import('*')
 SimObject('Prefetcher.py', sim_objects=[
     'CMCPrefetcher', 'BasePrefetcher', 'MultiPrefetcher',
     'IPOPMultiPrefetcher', 'BanditPrefetcher',
-    'SandboxMultiPrefetchers', 'QueuedPrefetcher',
+    'SandboxMultiPrefetchers', 'ReSemblePrefetcher',
+    'QueuedPrefetcher',
     'XSCompositePrefetcher', 'XSStridePrefetcher','OptPrefetcher','XsStreamPrefetcher',
     'BertiPrefetcher', 'CDP',
     'StridePrefetcherHashedSetAssociative', 'StridePrefetcher',
@@ -80,6 +81,7 @@ Source('multi.cc')
 Source('ipop_multi.cc')
 Source('bandit.cc')
 Source('sandbox_multi.cc')
+Source('resemble.cc')
 Source('bop.cc')
 Source('bingo.cc')
 Source('amd_contiguous_stream.cc')

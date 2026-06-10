@@ -237,6 +237,36 @@ class SandboxMultiPrefetchers(QueuedPrefetcher):
     )
 
 
+class ReSemblePrefetcher(QueuedPrefetcher):
+    type = "ReSemblePrefetcher"
+    cxx_class = "gem5::prefetch::ReSemble"
+    cxx_header = "mem/cache/prefetch/resemble.hh"
+
+    prefetchers = VectorParam.BasePrefetcher(
+        [], "Child prefetchers managed by ReSemble"
+    )
+    prediction_types = VectorParam.String(
+        [], "Prediction type label for each child prefetcher"
+    )
+    hidden_dim = Param.Unsigned(32, "Hidden layer width of the controller")
+    hash_bits = Param.Unsigned(12, "Feature hashing width in bits")
+    alpha = Param.Float(0.01, "Learning rate of the controller")
+    gamma = Param.Float(0.90, "Discount factor of the controller")
+    epsilon_start = Param.Float(0.0, "Initial exploration rate")
+    epsilon_end = Param.Float(0.0, "Final exploration rate")
+    epsilon_decay = Param.Float(1.0, "Multiplicative epsilon decay")
+    reward_window = Param.Unsigned(64, "Reward accounting window size")
+    replay_capacity = Param.Unsigned(128, "Replay buffer capacity")
+    batch_size = Param.Unsigned(16, "Mini-batch size for controller updates")
+    policy_update_interval = Param.Unsigned(
+        1, "Number of accesses between online policy updates"
+    )
+    target_update_interval = Param.Unsigned(
+        8, "Number of accesses between target network refreshes"
+    )
+    seed = Param.Unsigned(1, "Deterministic seed for controller RNG")
+
+
 class XSStridePrefetcher(QueuedPrefetcher):
     type = 'XSStridePrefetcher'
     cxx_class = 'gem5::prefetch::XSStridePrefetcher'
