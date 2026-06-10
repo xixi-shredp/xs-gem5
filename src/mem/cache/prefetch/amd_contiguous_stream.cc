@@ -252,6 +252,17 @@ AMDContiguousStreamPrefetcher::notifyWithNewStreamControl(
     allowNewStreamThisNotify = old_allow_new_stream;
 }
 
+
+void
+AMDContiguousStreamPrefetcher::notifyWithNewStreamControl(
+    const PacketPtr &pkt, const PrefetchInfo &pfi, bool allow_new_stream)
+{
+    const bool old_allow_new_stream = allowNewStreamThisNotify;
+    allowNewStreamThisNotify = allow_new_stream;
+    Queued::notify(pkt, pfi);
+    allowNewStreamThisNotify = old_allow_new_stream;
+}
+
 void
 AMDContiguousStreamPrefetcher::calculatePrefetch(
     const PrefetchInfo &pfi, std::vector<AddrPriority> &addresses)

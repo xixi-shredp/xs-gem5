@@ -58,6 +58,14 @@ def create_prefetcher(cpu, cache_level, options):
         ]
         prefetcher.prediction_types = ["spatial", "temporal"]
 
+    if prefetcher_name == "AMDRegionStreamPrefetchers":
+        prefetcher.stream_prefetcher = AMDContiguousStreamPrefetcher(
+            is_sub_prefetcher=True
+        )
+        prefetcher.region_prefetcher = AMDRIPRegionPrefetcher(
+            is_sub_prefetcher=True
+        )
+
     if cpu != NULL:
         prefetcher.registerTLB(cpu.mmu.dtb, cpu.mmu.functional)
 

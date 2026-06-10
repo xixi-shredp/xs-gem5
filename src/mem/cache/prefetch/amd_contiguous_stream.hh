@@ -106,6 +106,9 @@ class AMDContiguousStreamPrefetcher : public Queued
 
     void notifyWithNewStreamControl(const CacheAccessProbeArg &acc, bool miss,
                                     bool allow_new_stream);
+    void notifyWithNewStreamControl(const PacketPtr &pkt,
+                                    const PrefetchInfo &pfi,
+                                    bool allow_new_stream);
 
     void calculatePrefetch(const PrefetchInfo &pfi,
                            std::vector<AddrPriority> &addresses) override;

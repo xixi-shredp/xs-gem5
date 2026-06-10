@@ -532,6 +532,29 @@ class AMDRIPRegionPrefetcher(QueuedPrefetcher):
     on_inst = False
 
 
+class AMDRegionStreamPrefetchers(BasePrefetcher):
+    type = "AMDRegionStreamPrefetchers"
+    cxx_class = "gem5::prefetch::AMDRegionStreamPrefetchers"
+    cxx_header = "mem/cache/prefetch/amd_region_stream.hh"
+
+    stream_prefetcher = Param.BasePrefetcher(
+        AMDContiguousStreamPrefetcher(is_sub_prefetcher=True),
+        "Stream prefetcher child",
+    )
+    region_prefetcher = Param.BasePrefetcher(
+        AMDRIPRegionPrefetcher(is_sub_prefetcher=True),
+        "AMD RIP region prefetcher child",
+    )
+    block_stream_on_region_pending = Param.Bool(
+        True,
+        "Block stream processing while region prefetch requests are pending",
+    )
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
+
 class AMDRegionTypePrefetcher(QueuedPrefetcher):
     type = "AMDRegionTypePrefetcher"
     cxx_class = "gem5::prefetch::AMDRegionTypePrefetcher"

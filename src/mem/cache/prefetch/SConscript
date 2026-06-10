@@ -37,7 +37,7 @@ SimObject('Prefetcher.py', sim_objects=[
     'BertiPrefetcher', 'CDP',
     'StridePrefetcherHashedSetAssociative', 'StridePrefetcher',
     'AMDContiguousStreamPrefetcher', 'AMDRIPRegionPrefetcher',
-    'AMDRegionTypePrefetcher', 'AMDAOPPrefetcher',
+    'AMDRegionStreamPrefetchers', 'AMDRegionTypePrefetcher', 'AMDAOPPrefetcher',
     'ARMOffsetBasedPointerPrefetcher', 'ARMHintPrefetcher',
     'DSPatchPrefetcher', 'PatternMergingPrefetcher', 'KairosPrefetcher', 'StreamlinePrefetcher',
     'TaggedPrefetcher', 'IndirectMemoryPrefetcher', 'SignaturePathPrefetcher',
@@ -86,6 +86,7 @@ Source('bop.cc')
 Source('bingo.cc')
 Source('amd_contiguous_stream.cc')
 Source('amd_rip_region.cc')
+Source('amd_region_stream.cc')
 Source('amd_region_type.cc')
 Source('amd_aop.cc')
 Source('delta_correlating_prediction_tables.cc')
