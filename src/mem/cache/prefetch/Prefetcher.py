@@ -201,6 +201,42 @@ class QueuedPrefetcher(BasePrefetcher):
     max_pf_buffer_size = Param.Int(16, "size of prefetch buffer")
 
 
+class SandboxMultiPrefetchers(QueuedPrefetcher):
+    type = "SandboxMultiPrefetchers"
+    cxx_class = "gem5::prefetch::SandboxMulti"
+    cxx_header = "mem/cache/prefetch/sandbox_multi.hh"
+
+    prefetchers = VectorParam.BasePrefetcher(
+        [], "Queued child prefetchers managed by the sandbox policy"
+    )
+    sandbox_entries = Param.Unsigned(
+        256, "Maximum number of shadow candidates retained in the sandbox"
+    )
+    evaluation_window = Param.Unsigned(
+        256, "Number of accesses used to evaluate one child prefetcher"
+    )
+    score_threshold_pct = Param.Percent(
+        25, "Score threshold as a percent of the evaluation window"
+    )
+    bandwidth_requests_per_access = Param.Float(
+        2.0,
+        "Target aggregate memory requests per observed access used to "
+        "derive the dynamic prefetch budget",
+    )
+    min_prefetches_per_access = Param.Unsigned(
+        0, "Minimum dynamic prefetch budget per observed access"
+    )
+    max_prefetches_per_access = Param.Unsigned(
+        8, "Global cap on real prefetches issued per observed access"
+    )
+    max_prefetches_per_child = Param.Unsigned(
+        3, "Maximum real prefetches a single active child may contribute"
+    )
+    max_active_prefetchers = Param.Unsigned(
+        4, "Maximum number of active children considered on one access"
+    )
+
+
 class XSStridePrefetcher(QueuedPrefetcher):
     type = 'XSStridePrefetcher'
     cxx_class = 'gem5::prefetch::XSStridePrefetcher'

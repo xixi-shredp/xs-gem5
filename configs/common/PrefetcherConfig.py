@@ -45,6 +45,12 @@ def create_prefetcher(cpu, cache_level, options):
         ]
         prefetcher.arm_masks = [1, 2, 3]
 
+    if prefetcher_name == 'SandboxMultiPrefetchers':
+        prefetcher.prefetchers = [
+            BOPPrefetcher(is_sub_prefetcher=True),
+            StridePrefetcher(is_sub_prefetcher=True),
+        ]
+
     if cpu != NULL:
         prefetcher.registerTLB(cpu.mmu.dtb, cpu.mmu.functional)
 
