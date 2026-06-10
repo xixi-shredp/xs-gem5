@@ -519,6 +519,98 @@ class AMDRegionTypePrefetcher(QueuedPrefetcher):
     cache_snoop = True
 
 
+class AppleAMPMPrefetcher(QueuedPrefetcher):
+    type = "AppleAMPMPrefetcher"
+    cxx_class = "gem5::prefetch::AppleAMPM"
+    cxx_header = "mem/cache/prefetch/apple_ampm.hh"
+
+    on_inst = False
+    prefetch_on_access = True
+    prefetch_on_pf_hit = True
+
+    limit_stride = Param.Unsigned(
+        0, "Limit the strides checked up to -X/X; zero disables the limit"
+    )
+    degree = Param.Unsigned(4, "Maximum prefetches generated per access")
+    hot_zone_size = Param.MemorySize("2KiB", "Memory covered by a hot zone")
+
+    access_map_table_entries = Param.MemorySize(
+        "256", "Number of entries in the access map table"
+    )
+    access_map_table_assoc = Param.Unsigned(
+        8, "Associativity of the access map table"
+    )
+    access_map_table_indexing_policy = Param.BaseIndexingPolicy(
+        SetAssociative(
+            entry_size=1,
+            assoc=Parent.access_map_table_assoc,
+            size=Parent.access_map_table_entries,
+        ),
+        "Indexing policy of the access map table",
+    )
+    access_map_table_replacement_policy = Param.BaseReplacementPolicy(
+        LRURP(), "Replacement policy of the access map table"
+    )
+
+    initial_quality_factor = Param.Unsigned(
+        75, "Initial per-access-map quality factor tokens"
+    )
+    max_quality_factor = Param.Unsigned(
+        100, "Maximum per-access-map quality factor tokens"
+    )
+    prefetch_token_cost = Param.Unsigned(
+        8, "Quality factor tokens consumed by a non-store-only prefetch"
+    )
+    store_only_prefetch_token_cost = Param.Unsigned(
+        10, "Quality factor tokens consumed by a store-only prefetch"
+    )
+    successful_prefetch_tokens = Param.Unsigned(
+        12, "Quality factor tokens restored by a successful prefetch"
+    )
+    cache_hit_penalty_tokens = Param.Unsigned(
+        4, "Quality factor tokens removed when a generated prefetch hits cache"
+    )
+    pointer_prefetch_tokens = Param.Unsigned(
+        12, "Quality factor tokens restored when pointer activity is active"
+    )
+    quality_factor_bypass_accesses = Param.Unsigned(
+        0,
+        "Bypass quality factor after this many accessed lines in a map; "
+        "zero means never bypass",
+    )
+
+    use_pointer_value_heuristic = Param.Bool(
+        True,
+        "Approximate pointer-read detection by tracking loaded values that "
+        "are later used as load addresses",
+    )
+    pointer_field_max = Param.Unsigned(15, "Maximum pointer field value")
+    pointer_initial_value = Param.Unsigned(0, "Initial pointer field value")
+    pointer_increment = Param.Unsigned(
+        4, "Pointer field increment for detected pointer reads"
+    )
+    pointer_decrement = Param.Unsigned(
+        1, "Pointer field decrement for load accesses without pointer signal"
+    )
+    pointer_threshold = Param.Unsigned(
+        1, "Pointer field threshold that marks pointer activity active"
+    )
+    pointer_tracking_entries = Param.Unsigned(
+        64, "Loaded pointer-like values retained for future load matching"
+    )
+    pointer_tracking_window = Param.Unsigned(
+        256,
+        "Maximum later accesses before a retained pointer-like value ages out",
+    )
+    pointer_min_addr = Param.Addr(
+        4096, "Minimum loaded value considered as a possible pointer"
+    )
+    pointer_value_distance = Param.MemorySize(
+        "0B",
+        "Optional maximum distance between the load address and loaded value; "
+        "zero disables the locality filter",
+    )
+
 class AMDAOPPrefetcher(QueuedPrefetcher):
     type = "AMDAOPPrefetcher"
     cxx_class = "gem5::prefetch::AMDAOP"
