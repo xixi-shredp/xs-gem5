@@ -92,6 +92,7 @@ enum PrefetchSourceType
     AppleAMPM,
     ARMHint,
     ARMOffsetBasedPointer,
+    DSPatch,
     Bingo,
     NUM_PF_SOURCES
 };

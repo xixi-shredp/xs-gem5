@@ -36,6 +36,7 @@ SimObject('Prefetcher.py', sim_objects=[
     'AMDContiguousStreamPrefetcher', 'AMDRIPRegionPrefetcher',
     'AMDRegionTypePrefetcher', 'AMDAOPPrefetcher',
     'ARMOffsetBasedPointerPrefetcher', 'ARMHintPrefetcher',
+    'DSPatchPrefetcher',
     'TaggedPrefetcher', 'IndirectMemoryPrefetcher', 'SignaturePathPrefetcher',
     'SignaturePathPrefetcherV2', 'AccessMapPatternMatching', 'AMPMPrefetcher',
     'AppleAMPMPrefetcher',
@@ -68,6 +69,7 @@ Source('access_map_pattern_matching.cc')
 Source('apple_ampm.cc')
 Source('arm_hint.cc')
 Source('arm_offset_based_pointer.cc')
+Source('dspatch.cc')
 Source('base.cc')
 Source('multi.cc')
 Source('bop.cc')

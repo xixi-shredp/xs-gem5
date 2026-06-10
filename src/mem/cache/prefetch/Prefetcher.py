@@ -704,6 +704,61 @@ class TaggedPrefetcher(QueuedPrefetcher):
 
     degree = Param.Int(2, "Number of prefetches to generate")
 
+class DSPatchPrefetcher(QueuedPrefetcher):
+    type = "DSPatchPrefetcher"
+    cxx_class = "gem5::prefetch::DSPatch"
+    cxx_header = "mem/cache/prefetch/dspatch.hh"
+
+    on_inst = False
+    prefetch_on_access = True
+    page_buffer_entries = Param.Unsigned(
+        64, "Number of 4KiB pages tracked in the DSPatch page buffer"
+    )
+    signature_table_entries = Param.Unsigned(
+        256, "Number of tagless direct-mapped DSPatch signature entries"
+    )
+    region_size = Param.MemorySize(
+        "4KiB", "Spatial region tracked by each DSPatch page-buffer entry"
+    )
+    bandwidth_utilization_quartile = Param.Unsigned(
+        0,
+        "Fallback static memory bandwidth utilization quartile used for "
+        "CovP/AccP selection when memory-controller and local bandwidth "
+        "tracking are disabled: 0 <25%, 1 25-50%, 2 50-75%, 3 >=75%",
+    )
+    use_memory_controller_bandwidth = Param.Bool(
+        True,
+        "Use the MemCtrl CAS-count bandwidth quartile for DSPatch "
+        "CovP/AccP selection",
+    )
+    dynamic_bandwidth_monitor = Param.Bool(
+        False,
+        "Use a local rolling access-rate estimate to update the DSPatch "
+        "bandwidth quartile when a real DRAM bandwidth signal is unavailable",
+    )
+    bandwidth_window_cycles = Param.Unsigned(
+        4096, "Cycles per DSPatch local bandwidth-estimation window"
+    )
+    bandwidth_low_threshold = Param.Unsigned(
+        64, "Observed accesses per window for the 25% bandwidth quartile"
+    )
+    bandwidth_mid_threshold = Param.Unsigned(
+        128, "Observed accesses per window for the 50% bandwidth quartile"
+    )
+    bandwidth_high_threshold = Param.Unsigned(
+        256, "Observed accesses per window for the 75% bandwidth quartile"
+    )
+    max_or_count = Param.Unsigned(
+        3, "Maximum CovP OR updates before DSPatch stops growing the pattern"
+    )
+    accuracy_threshold_pct = Param.Percent(
+        50, "Accuracy threshold for DSPatch CovP/AccP quality counters"
+    )
+    coverage_threshold_pct = Param.Percent(
+        50, "Coverage threshold for DSPatch CovP quality counter"
+    )
+
+
 class IndirectMemoryPrefetcher(QueuedPrefetcher):
     type = 'IndirectMemoryPrefetcher'
     cxx_class = 'gem5::prefetch::IndirectMemory'
