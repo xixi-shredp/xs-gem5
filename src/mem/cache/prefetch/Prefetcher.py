@@ -739,6 +739,79 @@ class IndirectMemoryPrefetcher(QueuedPrefetcher):
     streaming_distance = Param.Unsigned(4,
         "Number of prefetches to generate when using the stream prefetcher")
 
+class ARMOffsetBasedPointerPrefetcher(QueuedPrefetcher):
+    type = "ARMOffsetBasedPointerPrefetcher"
+    cxx_class = "gem5::prefetch::ARMOffsetBasedPointerPrefetcher"
+    cxx_header = "mem/cache/prefetch/arm_offset_based_pointer.hh"
+
+    on_inst = False
+    prefetch_on_access = True
+
+    history_entries = Param.Unsigned(
+        64, "Number of trigger access PCs retained in the history buffer"
+    )
+    pointer_cache_entries = Param.Unsigned(
+        64, "Number of recent detected pointers retained in the pointer cache"
+    )
+    structure_entries = Param.Unsigned(
+        64, "Number of learned data structure relationships"
+    )
+    pending_entries = Param.Unsigned(
+        32, "Number of pending pointer-line prefetches"
+    )
+    spatial_entries = Param.Unsigned(
+        8, "Number of SMS-style offsets retained per trigger PC"
+    )
+    recent_pointer_search_entries = Param.Unsigned(
+        16, "Recent pointer cache entries searched while learning"
+    )
+    max_element_bytes = Param.MemorySize(
+        "512B", "Maximum trigger-to-trigger distance considered structural"
+    )
+    max_pointer_offset_bytes = Param.MemorySize(
+        "256B", "Maximum pointer-location offset considered structural"
+    )
+    max_pointer_target_offset_bytes = Param.MemorySize(
+        "256B", "Maximum pointer-target to trigger offset"
+    )
+    min_pointer_address = Param.Addr(
+        4096, "Ignore candidate pointer values below this address"
+    )
+    pointer_bytes = Param.Unsigned(
+        8, "Pointer detector width in bytes; use 4 for 32-bit targets"
+    )
+    pointer_msw_match_bits = Param.Unsigned(
+        16, "Most-significant address bits that must match pointer context"
+    )
+    pointer_align_bits = Param.Unsigned(
+        3, "Required low zero bits for pointer candidates"
+    )
+    confidence_bits = Param.Unsigned(
+        3, "Bits in learned-relationship confidence counters"
+    )
+    min_confidence = Param.Unsigned(
+        2, "Minimum relationship confidence before issuing prefetches"
+    )
+    degree = Param.Unsigned(
+        2, "Number of table-structure data prefetches generated per access"
+    )
+    lookahead = Param.Unsigned(
+        2, "Number of dependent pointer dereferences to look ahead"
+    )
+    scan_cacheline_on_fill = Param.Bool(
+        True, "Scan filled cache lines for pointer candidates"
+    )
+    enable_table_detector = Param.Bool(
+        True, "Learn constant trigger-address displacement structures"
+    )
+    enable_linked_list_detector = Param.Bool(
+        True, "Learn pointer-inside-current-element linked-list structures"
+    )
+    enable_pointer_table_detector = Param.Bool(
+        True, "Learn arrays of pointers to data elements"
+    )
+
+
 class ARMHintPrefetcher(QueuedPrefetcher):
     type = "ARMHintPrefetcher"
     cxx_class = "gem5::prefetch::ARMHintPrefetcher"
