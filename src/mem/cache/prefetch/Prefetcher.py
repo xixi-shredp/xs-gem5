@@ -739,6 +739,115 @@ class IndirectMemoryPrefetcher(QueuedPrefetcher):
     streaming_distance = Param.Unsigned(4,
         "Number of prefetches to generate when using the stream prefetcher")
 
+class ARMHintPrefetcher(QueuedPrefetcher):
+    type = "ARMHintPrefetcher"
+    cxx_class = "gem5::prefetch::ARMHintPrefetcher"
+    cxx_header = "mem/cache/prefetch/arm_hint.hh"
+
+    on_inst = False
+    prefetch_on_access = True
+    prefetch_on_pf_hit = True
+    queue_filter = True
+    cache_snoop = True
+    page_bytes = "256TiB"
+
+    source_table_entries = Param.Unsigned(
+        64, "Number of source-stream entries carrying indirect hints"
+    )
+    recent_source_entries = Param.Unsigned(
+        64, "Number of recently observed address-indicating source values"
+    )
+    pending_entries = Param.Unsigned(
+        64, "Number of entries in the indirect prefetch buffer"
+    )
+    stride_confidence_threshold = Param.Unsigned(
+        1, "Source-stream confidence required to prefetch source data"
+    )
+    indirect_confidence_threshold = Param.Unsigned(
+        2, "Observed source-target matches required to learn offset/shift"
+    )
+    degree = Param.Unsigned(4, "Number of first-level source prefetches")
+    lookahead = Param.Unsigned(
+        0, "Additional source-stream strides skipped before prefetching"
+    )
+    address_indicating_bytes = Param.Unsigned(
+        4,
+        "Bytes to decode from a filled source line"
+        "when request size is unknown",
+    )
+    source_element_bytes = Param.Unsigned(
+        0,
+        "Bytes per address-indicating element; 0 uses request hint, "
+        "address_indicating_bytes, or scalar request size",
+    )
+    source_element_stride = Param.Unsigned(
+        0,
+        "Byte distance between vector elements; 0 means packed elements",
+    )
+    max_source_elements = Param.Unsigned(
+        16,
+        "Maximum address-indicating elements decoded from one source request",
+    )
+    signed_index = Param.Bool(
+        False,
+        "Sign-extend decoded elements before base+index target formation",
+    )
+    min_candidate_address = Param.Addr(
+        4096, "Reject generated targets below this physical address"
+    )
+    max_candidate_address = Param.Addr(
+        0, "Reject generated targets above this address; 0 disables the check"
+    )
+    target_alignment = Param.Unsigned(
+        8, "Required target alignment in bytes; 0 or 1 disables the check"
+    )
+    shift_values = VectorParam.Int(
+        [6, 4, 3, 2, 0],
+        "Index-to-address shifts evaluated for target formation",
+    )
+    require_indirect_hint = Param.Bool(
+        True,
+        "Only treat explicit request hints or configured hint_pcs as "
+        "address-indicating sources",
+    )
+    hint_pcs = VectorParam.Addr(
+        [],
+        "Fallback PC list treated as explicit indirect-memory hints when "
+        "the CPU model does not attach IndirectMemoryPrefetchHint",
+    )
+    use_requestor_id = Param.Bool(
+        False, "Include requestor id in source stream and hint matching"
+    )
+    enable_direct_pointer = Param.Bool(
+        True, "Treat a loaded value as a direct pointer when it validates"
+    )
+    enable_static_offset = Param.Bool(
+        False, "Use the configured static base and shift without learning"
+    )
+    static_base = Param.Addr(
+        0, "Static target base when static-offset mode is enabled"
+    )
+    static_shift = Param.Int(
+        0, "Static target shift when static-offset mode is enabled"
+    )
+    enable_processor_hint_target = Param.Bool(
+        False,
+        "Attach the configured target base and shift to CPU-produced "
+        "IndirectMemoryPrefetchHint requests",
+    )
+    processor_hint_base = Param.Addr(
+        0,
+        "Target base carried by processor-side indirect-memory hints",
+    )
+    processor_hint_shift = Param.Int(
+        0,
+        "Target index shift carried by processor-side indirect-memory hints",
+    )
+    validate_candidate_addresses = Param.Bool(
+        True, "Reject generated targets outside configured physical memory"
+    )
+
+
 class SignaturePathPrefetcher(QueuedPrefetcher):
     type = 'SignaturePathPrefetcher'
     cxx_class = 'gem5::prefetch::SignaturePath'

@@ -90,6 +90,7 @@ enum PrefetchSourceType
     AMDRegionType,
     AMDAOP,
     AppleAMPM,
+    ARMHint,
     Bingo,
     NUM_PF_SOURCES
 };
