@@ -434,6 +434,38 @@ class AMDContiguousStreamPrefetcher(QueuedPrefetcher):
     on_inst = False
 
 
+class AMDRIPRegionPrefetcher(QueuedPrefetcher):
+    type = "AMDRIPRegionPrefetcher"
+    cxx_class = "gem5::prefetch::AMDRIPRegionPrefetcher"
+    cxx_header = "mem/cache/prefetch/amd_rip_region.hh"
+
+    line_entry_entries = Param.Unsigned(
+        32, "Entries in the line entry training table")
+    region_history_entries = Param.Unsigned(
+        512, "Entries in the RIP/Addr[5:4] region history table")
+    negative_lines = Param.Unsigned(
+        4, "Cache lines before the home line covered by a region")
+    positive_lines = Param.Unsigned(
+        6, "Cache lines after the home line covered by a region")
+    rip_bits = Param.Unsigned(20, "Low RIP bits used by the predictor")
+    address_offset_shift = Param.Unsigned(
+        4, "First address bit in the line-alignment offset field")
+    address_offset_bits = Param.Unsigned(
+        2, "Number of line-alignment offset bits")
+    counter_bits = Param.Unsigned(
+        2, "Bits per region-history line-offset counter")
+    counter_threshold = Param.Unsigned(
+        2, "Minimum counter value required to issue a prefetch")
+    min_pattern_bits = Param.Unsigned(
+        2, "Minimum non-home lines needed to train a pseudo-random pattern")
+    use_requestor_id = Param.Bool(False, "Include requestor ID in matching")
+    degree = Param.Unsigned(10, "Maximum prefetches to generate per miss")
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
+
 class TaggedPrefetcher(QueuedPrefetcher):
     type = 'TaggedPrefetcher'
     cxx_class = 'gem5::prefetch::Tagged'
