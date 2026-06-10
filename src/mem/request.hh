@@ -94,6 +94,7 @@ enum PrefetchSourceType
     ARMOffsetBasedPointer,
     DSPatch,
     PatternMerging,
+    Kairos,
     Bingo,
     NUM_PF_SOURCES
 };
