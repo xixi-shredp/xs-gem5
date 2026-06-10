@@ -466,6 +466,59 @@ class AMDRIPRegionPrefetcher(QueuedPrefetcher):
     on_inst = False
 
 
+class AMDRegionTypePrefetcher(QueuedPrefetcher):
+    type = "AMDRegionTypePrefetcher"
+    cxx_class = "gem5::prefetch::AMDRegionTypePrefetcher"
+    cxx_header = "mem/cache/prefetch/amd_region_type.hh"
+
+    region_size = Param.Unsigned(2048, "Memory region size in bytes")
+    observation_entries = Param.Unsigned(
+        64, "Entries in the pattern observation table")
+    region_type_entries = Param.Unsigned(
+        512, "Entries in the region-address to region-type table")
+    recorded_pattern_entries = Param.Unsigned(
+        1024, "Entries in the region-type to recorded-pattern table")
+    observation_window = Param.Unsigned(
+        256, "Access-count window before completing an active observation")
+    observation_timeout = Param.Unsigned(
+        1024, "Idle access-count timeout before completing an observation")
+    duplicate_prefetch_window = Param.Unsigned(
+        32, "Access-count window suppressing duplicate pattern replays")
+    recorded_pattern_assoc = Param.Unsigned(
+        16, "Logical associativity for recorded-pattern way metadata")
+    region_type_candidates = Param.Unsigned(
+        2, "Candidate recorded patterns retained per region-type entry")
+    use_requestor_id = Param.Bool(
+        False, "Include RequestorID in region observation and mapping keys")
+    confidence_counter_bits = Param.Unsigned(
+        3, "Bits in recorded-pattern and region-type confidence counters")
+    initial_confidence = Param.Unsigned(
+        4, "Initial confidence for newly learned region-type mappings")
+    confidence_threshold = Param.Unsigned(
+        2, "Minimum confidence required before replaying a recorded pattern")
+    aging_interval = Param.Unsigned(
+        4096, "Access-count interval for confidence aging")
+    similarity_threshold = Param.Unsigned(
+        2, "Maximum exclusive Hamming distance for near pattern matching")
+    min_pattern_bits = Param.Unsigned(
+        2, "Minimum set subdivision bits required before installing a pattern")
+    degree = Param.Unsigned(8, "Maximum prefetches generated per trigger")
+    prefetch_distance = Param.Unsigned(
+        0, "Maximum byte distance from trigger; zero means full region")
+    merge_policy = Param.String(
+        "or", "Merge policy for matching patterns: or, and, or replace")
+    prefetch_current = Param.Bool(
+        False, "Allow replay to prefetch the triggering subdivision")
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
+    queue_squash = True
+    queue_filter = True
+    cache_snoop = True
+
+
 class TaggedPrefetcher(QueuedPrefetcher):
     type = 'TaggedPrefetcher'
     cxx_class = 'gem5::prefetch::Tagged'
