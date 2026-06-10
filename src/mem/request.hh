@@ -96,6 +96,7 @@ enum PrefetchSourceType
     PatternMerging,
     Kairos,
     Streamline,
+    FetchDirected,
     Bingo,
     NUM_PF_SOURCES
 };

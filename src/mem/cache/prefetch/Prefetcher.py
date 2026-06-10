@@ -1823,6 +1823,44 @@ class STeMSPrefetcher(QueuedPrefetcher):
     reconstruction_entries = Param.Unsigned(256,
         "Number of reconstruction entries")
 
+
+class FetchDirectedPrefetcher(BasePrefetcher):
+    type = "FetchDirectedPrefetcher"
+    cxx_class = "gem5::prefetch::FetchDirectedPrefetcher"
+    cxx_header = "mem/cache/prefetch/fdp.hh"
+    cxx_exports = [PyBindMethod("setCache")]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._cache = None
+
+    def regProbeListeners(self):
+        if self._cache:
+            self.getCCObject().setCache(self._cache.getCCObject())
+        super().regProbeListeners()
+
+    def registerCache(self, simObj):
+        if not isinstance(simObj, SimObject):
+            raise TypeError("argument must be a SimObject type")
+        self._cache = simObj
+
+    cpu = Param.BaseCPU(Parent.any, "The CPU to train the predictor")
+    latency = Param.Cycles(1, "Latency for generated prefetches")
+    pfq_size = Param.Unsigned(64, "Maximum number of queued prefetches")
+    tq_size = Param.Unsigned(64, "Maximum number of outstanding translations")
+    mark_req_as_prefetch = Param.Bool(
+        True,
+        "Mark FDP memory requests as prefetches",
+    )
+    squash_prefetches = Param.Bool(
+        True,
+        "Squash stale FDP prefetches when the training source supports it",
+    )
+    cache_snoop = Param.Bool(
+        True,
+        "Probe the cache before inserting FDP requests into the prefetch queue",
+    )
+
 class HWPProbeEventRetiredInsts(HWPProbeEvent):
     def register(self):
         if self.obj:
