@@ -1382,6 +1382,195 @@ class KairosPrefetcher(QueuedPrefetcher):
         "Initial LLC metadata ways; accepted for config compatibility",
     )
 
+
+class StreamlinePrefetcher(BasePrefetcher):
+    type = "StreamlinePrefetcher"
+    cxx_class = "gem5::prefetch::Streamline"
+    cxx_header = "mem/cache/prefetch/streamline.hh"
+
+    prefetch_on_access = True
+
+    training_unit_assoc = Param.Int(8, "Associativity of the training unit")
+    training_unit_entries = Param.MemorySize(
+        "256", "Number of per-PC training-unit entries"
+    )
+    metadata_store_assoc = Param.Int(
+        8, "Number of LLC ways reserved per active metadata set"
+    )
+    metadata_store_entries = Param.MemorySize(
+        "16384", "Maximum number of 64B metadata blocks in the store"
+    )
+    metadata_base_addr = Param.Addr(
+        0x8000000000, "Base address of the Streamline shadow metadata region"
+    )
+    metadata_line_stride = Param.Unsigned(
+        2048,
+        "Number of LLC cache lines separating Streamline partial-tag groups",
+    )
+    metadata_buffer_entries = Param.Int(
+        3, "Number of per-PC buffered metadata entries"
+    )
+    max_degree = Param.Int(4, "Maximum Streamline prefetch degree")
+    epoch_size = Param.Int(1024, "Per-PC instability epoch for degree control")
+    insertions_low_thresh = Param.Int(
+        400, "Insertion threshold for degree four"
+    )
+    insertions_mid_thresh = Param.Int(
+        600, "Insertion threshold for degree three"
+    )
+    insertions_high_thresh = Param.Int(
+        800, "Insertion threshold for degree two"
+    )
+    metadata_port = RequestPort(
+        "Dedicated request port for Streamline LLC metadata traffic"
+    )
+
+    @cxxMethod
+    def debugMetadataEntryTargetCount(self):
+        pass
+
+    @cxxMethod
+    def debugTriggerFields(self, trigger_hash):
+        pass
+
+    @cxxMethod
+    def debugDescribeStreamEntry(self, trigger_hash, targets):
+        pass
+
+    @cxxMethod
+    def debugAppendTrainingAddress(self, current_stream, address):
+        pass
+
+    @cxxMethod
+    def debugAlignStreams(self, old_stream, new_stream):
+        pass
+
+    @cxxMethod
+    def debugDegreeForInsertions(self, insertions, max_degree,
+                                 low_insertion_threshold,
+                                 mid_insertion_threshold,
+                                 high_insertion_threshold):
+        pass
+
+    @cxxMethod
+    def debugMetadataSetCount(self, metadata_entries, metadata_assoc):
+        pass
+
+    @cxxMethod
+    def debugActiveMetadataSetCount(self, partition_level, max_metadata_sets,
+                                    sample_set_count):
+        pass
+
+    @cxxMethod
+    def debugIsMetadataSetActive(self, metadata_set, partition_level,
+                                 max_metadata_sets, sample_set_count):
+        pass
+
+    @cxxMethod
+    def debugMetadataLineAddress(self, metadata_base, metadata_line_stride,
+                                 max_metadata_sets, metadata_set,
+                                 partial_tag):
+        pass
+
+    @cxxMethod
+    def debugRuntimeMetadataLineAddress(self, address):
+        pass
+
+    @cxxMethod
+    def debugChooseMetadataVictim(self, etrs, valids):
+        pass
+
+    @cxxMethod
+    def debugMetadataSamplerCoordinates(self, metadata_set):
+        pass
+
+    @cxxMethod
+    def debugTrainMetadataSampler(self, metadata_set, stream_entry, pc):
+        pass
+
+    @cxxMethod
+    def debugPredictMetadataSamplerEtr(self, metadata_set, stream_entry):
+        pass
+
+    @cxxMethod
+    def debugChooseMetadataVictimForEntries(self, metadata_set,
+                                            flattened_entries):
+        pass
+
+    @cxxMethod
+    def debugMetadataHitScore(self, accuracy):
+        pass
+
+    @cxxMethod
+    def debugSelectPartitionLevel(self, scores, current_level):
+        pass
+
+    @cxxMethod
+    def debugSampledPartitionLevel(self, metadata_set, max_metadata_sets,
+                                   sample_set_count):
+        pass
+
+    @cxxMethod
+    def debugPackMetadataBlock(self, entries):
+        pass
+
+    @cxxMethod
+    def debugUnpackMetadataBlock(self, packed_block):
+        pass
+
+    @cxxMethod
+    def debugUpdateMetadataBuffer(self, current_buffer, stream_entry,
+                                  buffer_entries):
+        pass
+
+    @cxxMethod
+    def debugPlanBufferedPrefetch(self, current_buffer, address, degree):
+        pass
+
+    @cxxMethod
+    def debugNeedsMetadataRead(self, current_buffer, address):
+        pass
+
+    @cxxMethod
+    def debugRecordPartitionSample(self, partition_level, score):
+        pass
+
+    @cxxMethod
+    def debugCurrentPartitionLevel(self):
+        pass
+
+    @cxxMethod
+    def debugCurrentPartitionLevelStat(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionTransitionCount(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionTransitionsStat(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionScores(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionSampledAccesses(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionUpdateInterval(self):
+        pass
+
+    @cxxMethod
+    def debugResetRuntimeState(self):
+        pass
+
+    @cxxMethod
+    def debugObserveAccess(self, pc, address):
+        pass
+
 class BingoPrefetcher(QueuedPrefetcher):
     # Paper: Bakhshalipour et al., HPCA 2019
     type = 'BingoPrefetcher'

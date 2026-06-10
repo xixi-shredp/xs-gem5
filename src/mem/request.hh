@@ -95,6 +95,7 @@ enum PrefetchSourceType
     DSPatch,
     PatternMerging,
     Kairos,
+    Streamline,
     Bingo,
     NUM_PF_SOURCES
 };

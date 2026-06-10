@@ -11,6 +11,10 @@ def _get_hwp(hwp_option):
     hwpClass = ObjectList.hwp_list.get(hwp_option)
     return hwpClass()
 
+def _set_param_if_present(obj, name, value):
+    if hasattr(obj, name):
+        setattr(obj, name, value)
+
 def create_prefetcher(cpu, cache_level, options):
     prefetcher_attr = '{}_hwp_type'.format(cache_level)
     prefetcher_name = ''
@@ -85,8 +89,11 @@ def create_prefetcher(cpu, cache_level, options):
             if hasattr(prefetcher, 'queue_filter'):
                 prefetcher.queue_filter = not pf_buffer_enabled
             if options.l1_to_l2_pf_hint:
-                prefetcher.queue_size = 64
-                prefetcher.max_prefetch_requests_with_pending_translation = 128
+                _set_param_if_present(prefetcher, 'queue_size', 64)
+                _set_param_if_present(
+                    prefetcher,
+                    'max_prefetch_requests_with_pending_translation',
+                    128)
         else:
             assert prefetcher_name == 'PrefetcherForwarder'
 
@@ -109,13 +116,19 @@ def create_prefetcher(cpu, cache_level, options):
             if hasattr(prefetcher, 'queue_filter'):
                 prefetcher.queue_filter = not pf_buffer_enabled
             if options.l1_to_l2_pf_hint:
-                prefetcher.queue_size = 32
-                prefetcher.max_prefetch_requests_with_pending_translation = 128
+                _set_param_if_present(prefetcher, 'queue_size', 32)
+                _set_param_if_present(
+                    prefetcher,
+                    'max_prefetch_requests_with_pending_translation',
+                    128)
 
     if cache_level == 'l3':
         if options.l2_to_l3_pf_hint:
-            prefetcher.queue_size = 64
-            prefetcher.max_prefetch_requests_with_pending_translation = 128
+            _set_param_if_present(prefetcher, 'queue_size', 64)
+            _set_param_if_present(
+                prefetcher,
+                'max_prefetch_requests_with_pending_translation',
+                128)
 
     # Propagate the pf-ahead master switches to every prefetcher (all levels).
     if getattr(options, 'no_pfahead', False) and hasattr(prefetcher, 'no_pfahead'):
