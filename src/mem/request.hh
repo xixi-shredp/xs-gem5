@@ -85,6 +85,7 @@ enum PrefetchSourceType
     CDP,
     SOpt,
     DespacitoStream,
+    AMDContiguousStream,
     Bingo,
     NUM_PF_SOURCES
 };

@@ -33,6 +33,7 @@ SimObject('Prefetcher.py', sim_objects=[
     'XSCompositePrefetcher', 'XSStridePrefetcher','OptPrefetcher','XsStreamPrefetcher',
     'BertiPrefetcher', 'CDP',
     'StridePrefetcherHashedSetAssociative', 'StridePrefetcher',
+    'AMDContiguousStreamPrefetcher',
     'TaggedPrefetcher', 'IndirectMemoryPrefetcher', 'SignaturePathPrefetcher',
     'SignaturePathPrefetcherV2', 'AccessMapPatternMatching', 'AMPMPrefetcher',
     'DeltaCorrelatingPredictionTables', 'DCPTPrefetcher',
@@ -65,6 +66,7 @@ Source('base.cc')
 Source('multi.cc')
 Source('bop.cc')
 Source('bingo.cc')
+Source('amd_contiguous_stream.cc')
 Source('delta_correlating_prediction_tables.cc')
 Source('irregular_stream_buffer.cc')
 Source('indirect_memory.cc')

@@ -417,6 +417,23 @@ class StridePrefetcher(QueuedPrefetcher):
     table_replacement_policy = Param.BaseReplacementPolicy(RandomRP(),
         "Replacement policy of the PC table")
 
+
+class AMDContiguousStreamPrefetcher(QueuedPrefetcher):
+    type = "AMDContiguousStreamPrefetcher"
+    cxx_class = "gem5::prefetch::AMDContiguousStreamPrefetcher"
+    cxx_header = "mem/cache/prefetch/amd_contiguous_stream.hh"
+
+    stream_entries = Param.Unsigned(16, "Active contiguous stream entries")
+    last_access_entries = Param.Unsigned(
+        16, "Recent accesses used to create new streams")
+    degree = Param.Unsigned(4, "Maximum prefetches per stream update")
+    use_requestor_id = Param.Bool(False, "Include requestor ID in matching")
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
+
 class TaggedPrefetcher(QueuedPrefetcher):
     type = 'TaggedPrefetcher'
     cxx_class = 'gem5::prefetch::Tagged'
