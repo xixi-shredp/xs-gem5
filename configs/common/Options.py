@@ -185,6 +185,10 @@ def addNoISAOptions(parser, configure_xiangshan=False):
 
     parser.add_argument("--no-pf", default=False,
                         action="store_true", help="L1 icache hardware prefetcher")
+    parser.add_argument("--pf-dse-config", default=None, type=str,
+                        help="pf-dse JSON config used to instantiate data prefetchers")
+    parser.add_argument("--pf-dse-strict-params", action="store_true", default=False,
+                        help="Fail when --pf-dse-config contains a SimObject parameter that xs-gem5 cannot apply")
     parser.add_argument("--l1i-hwp-type", default=None,
                         choices=ObjectList.hwp_list.get_names(), help="L1 icache hardware prefetcher")
     parser.add_argument("--l1d-hwp-type", default='XSCompositePrefetcher',

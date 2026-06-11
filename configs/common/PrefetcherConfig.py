@@ -1,3 +1,7 @@
+import importlib.util
+import os
+from pathlib import Path
+
 import m5
 from m5.objects import *
 from common.Caches import *
@@ -15,12 +19,75 @@ def _set_param_if_present(obj, name, value):
     if hasattr(obj, name):
         setattr(obj, name, value)
 
+
+def _prefetcher_type_name(prefetcher):
+    return str(getattr(prefetcher, 'type', prefetcher.__class__.__name__))
+
+
+_PF_DSE_HELPER_MODULE = None
+_PF_DSE_HELPER_PATH = None
+
+
+def _resolve_pf_dse_helper(config_path):
+    cfg_path = Path(config_path).expanduser().resolve()
+    candidates = []
+    if cfg_path.parent.name == 'configs':
+        candidates.append(cfg_path.parent.parent / 'gem5_py' / 'get-xs-gem5-pf-cfg.py')
+
+    pf_dse_root = os.environ.get('PF_DSE_ROOT')
+    if pf_dse_root:
+        candidates.append(Path(pf_dse_root).expanduser() / 'gem5_py' / 'get-xs-gem5-pf-cfg.py')
+
+    candidates.append(Path.home() / 'xs-env' / 'pf-dse' / 'gem5_py' / 'get-xs-gem5-pf-cfg.py')
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+
+    searched = ', '.join(str(candidate) for candidate in candidates)
+    raise RuntimeError('cannot locate pf-dse helper get-xs-gem5-pf-cfg.py; searched: ' + searched)
+
+
+def _load_pf_dse_helper(config_path):
+    global _PF_DSE_HELPER_MODULE, _PF_DSE_HELPER_PATH
+    helper_path = _resolve_pf_dse_helper(config_path)
+    if _PF_DSE_HELPER_MODULE is not None and _PF_DSE_HELPER_PATH == helper_path:
+        return _PF_DSE_HELPER_MODULE
+
+    spec = importlib.util.spec_from_file_location('pf_dse_xs_gem5_pf_cfg', str(helper_path))
+    if spec is None or spec.loader is None:
+        raise RuntimeError('cannot import pf-dse helper: ' + str(helper_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _PF_DSE_HELPER_MODULE = module
+    _PF_DSE_HELPER_PATH = helper_path
+    return module
+
+
+def _get_pf_dse_prefetcher(cpu, cache_level, options):
+    helper = _load_pf_dse_helper(options.pf_dse_config)
+    prefetcher = helper.create_prefetcher(
+        options.pf_dse_config,
+        cache_level,
+        cpu=cpu,
+        options=options,
+    )
+    return NULL if prefetcher is None else prefetcher
+
+
 def create_prefetcher(cpu, cache_level, options):
     prefetcher_attr = '{}_hwp_type'.format(cache_level)
     prefetcher_name = ''
     prefetcher = NULL
     pf_buffer_enabled = getattr(options, 'enable_pf_buffer', False)
-    if hasattr(options, prefetcher_attr):
+    pf_dse_config_used = False
+    if getattr(options, 'pf_dse_config', None) and cache_level in ('l1d', 'l2', 'l2_wrapper'):
+        prefetcher = _get_pf_dse_prefetcher(cpu, cache_level, options)
+        pf_dse_config_used = True
+        if prefetcher != NULL:
+            prefetcher_name = _prefetcher_type_name(prefetcher)
+            print(f"create_prefetcher at {cache_level}: {prefetcher_name} (pf-dse config)")
+    elif hasattr(options, prefetcher_attr):
         prefetcher_name = getattr(options, prefetcher_attr)
         prefetcher = _get_hwp(prefetcher_name)
         print(f"create_prefetcher at {cache_level}: {prefetcher_name}")
@@ -32,33 +99,33 @@ def create_prefetcher(cpu, cache_level, options):
     if prefetcher == NULL:
         return NULL
 
-    if prefetcher_name == 'IPOPMultiPrefetcher':
+    if not pf_dse_config_used and prefetcher_name == 'IPOPMultiPrefetcher':
         prefetcher.prefetchers = [
             BOPPrefetcher(is_sub_prefetcher=True),
             StridePrefetcher(is_sub_prefetcher=True),
         ]
 
-    if prefetcher_name == 'BanditPrefetcher':
+    if not pf_dse_config_used and prefetcher_name == 'BanditPrefetcher':
         prefetcher.prefetchers = [
             BOPPrefetcher(is_sub_prefetcher=True),
             StridePrefetcher(is_sub_prefetcher=True),
         ]
         prefetcher.arm_masks = [1, 2, 3]
 
-    if prefetcher_name == 'SandboxMultiPrefetchers':
+    if not pf_dse_config_used and prefetcher_name == 'SandboxMultiPrefetchers':
         prefetcher.prefetchers = [
             BOPPrefetcher(is_sub_prefetcher=True),
             StridePrefetcher(is_sub_prefetcher=True),
         ]
 
-    if prefetcher_name == "ReSemblePrefetcher":
+    if not pf_dse_config_used and prefetcher_name == "ReSemblePrefetcher":
         prefetcher.prefetchers = [
             BOPPrefetcher(is_sub_prefetcher=True),
             StridePrefetcher(is_sub_prefetcher=True),
         ]
         prefetcher.prediction_types = ["spatial", "temporal"]
 
-    if prefetcher_name == "AMDRegionStreamPrefetchers":
+    if not pf_dse_config_used and prefetcher_name == "AMDRegionStreamPrefetchers":
         prefetcher.stream_prefetcher = AMDContiguousStreamPrefetcher(
             is_sub_prefetcher=True
         )
@@ -69,7 +136,7 @@ def create_prefetcher(cpu, cache_level, options):
     if cpu != NULL:
         prefetcher.registerTLB(cpu.mmu.dtb, cpu.mmu.functional)
 
-    if prefetcher_name == 'XSCompositePrefetcher':
+    if not pf_dse_config_used and prefetcher_name == 'XSCompositePrefetcher':
         if options.l1d_enable_spp:
             prefetcher.enable_spp = True
         if options.l1d_enable_cplx:
@@ -107,7 +174,7 @@ def create_prefetcher(cpu, cache_level, options):
         if hasattr(prefetcher, 'queue_filter'):
             prefetcher.queue_filter = not pf_buffer_enabled
 
-    if cache_level == 'l2':
+    if not pf_dse_config_used and cache_level == 'l2':
         if options.classic_l2:
             if hasattr(prefetcher, 'enable_bop'):
                 prefetcher.enable_bop = True
@@ -131,7 +198,7 @@ def create_prefetcher(cpu, cache_level, options):
         else:
             assert prefetcher_name == 'PrefetcherForwarder'
 
-    if cache_level == 'l2_wrapper':
+    if not pf_dse_config_used and cache_level == 'l2_wrapper':
         if not options.classic_l2:
             if hasattr(prefetcher, 'enable_bop'):
                 prefetcher.enable_bop = True
@@ -156,7 +223,7 @@ def create_prefetcher(cpu, cache_level, options):
                     'max_prefetch_requests_with_pending_translation',
                     128)
 
-    if cache_level == 'l3':
+    if not pf_dse_config_used and cache_level == 'l3':
         if options.l2_to_l3_pf_hint:
             _set_param_if_present(prefetcher, 'queue_size', 64)
             _set_param_if_present(
