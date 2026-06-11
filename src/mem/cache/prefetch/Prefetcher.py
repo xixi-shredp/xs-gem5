@@ -2276,6 +2276,23 @@ class L2CompositeWithWorkerPrefetcher(CompositeWithWorkerPrefetcher):
     enable_cmc = Param.Bool(False, "Enable CMC")
     enable_despacito_stream = Param.Bool(True, "Enable despacito stream")
 
+class L2WorkerSlotPrefetcher(CompositeWithWorkerPrefetcher):
+    type = 'L2WorkerSlotPrefetcher'
+    cxx_class = 'gem5::prefetch::L2WorkerSlotPrefetcher'
+    cxx_header = "mem/cache/prefetch/l2_worker_slot.hh"
+
+    vbop = Param.BasePrefetcher(BOPPrefetcher(is_sub_prefetcher=True),
+                                "Virtual-address BOP slot")
+    pbop = Param.BasePrefetcher(SmallBOPPrefetcher(is_sub_prefetcher=True),
+                                "Physical-address BOP slot")
+    tp = Param.BasePrefetcher(DespacitoStreamPrefetcher(is_sub_prefetcher=True),
+                              "Temporal prefetcher slot")
+
+    enable_vbop = Param.Bool(True, "Enable VBOP slot")
+    enable_pbop = Param.Bool(True, "Enable PBOP slot")
+    enable_tp = Param.Bool(True, "Enable TP slot")
+
+
 class L3CompositeWithWorkerPrefetcher(CompositeWithWorkerPrefetcher):
     type = 'L3CompositeWithWorkerPrefetcher'
     cxx_class = 'gem5::prefetch::L3CompositeWithWorkerPrefetcher'
