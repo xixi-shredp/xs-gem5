@@ -58,13 +58,6 @@ def create_prefetcher(cpu, cache_level, options):
         ]
         prefetcher.prediction_types = ["spatial", "temporal"]
 
-    if prefetcher_name == "FetchDirectedPrefetcher":
-        prefetcher.cpu = cpu
-        prefetcher.on_data = False
-        prefetcher.on_inst = True
-        prefetcher.prefetch_on_access = True
-
-
     if prefetcher_name == "AMDRegionStreamPrefetchers":
         prefetcher.stream_prefetcher = AMDContiguousStreamPrefetcher(
             is_sub_prefetcher=True
@@ -74,10 +67,7 @@ def create_prefetcher(cpu, cache_level, options):
         )
 
     if cpu != NULL:
-        tlb = cpu.mmu.dtb
-        if prefetcher_name == "FetchDirectedPrefetcher" and hasattr(cpu.mmu, "itb"):
-            tlb = cpu.mmu.itb
-        prefetcher.registerTLB(tlb, cpu.mmu.functional)
+        prefetcher.registerTLB(cpu.mmu.dtb, cpu.mmu.functional)
 
     if prefetcher_name == 'XSCompositePrefetcher':
         if options.l1d_enable_spp:

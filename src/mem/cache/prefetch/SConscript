@@ -40,7 +40,6 @@ SimObject('Prefetcher.py', sim_objects=[
     'AMDRegionStreamPrefetchers', 'AMDRegionTypePrefetcher', 'AMDAOPPrefetcher',
     'ARMOffsetBasedPointerPrefetcher', 'ARMHintPrefetcher',
     'DSPatchPrefetcher', 'PatternMergingPrefetcher', 'KairosPrefetcher', 'StreamlinePrefetcher',
-    'FetchDirectedPrefetcher',
     'TaggedPrefetcher', 'IndirectMemoryPrefetcher', 'SignaturePathPrefetcher',
     'SignaturePathPrefetcherV2', 'AccessMapPatternMatching', 'AMPMPrefetcher',
     'AppleAMPMPrefetcher',
@@ -78,7 +77,6 @@ Source('base.cc')
 Source('pattern_merging.cc')
 Source('kairos.cc')
 Source('streamline.cc')
-Source('fdp.cc')
 Source('multi.cc')
 Source('ipop_multi.cc')
 Source('bandit.cc')
