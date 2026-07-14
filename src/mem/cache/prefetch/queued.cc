@@ -60,7 +60,9 @@ namespace prefetch
 
 void
 Queued::DeferredPacket::createPkt(Addr paddr, unsigned blk_size, RequestorID requestor_id, bool tag_prefetch, Tick t,
-                                  PrefetchSourceType pf_src, int prf_depth)
+                                  PrefetchSourceType pf_src, int prf_depth,
+                                  uint32_t distance, uint8_t preferred_level,
+                                  uint8_t issued_level)
 {
     // TODO: mark from BOP here
 
@@ -85,7 +87,8 @@ Queued::DeferredPacket::createPkt(Addr paddr, unsigned blk_size, RequestorID req
     }
 
     req->setFlags(Request::PREFETCH);
-    req->setXsMetadata(Request::XsMetadata(pf_src, prf_depth));
+    req->setXsMetadata(Request::XsMetadata(
+        pf_src, prf_depth, distance, preferred_level, issued_level));
     DPRINTFR(HWPrefetch, "Create prefetch request for paddr %lx from prefetcher %i\n", paddr, pf_src);
 
     if (pfInfo.isSecure()) {
@@ -474,8 +477,14 @@ Queued::translationComplete(DeferredPacket *dp, bool failed)
 
             } else {
                 Tick pf_time = curTick() + clockPeriod() * latency;
+                const auto metadata =
+                    it->translationRequest->getXsMetadata();
                 it->createPkt(target_paddr, blkSize, requestorId, tagPrefetch,
-                            pf_time, it->translationRequest->getPFSource(), it->translationRequest->getPFDepth());
+                            pf_time, it->translationRequest->getPFSource(),
+                            it->translationRequest->getPFDepth(),
+                            metadata.prefetchDistance,
+                            metadata.preferredPrefetchLevel,
+                            metadata.issuedPrefetchLevel);
                 addToQueue(pfq, *it);
             }
         } else {
@@ -552,7 +561,9 @@ Queued::alreadyInQueue(std::list<DeferredPacket> &queue,
 
 
 RequestPtr
-Queued::createPrefetchRequest(Addr addr, PrefetchInfo const &pfi, PacketPtr pkt, PrefetchSourceType pf_src, int pf_depth)
+Queued::createPrefetchRequest(Addr addr, PrefetchInfo const &pfi,
+    PacketPtr pkt, PrefetchSourceType pf_src, int pf_depth,
+    uint32_t distance, uint8_t preferred_level, uint8_t issued_level)
 {
     assert(pfi.hasContextId());
     RequestPtr translation_req = std::make_shared<Request>(
@@ -561,7 +572,8 @@ Queued::createPrefetchRequest(Addr addr, PrefetchInfo const &pfi, PacketPtr pkt,
     translation_req->setFlags(Request::PF_EXCLUSIVE);
     translation_req->setPFSource(pf_src);
     translation_req->setPFDepth(pf_depth);
-    translation_req->setXsMetadata(Request::XsMetadata(pf_src, pf_depth));
+    translation_req->setXsMetadata(Request::XsMetadata(
+        pf_src, pf_depth, distance, preferred_level, issued_level));
     DPRINTF(HWPrefetch, "Create prefetch request for vaddr %lx from prefetcher %i\n", addr, pf_src);
     assert(translation_req->hasXsMetadata());
     return translation_req;
@@ -621,14 +633,20 @@ Queued::insert(const PacketPtr &pkt, PrefetchInfo &new_pfi, const AddrPriority &
         }
         if (useVirtualAddresses) {
             has_target_pa = false;
-            translation_req = createPrefetchRequest(new_pfi.getAddr(), new_pfi, pkt, addr_prio.pfSource, addr_prio.depth);
+            translation_req = createPrefetchRequest(
+                new_pfi.getAddr(), new_pfi, pkt, addr_prio.pfSource,
+                addr_prio.depth, addr_prio.distance,
+                addr_prio.preferredLevel, addr_prio.issuedLevel);
         } else if (pkt->req->hasVaddr()) {
             has_target_pa = false;
             // Compute the target VA using req->getVaddr + stride
             Addr target_vaddr = positive_stride ?
                 (pkt->req->getVaddr() + stride) :
                 (pkt->req->getVaddr() - stride);
-            translation_req = createPrefetchRequest(target_vaddr, new_pfi, pkt, addr_prio.pfSource, addr_prio.depth);
+            translation_req = createPrefetchRequest(
+                target_vaddr, new_pfi, pkt, addr_prio.pfSource,
+                addr_prio.depth, addr_prio.distance,
+                addr_prio.preferredLevel, addr_prio.issuedLevel);
         } else {
             // Using PA for training but the request does not have a VA,
             // unable to process this page crossing prefetch.
@@ -658,7 +676,9 @@ Queued::insert(const PacketPtr &pkt, PrefetchInfo &new_pfi, const AddrPriority &
     if (has_target_pa) {
         Tick pf_time = curTick() + clockPeriod() * latency;
         dpp.createPkt(target_paddr, blkSize, requestorId, tagPrefetch,
-                      pf_time, addr_prio.pfSource, addr_prio.depth);
+                      pf_time, addr_prio.pfSource, addr_prio.depth,
+                      addr_prio.distance, addr_prio.preferredLevel,
+                      addr_prio.issuedLevel);
         DPRINTF(HWPrefetch, "Prefetch queued. "
                 "addr:%#x priority: %3d tick:%lld.\n",
                 new_pfi.getAddr(), priority, pf_time);

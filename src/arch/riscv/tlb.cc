@@ -110,13 +110,16 @@ TLB::TLB(const Params &p) :
     BaseTLB(p), is_dtlb(p.is_dtlb),is_L1tlb(p.is_L1tlb),isStage2(p.is_stage2),
     isTheSharedL2(p.is_the_sharedL2),
     enableL1DirectCompression(p.enable_l1_direct_compression),
+    dataPrefetchPteBufferSize(
+        p.is_dtlb && p.is_L1tlb ? p.data_prefetch_pte_buffer_size : 0),
     size(p.size),sizeBack(32),
     l2TlbL3Size(p.l2tlb_l3_size),
     l2TlbL2Size(p.l2tlb_l2_size),l2TlbL1Size(p.l2tlb_l1_size),
     l2TlbL0Size(p.l2tlb_l0_size),l2TlbSpSize(p.l2tlb_sp_size),
     L2TLB_L1_MASK(0),L2TLB_L0_MASK(0),
     regulationNum(p.regulation_num),
-    tlb(size),lruSeq(0),hitInSp(false),
+    tlb(size),lruSeq(0),
+    dataPrefetchPteBuffer(dataPrefetchPteBufferSize),hitInSp(false),
     hitPreEntry(0),hitPreNum(0),
     RemovePreUnused(0),AllPre(0),
     isOpenAutoNextLine(p.is_open_nextline),
@@ -136,6 +139,10 @@ TLB::TLB(const Params &p) :
     tlbL2Sp(l2TlbSpSize *l2tlbLineSize),
     forwardPre(forwardPreSize),backPre(32)
 {
+    for (size_t i = dataPrefetchPteBufferSize; i > 0; --i) {
+        dataPrefetchPteFreeList.push_back(i - 1);
+    }
+
     L2TLB_L1_MASK = (((uint64_t)1) << static_cast<int>(std::log2(l2TlbL1Size / L2L1LRU_NUM))) - 1;
     L2TLB_L0_MASK = (((uint64_t)1) << static_cast<int>(std::log2(l2TlbL0Size / L2L0LRU_NUM))) - 1;
 
@@ -181,6 +188,258 @@ TLB::TLB(const Params &p) :
                 "%d l2tlb_l0_size %d l2tlb_sp_size %d\n",
                 l2TlbL3Size, l2TlbL2Size, l2TlbL1Size, l2TlbL0Size, l2TlbSpSize);
     }
+}
+bool
+TLB::DataPrefetchPteKey::operator==(
+    const DataPrefetchPteKey &other) const
+{
+    return pageBase == other.pageBase && rootPpn == other.rootPpn &&
+           asid == other.asid && addrXlateMode == other.addrXlateMode &&
+           translateMode == other.translateMode && logBytes == other.logBytes;
+}
+
+size_t
+TLB::DataPrefetchPteKeyHash::operator()(
+    const DataPrefetchPteKey &key) const
+{
+    size_t seed = std::hash<Addr>{}(key.pageBase);
+    const auto combine = [&seed](size_t value) {
+        seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    };
+    combine(std::hash<Addr>{}(key.rootPpn));
+    combine(key.asid);
+    combine(key.addrXlateMode);
+    combine(key.translateMode);
+    combine(key.logBytes);
+    return seed;
+}
+
+TLB::DataPrefetchPteKey
+TLB::makeDataPrefetchPteKey(Addr vaddr, SATP satp,
+                            uint8_t translate_mode,
+                            unsigned log_bytes) const
+{
+    DataPrefetchPteKey key;
+    key.pageBase = vaddr & ~mask(log_bytes);
+    key.rootPpn = satp.ppn;
+    key.asid = satp.asid;
+    key.addrXlateMode = satp.mode;
+    key.translateMode = translate_mode;
+    key.logBytes = log_bytes;
+    return key;
+}
+
+bool
+TLB::isHardwareDataPrefetchRequest(const RequestPtr &req) const
+{
+    return is_dtlb && is_L1tlb && req && req->isPrefetchEx();
+}
+
+bool
+TLB::usesDataPrefetchPteBuffer(const RequestPtr &req) const
+{
+    return dataPrefetchPteBufferSize != 0 &&
+           isHardwareDataPrefetchRequest(req);
+}
+
+void
+TLB::touchDataPrefetchPteSlot(size_t idx)
+{
+    auto &slot = dataPrefetchPteBuffer[idx];
+    assert(slot.valid);
+    dataPrefetchPteLru.splice(dataPrefetchPteLru.begin(),
+                              dataPrefetchPteLru, slot.lruIt);
+    slot.lruIt = dataPrefetchPteLru.begin();
+}
+
+void
+TLB::removeDataPrefetchPteSlot(size_t idx, bool unused_eviction)
+{
+    auto &slot = dataPrefetchPteBuffer[idx];
+    assert(slot.valid);
+    dataPrefetchPteIndex.erase(slot.key);
+    dataPrefetchPteLru.erase(slot.lruIt);
+    slot.valid = false;
+    slot.entry.trieHandle = nullptr;
+    dataPrefetchPteFreeList.push_back(idx);
+    if (unused_eviction)
+        stats.dataPrefetchPteBufferUnusedEvictions++;
+}
+
+void
+TLB::clearDataPrefetchPteBuffer(bool count_flushes)
+{
+    const size_t entries = dataPrefetchPteIndex.size();
+    dataPrefetchPteIndex.clear();
+    dataPrefetchPteLru.clear();
+    dataPrefetchPteFreeList.clear();
+    for (size_t i = dataPrefetchPteBufferSize; i > 0; --i) {
+        auto &slot = dataPrefetchPteBuffer[i - 1];
+        slot.valid = false;
+        slot.entry.trieHandle = nullptr;
+        dataPrefetchPteFreeList.push_back(i - 1);
+    }
+    if (count_flushes)
+        stats.dataPrefetchPteBufferFlushes += entries;
+}
+
+void
+TLB::removeOverlappingDataPrefetchPteEntries(const TlbEntry &entry)
+{
+    for (size_t idx = 0; idx < dataPrefetchPteBuffer.size(); ++idx) {
+        auto &slot = dataPrefetchPteBuffer[idx];
+        if (!slot.valid || slot.key.translateMode != direct ||
+            slot.key.asid != entry.asid) {
+            continue;
+        }
+        if (entry.isCompressed && entry.level == 0 &&
+            slot.key.logBytes == PageShift) {
+            const Addr compressed_mask = ~mask(entry.logBytes);
+            if ((slot.key.pageBase & compressed_mask) !=
+                (entry.vaddr & compressed_mask)) {
+                continue;
+            }
+            const uint8_t sub_idx =
+                (slot.key.pageBase >> PageShift) & VADDR_CHOOSE_MASK;
+            if (!(entry.validIdx & (1 << sub_idx))) {
+                continue;
+            }
+        } else {
+            const unsigned overlap_log =
+                std::max<unsigned>(slot.key.logBytes, entry.logBytes);
+            const Addr overlap_mask = ~mask(overlap_log);
+            if ((slot.key.pageBase & overlap_mask) !=
+                (entry.vaddr & overlap_mask)) {
+                continue;
+            }
+        }
+        removeDataPrefetchPteSlot(idx, false);
+        stats.dataPrefetchPteBufferL1ConflictRemovals++;
+    }
+}
+
+void
+TLB::demapDataPrefetchPteBuffer(Addr vaddr, uint16_t asid)
+{
+    for (size_t idx = 0; idx < dataPrefetchPteBuffer.size(); ++idx) {
+        auto &slot = dataPrefetchPteBuffer[idx];
+        if (!slot.valid)
+            continue;
+        if (asid != 0 && slot.key.asid != asid)
+            continue;
+        const Addr page_mask = ~(slot.entry.size() - 1);
+        if (vaddr != 0 && (vaddr & page_mask) != slot.key.pageBase)
+            continue;
+        removeDataPrefetchPteSlot(idx, false);
+        stats.dataPrefetchPteBufferFlushes++;
+    }
+}
+
+TlbEntry *
+TLB::lookupDataPrefetchPteBuffer(Addr vaddr, SATP satp, bool promote)
+{
+    if (dataPrefetchPteBufferSize == 0 ||
+        (satp.mode != AddrXlateMode::SV39 &&
+         satp.mode != AddrXlateMode::SV48)) {
+        return nullptr;
+    }
+
+    stats.dataPrefetchPteBufferLookups++;
+    const int top_level = PTW_TOP_LEVEL(satp.mode);
+    for (int level = 0; level <= top_level; ++level) {
+        const unsigned log_bytes = PageShift + level * LEVEL_BITS;
+        const auto key = makeDataPrefetchPteKey(
+            vaddr, satp, direct, log_bytes);
+        auto found = dataPrefetchPteIndex.find(key);
+        if (found == dataPrefetchPteIndex.end())
+            continue;
+
+        const size_t idx = found->second;
+        touchDataPrefetchPteSlot(idx);
+        if (!promote) {
+            stats.dataPrefetchPteBufferPrefetchHits++;
+            return &dataPrefetchPteBuffer[idx].entry;
+        }
+
+        TlbEntry promoted_entry = dataPrefetchPteBuffer[idx].entry;
+        removeDataPrefetchPteSlot(idx, false);
+        stats.dataPrefetchPteBufferDemandHits++;
+        stats.dataPrefetchPteBufferPromotions++;
+        return insert(promoted_entry.vaddr, promoted_entry, false, direct);
+    }
+    return nullptr;
+}
+
+void
+TLB::insertDataPrefetchPteBuffer(const TlbEntry &entry, SATP satp)
+{
+    if (dataPrefetchPteBufferSize == 0 || entry.translateMode != direct)
+        return;
+
+    TlbEntry *l1_entry =
+        trie.lookup(buildKey(entry.vaddr, satp.asid, direct));
+    if (l1_entry && l1_entry->isCompressed) {
+        const uint8_t sub_idx =
+            (entry.vaddr >> PageShift) & VADDR_CHOOSE_MASK;
+        if (!(l1_entry->validIdx & (1 << sub_idx))) {
+            l1_entry = lookupL1CompressedFallback(
+                entry.vaddr, satp.asid, direct, l1_entry);
+        }
+    }
+    if (l1_entry) {
+        return;
+    }
+
+    const auto key = makeDataPrefetchPteKey(
+        entry.vaddr, satp, direct, entry.logBytes);
+    auto found = dataPrefetchPteIndex.find(key);
+    size_t idx;
+    if (found != dataPrefetchPteIndex.end()) {
+        idx = found->second;
+        auto &slot = dataPrefetchPteBuffer[idx];
+        slot.entry = entry;
+        slot.entry.trieHandle = nullptr;
+        touchDataPrefetchPteSlot(idx);
+    } else {
+        if (!dataPrefetchPteFreeList.empty()) {
+            idx = dataPrefetchPteFreeList.back();
+            dataPrefetchPteFreeList.pop_back();
+        } else {
+            assert(!dataPrefetchPteLru.empty());
+            idx = dataPrefetchPteLru.back();
+            removeDataPrefetchPteSlot(idx, true);
+            assert(dataPrefetchPteFreeList.back() == idx);
+            dataPrefetchPteFreeList.pop_back();
+        }
+        auto &slot = dataPrefetchPteBuffer[idx];
+        slot.key = key;
+        slot.entry = entry;
+        slot.entry.translateMode = direct;
+        slot.entry.trieHandle = nullptr;
+        slot.valid = true;
+        dataPrefetchPteLru.push_front(idx);
+        slot.lruIt = dataPrefetchPteLru.begin();
+        dataPrefetchPteIndex.emplace(key, idx);
+    }
+    stats.dataPrefetchPteBufferInserts++;
+}
+
+void
+TLB::recordDataPrefetchPteBufferPrefetchOnlyWalk()
+{
+    stats.dataPrefetchPteBufferPrefetchOnlyWalks++;
+}
+
+void
+TLB::recordDataPrefetchPteBufferDemandCoalesce()
+{
+    stats.dataPrefetchPteBufferDemandCoalesces++;
+}
+
+void
+TLB::recordDataPrefetchPteBufferTwoStageBypass()
+{
+    stats.dataPrefetchPteBufferTwoStageBypasses++;
 }
 
 Walker *
@@ -686,6 +945,10 @@ TLB::insert(Addr vpn, const TlbEntry &entry,bool squashed_update,uint8_t transla
                       translateMode);
     }
 
+    if (!squashed_update && translateMode == direct) {
+        removeOverlappingDataPrefetchPteEntries(entry);
+    }
+
     if (!squashed_update && enableL1DirectCompression &&
         translateMode == direct) {
         TlbEntry *merged_entry = prepareL1CompressedInsert(
@@ -962,6 +1225,7 @@ TLB::demapPage(Addr vpn, uint64_t asid)
 {
     DPRINTF(TLBGPre, "flush(vpn=%#x, asid=%#x)\n", vpn, asid);
     asid &= 0xFFFF;
+    demapDataPrefetchPteBuffer(vpn, asid);
 
     size_t i;
 
@@ -1126,6 +1390,7 @@ TLB::demapPageL2(Addr vpn, uint64_t asid)
 void
 TLB::flushAll()
 {
+    clearDataPrefetchPteBuffer(true);
     size_t i;
     if (is_L1tlb) {
         for (i = 0; i < size; i++) {
@@ -1849,8 +2114,25 @@ TLB::L2TLBSendRequest(Fault fault, TlbEntry *e_l2tlb, const RequestPtr &req,
             return std::make_pair(true, fault);
         }
         if (translation != nullptr &&
-            !walker->canStartPtwLevel(level, false, false, is_prefetch)) {
-            walker->enqueuePtwMiss(tc, translation, req, mode, from_miss_queue);
+            !walker->canStartPtwLevel(
+                level, false, false, is_prefetch,
+                isHardwareDataPrefetchRequest(req))) {
+            if (walker->dataPrefetchPtwThrottleEnabled() &&
+                walker->hasInFlightPtwWalks()) {
+                auto [coalesced, coalesce_fault] = walker->tryCoalesce(
+                    tc, translation, req, mode, true, e_l2tlb->asid,
+                    false, false);
+                if (coalesced) {
+                    delayed = true;
+                    return std::make_pair(true, coalesce_fault);
+                }
+            }
+            if (!walker->enqueuePtwMiss(tc, translation, req, mode,
+                                        from_miss_queue)) {
+                delayed = false;
+                return std::make_pair(
+                    true, std::make_shared<GenericPageTableFault>(vaddr));
+            }
             delayed = true;
             return std::make_pair(true, fault);
         }
@@ -2355,10 +2637,24 @@ TLB::doTwoStageTranslate(const RequestPtr &req, ThreadContext *tc,
                 int walk_level = req->get_h_gstage() ?
                     req->get_two_stage_level() : req->get_level();
                 if (translation != nullptr &&
-                    !walker->canStartPtwLevel(walk_level, false, false,
-                                              is_prefetch)) {
-                    walker->enqueuePtwMiss(tc, translation, req, mode,
-                                           from_miss_queue);
+                    !walker->canStartPtwLevel(
+                        walk_level, false, false, is_prefetch,
+                        isHardwareDataPrefetchRequest(req))) {
+                    if (walker->dataPrefetchPtwThrottleEnabled() &&
+                        walker->hasInFlightPtwWalks()) {
+                        auto [coalesced, coalesce_fault] =
+                            walker->tryCoalesce(tc, translation, req, mode,
+                                                false, 0, false, false);
+                        if (coalesced) {
+                            delayed = true;
+                            return coalesce_fault;
+                        }
+                    }
+                    if (!walker->enqueuePtwMiss(tc, translation, req, mode,
+                                                from_miss_queue)) {
+                        delayed = false;
+                        return std::make_shared<GenericPageTableFault>(vaddr);
+                    }
                     delayed = true;
                     return fault;
                 }
@@ -2395,7 +2691,7 @@ TLB::doTranslate(const RequestPtr &req, ThreadContext *tc,
     // If the incoming vaddr is non-canonical, it must raise a page fault and
     // STVAL should contain the *original* (non-canonical) vaddr.
     const Addr raw_vaddr = req->getVaddr();
-    Addr vaddr = VADDR_SEXT(satp.mode, raw_vaddr);
+    Addr vaddr = VADDR_CANONICALIZE(satp.mode, raw_vaddr);
     if ((satp.mode == AddrXlateMode::SV39 || satp.mode == AddrXlateMode::SV48) &&
         vaddr != raw_vaddr) {
         DPRINTF(TLB, "Non-canonical vaddr %#lx (canon %#lx), mode %d\n",
@@ -2425,6 +2721,10 @@ TLB::doTranslate(const RequestPtr &req, ThreadContext *tc,
         } else {
             stats.l1InitialLookupMisses++;
         }
+    }
+    if (!e[0] && dataPrefetchPteBufferSize != 0) {
+        e[0] = lookupDataPrefetchPteBuffer(
+            vaddr, satp, !usesDataPrefetchPteBuffer(req));
     }
     Addr paddr = 0;
     Fault fault = NoFault;
@@ -2613,9 +2913,23 @@ TLB::doTranslate(const RequestPtr &req, ThreadContext *tc,
                 return fault;
             }
             if (translation != nullptr &&
-                !walker->canStartPtwLevel(walk_level, false, false,
-                                          is_prefetch)) {
-                walker->enqueuePtwMiss(tc, translation, req, mode, from_miss_queue);
+                !walker->canStartPtwLevel(
+                    walk_level, false, false, is_prefetch,
+                    isHardwareDataPrefetchRequest(req))) {
+                if (walker->dataPrefetchPtwThrottleEnabled() &&
+                    walker->hasInFlightPtwWalks()) {
+                    auto [coalesced, coalesce_fault] = walker->tryCoalesce(
+                        tc, translation, req, mode, false, 0, false, false);
+                    if (coalesced) {
+                        delayed = true;
+                        return coalesce_fault;
+                    }
+                }
+                if (!walker->enqueuePtwMiss(tc, translation, req, mode,
+                                            from_miss_queue)) {
+                    delayed = false;
+                    return std::make_shared<GenericPageTableFault>(vaddr);
+                }
                 delayed = true;
                 return fault;
             }
@@ -2781,6 +3095,8 @@ TLB::translate(const RequestPtr &req, ThreadContext *tc,
             if ((hgatp.mode == NEMU_SATP_SV39 || vsatp.mode == NEMU_SATP_SV39
                 || hgatp.mode == NEMU_SATP_SV48 || vsatp.mode == NEMU_SATP_SV48)
                 && (pmode < PrivilegeMode::PRV_M)) {
+                if (!from_miss_queue && usesDataPrefetchPteBuffer(req))
+                    recordDataPrefetchPteBufferTwoStageBypass();
                 fault = doTwoStageTranslate(req, tc, translation, mode, delayed,
                                              from_miss_queue);
             } else {
@@ -2791,6 +3107,8 @@ TLB::translate(const RequestPtr &req, ThreadContext *tc,
         } else {
             two_stage_translation = hasTwoStageTranslation(tc, req, mode);
             if (two_stage_translation) {
+                if (!from_miss_queue && usesDataPrefetchPteBuffer(req))
+                    recordDataPrefetchPteBufferTwoStageBypass();
                 assert((vsatp.mode == NEMU_SATP_SV39) || (hgatp.mode == NEMU_SATP_SV39)
                        || (vsatp.mode == NEMU_SATP_SV48) || (hgatp.mode == NEMU_SATP_SV48));
                 fault = doTwoStageTranslate(req, tc, translation, mode, delayed,
@@ -3014,6 +3332,7 @@ TLB::serialize(CheckpointOut &cp) const
 void
 TLB::unserialize(CheckpointIn &cp)
 {
+    clearDataPrefetchPteBuffer(false);
     // Do not allow to restore with a smaller tlb.
     printf("unserialize\n");
     uint32_t _size;
@@ -3137,6 +3456,29 @@ TLB::TlbStats::TlbStats(statistics::Group *parent)
                "number of non-prefetch direct one-stage initial L1 lookup misses"),
       ADD_STAT(l1InitialCompressedHits, statistics::units::Count::get(),
                "number of non-prefetch direct one-stage initial L1 lookup hits served by compressed entries"),
+      ADD_STAT(dataPrefetchPteBufferLookups, statistics::units::Count::get(),
+               "direct one-stage lookups in the data-prefetch PTE buffer"),
+      ADD_STAT(dataPrefetchPteBufferDemandHits, statistics::units::Count::get(),
+               "demand hits in the data-prefetch PTE buffer"),
+      ADD_STAT(dataPrefetchPteBufferPrefetchHits, statistics::units::Count::get(),
+               "hardware data-prefetch hits in the PTE buffer"),
+      ADD_STAT(dataPrefetchPteBufferInserts, statistics::units::Count::get(),
+               "translations inserted into the data-prefetch PTE buffer"),
+      ADD_STAT(dataPrefetchPteBufferPromotions, statistics::units::Count::get(),
+               "PTE-buffer entries consumed and promoted by demand"),
+      ADD_STAT(dataPrefetchPteBufferUnusedEvictions, statistics::units::Count::get(),
+               "PTE-buffer entries evicted before demand promotion"),
+      ADD_STAT(dataPrefetchPteBufferFlushes, statistics::units::Count::get(),
+               "PTE-buffer entries removed by translation invalidation"),
+      ADD_STAT(dataPrefetchPteBufferL1ConflictRemovals,
+               statistics::units::Count::get(),
+               "PTE-buffer entries removed by overlapping L1 refills"),
+      ADD_STAT(dataPrefetchPteBufferPrefetchOnlyWalks, statistics::units::Count::get(),
+               "prefetch-only walks that refill the PTE buffer"),
+      ADD_STAT(dataPrefetchPteBufferDemandCoalesces, statistics::units::Count::get(),
+               "demand requests coalesced into prefetch-originated walks"),
+      ADD_STAT(dataPrefetchPteBufferTwoStageBypasses, statistics::units::Count::get(),
+               "two-stage data-prefetch translations bypassing the PTE buffer"),
       ADD_STAT(l2tlbRemove, statistics::units::Count::get(),
                "l2tlb remove"),
       ADD_STAT(l2tlbUsedRemove, statistics::units::Count::get(),

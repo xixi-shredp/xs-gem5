@@ -30,6 +30,35 @@ def _register_prefetcher_tlb(prefetcher, cpu):
     if cpu != NULL:
         prefetcher.registerTLB(cpu.mmu.dtb, cpu.mmu.functional)
 
+def create_centralized_endpoint(cache_level):
+    return CentralizedPrefetcherEndpoint(
+        cache_level=cache_level,
+        queue_size=32,
+        per_core_queue_size=8,
+        arbitration_width=1,
+        min_mshr_credits=1,
+    )
+
+def create_centralized_engine(cpu, core_id, l2_endpoint, l3_endpoint=NULL):
+    prefetcher = CentralizedDataPrefetcher(
+        core_id=core_id,
+        l2_endpoint=l2_endpoint,
+        l3_endpoint=l3_endpoint,
+        central_queue_size=64,
+        dispatch_width=1,
+        l1_distance_threshold=32,
+        l2_distance_threshold=128,
+        l1_min_mshr_credits=1,
+        train_on_store=False,
+    )
+    _register_prefetcher_tlb(prefetcher, cpu)
+    return prefetcher
+
+def configure_centralized_prefetch_translation(cpu):
+    cpu.mmu.dtb.data_prefetch_pte_buffer_size = 16
+    cpu.mmu.dtb.walker.enable_data_prefetch_ptw_throttle = True
+    cpu.mmu.dtb.walker.ptw_demand_reserve = 4
+
 def _configure_xs_composite_common(prefetcher, options):
     # Keep only option/profile-dependent overrides here. Stable model defaults
     # belong to XSCompositePrefetcher in Prefetcher.py.

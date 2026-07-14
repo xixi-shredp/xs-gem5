@@ -180,6 +180,8 @@ namespace RiscvISA
             bool preHitInPtw;
             bool fromPre;
             bool fromBackPre;
+            bool dataPrefetchPteBufferWalk;
+            bool dataPrefetchPteRefillPending;
             bool virt;
             int translateMode;
             bool inGstage;
@@ -210,7 +212,9 @@ namespace RiscvISA
                 gPaddr(0),vaddr_choose_flag(0),
                 tlbSizePte(0), openNextline(false), autoNextlineSign(false),
                 finishDefaultTranslate(false), preHitInPtw(false), fromPre(false),
-                fromBackPre(false),virt(0),translateMode(0),inGstage(false),finishGVA(false),
+                fromBackPre(false),dataPrefetchPteBufferWalk(false),
+                dataPrefetchPteRefillPending(false),virt(0),translateMode(0),
+                inGstage(false),finishGVA(false),
                 gpaddrMode(0),finishGPA(false),GstageFault(false),
                 tlbHit(false),tlbHitPte(0),tlbflags(Request::PHYSICAL),
                 waitingForPtwLevel(false), reservedPtwLevel(-1),
@@ -245,6 +249,7 @@ namespace RiscvISA
 
             bool anyRequestorSquashed() const;
             bool allRequestorSquashed() const;
+            bool isDemandWalk() const;
             Fault setupWalk(Addr ppn, Addr vaddr, int f_level, bool from_l2tlb,
                            bool open_nextline, bool auto_openNextline,
                            bool from_forward_pre_req, bool from_back_pre_req);
@@ -288,6 +293,7 @@ namespace RiscvISA
               TlbEntry *entry;
               TlbEntry *entryVsstage;
               TlbEntry *entryGstage;
+              SATP satp;
         };
         std::list<L2TlbState> L2TLBrequestors;
 
@@ -318,6 +324,13 @@ namespace RiscvISA
             statistics::Scalar ptwMemCount;
             statistics::Scalar ptwMemCycle;
             statistics::Formula ptwAvgMemLatency;
+            statistics::Scalar ptwDemandQueueEnqueues;
+            statistics::Scalar ptwPrefetchQueueEnqueues;
+            statistics::Scalar ptwPrefetchQueueDrops;
+            statistics::Scalar ptwDemandLevelBlocked;
+            statistics::Scalar ptwPrefetchLevelBlocked;
+            statistics::Scalar ptwDemandRetrySelections;
+            statistics::Scalar ptwPrefetchRetrySelections;
         } stats;
 
         struct WalkerSenderState : public Packet::SenderState
@@ -372,9 +385,11 @@ namespace RiscvISA
         bool openNextLine;
         bool autoOpenNextLine;
         bool enablePtwLevelLimit;
+        bool enableDataPrefetchPtwThrottle;
         std::array<unsigned, 4> ptwLevelLimit;
         std::array<unsigned, 4> ptwLevelActive;
         unsigned ptwMissQueueSize;
+        unsigned ptwDemandReserve;
         std::deque<MissQueueEntry> ptwMissQueue;
         std::deque<MissQueueEntry> ptwMissQueueWaiters;
         bool retryingPtwMissQueue;
@@ -390,6 +405,8 @@ namespace RiscvISA
         bool reservePtwLevel(WalkerState *state, int level);
         void releasePtwLevel(WalkerState *state);
         void retryPtwLevelBlockedStates();
+        bool hasPendingDemandPtwMiss() const;
+        void insertDemandPtwMiss(const MissQueueEntry &entry);
         bool ptwMissQueueHintMatch(const MissQueueEntry &entry,
                                    const TlbEntry &refill_entry,
                                    uint8_t translateMode) const;
@@ -421,15 +438,22 @@ namespace RiscvISA
         bool sendTiming(WalkerState * sendingState, PacketPtr pkt);
         bool usePtwLevelLimitForStart(bool from_forward_pre_req,
                                       bool from_back_pre_req,
-                                      bool is_prefetch) const;
+                                      bool is_prefetch,
+                                      bool is_data_prefetch) const;
         bool canStartPtwLevel(int level, bool from_forward_pre_req,
                               bool from_back_pre_req,
-                              bool is_prefetch);
+                              bool is_prefetch,
+                              bool is_data_prefetch);
         bool enqueuePtwMiss(ThreadContext *tc, BaseMMU::Translation *translation,
                             const RequestPtr &req, BaseMMU::Mode mode, bool front = false);
         bool hasPendingPtwMiss() const
         {
             return !ptwMissQueue.empty() || !ptwMissQueueWaiters.empty();
+        }
+        bool hasInFlightPtwWalks() const { return !currStates.empty(); }
+        bool dataPrefetchPtwThrottleEnabled() const
+        {
+            return enableDataPrefetchPtwThrottle;
         }
         void notifyTlbRefillHint(const TlbEntry &entry, uint8_t translateMode);
         void retryPtwMissQueue();
@@ -461,6 +485,8 @@ namespace RiscvISA
             openNextLine(params.open_nextline),
             autoOpenNextLine(true),
             enablePtwLevelLimit(params.enable_ptw_level_limit),
+            enableDataPrefetchPtwThrottle(
+                params.enable_data_prefetch_ptw_throttle),
             ptwLevelLimit({{
                 params.ptw_level0_limit,
                 params.ptw_level1_limit,
@@ -469,6 +495,7 @@ namespace RiscvISA
             }}),
             ptwLevelActive({{0, 0, 0, 0}}),
             ptwMissQueueSize(params.ptw_miss_queue_size),
+            ptwDemandReserve(params.ptw_demand_reserve),
             retryingPtwMissQueue(false),
             processingPtwMissQueueHint(false),
             ptwMissQueueHeadRequeued(false),
@@ -476,6 +503,11 @@ namespace RiscvISA
             outstandingPtwMemReqs(0),
             doL2TLBHitEvent([this]{dol2TLBHit();},name())
         {
+            if (enableDataPrefetchPtwThrottle) {
+                panic_if(ptwDemandReserve > ptwMissQueueSize,
+                         "PTW demand reserve %u exceeds miss queue size %u\n",
+                         ptwDemandReserve, ptwMissQueueSize);
+            }
         }
     };
 

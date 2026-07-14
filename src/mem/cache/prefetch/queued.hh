@@ -72,6 +72,9 @@ class Queued : public Base
         bool pfahead = false;
         int depth=0;
         PrefetchSourceType pfSource;
+        uint32_t distance = 0;
+        uint8_t preferredLevel = 0;
+        uint8_t issuedLevel = 0;
         PFTriggerInfo pf_trigger_info{};
         PrefetchCmd(Addr a, int32_t p) : addr(a), priority(p), isVA(true), isBOP(false)
         {
@@ -123,8 +126,8 @@ class Queued : public Base
          */
         DeferredPacket(Queued *o, PrefetchInfo const &pfi, Tick t,
             int32_t prio) : owner(o), pfInfo(pfi), tick(t), pkt(nullptr),
-            priority(prio), translationRequest(), tc(nullptr),
-            ongoingTranslation(false) {
+            priority(prio), pfahead(false), pfahead_host(0),
+            translationRequest(), tc(nullptr), ongoingTranslation(false) {
         }
 
         bool operator>(const DeferredPacket& that) const
@@ -152,7 +155,10 @@ class Queued : public Base
          * @param pf_desc prefetch info associated to this packet
          */
         void createPkt(Addr paddr, unsigned blk_size, RequestorID requestor_id,
-                       bool tag_prefetch, Tick t, PrefetchSourceType pf_src, int prf_depth);
+                       bool tag_prefetch, Tick t, PrefetchSourceType pf_src,
+                       int prf_depth, uint32_t distance = 0,
+                       uint8_t preferred_level = 0,
+                       uint8_t issued_level = 0);
 
         /**
          * Sets the translation request needed to obtain the physical address
@@ -303,7 +309,10 @@ class Queued : public Base
      */
     size_t getMaxPermittedPrefetches(size_t total) const;
 
-    RequestPtr createPrefetchRequest(Addr addr, PrefetchInfo const &pfi, PacketPtr pkt, PrefetchSourceType pf_src, int prf_depth);
+    RequestPtr createPrefetchRequest(Addr addr, PrefetchInfo const &pfi,
+        PacketPtr pkt, PrefetchSourceType pf_src, int prf_depth,
+        uint32_t distance = 0, uint8_t preferred_level = 0,
+        uint8_t issued_level = 0);
 
     unsigned offloadBandwidth{1};
 

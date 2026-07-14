@@ -134,6 +134,15 @@ PrefetcherForwarder::recvPrefetchFromCache(const PacketPtr &pkt)
     prefetch_queue.push(pkt);
 }
 
+void
+PrefetcherForwarder::notifyPrefetchResult(
+    const PacketPtr &pkt, bool admitted)
+{
+    if (real_pf) {
+        real_pf->notifyPrefetchResult(pkt, admitted);
+    }
+}
+
 PacketPtr
 PrefetcherForwarder::getPacket()
 {

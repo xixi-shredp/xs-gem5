@@ -59,6 +59,17 @@ struct CacheAccessor
     // cache level, l1 is 1, l2 is 2, etc.
     virtual unsigned level() const = 0;
 
+    /**
+     * Return the number of MSHRs currently available to prefetches for
+     * the cache containing the supplied address. This is a snapshot and
+     * does not reserve an entry. Accessors that do not expose admission
+     * state conservatively report no credits.
+     */
+    virtual unsigned prefetchMshrCredits(Addr) const { return 0; }
+
+    /** Notify the cache that its attached prefetcher has pending work. */
+    virtual void notifyPrefetchPending() {}
+
     /** Determine if address has been prefetched */
     virtual bool hasBeenPrefetched(Addr addr, bool is_secure) const = 0;
 
@@ -71,6 +82,9 @@ struct CacheAccessor
 
     /** Determine if address is in cache miss queue */
     virtual bool inMissQueue(Addr addr, bool is_secure) const = 0;
+
+    /** Determine if address is in the cache write queue */
+    virtual bool inWriteQueue(Addr, bool) const { return false; }
 
     /** Determine if cache is coalescing writes */
     virtual bool coalesce() const = 0;

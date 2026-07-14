@@ -999,6 +999,9 @@ class Base : public ClockedObject
 
     virtual void recvPrefetchFromCache(const PacketPtr &pkt) {}
 
+    /** Report whether a packet pulled from this prefetcher was admitted. */
+    virtual void notifyPrefetchResult(const PacketPtr &, bool) {}
+
     virtual void
     prefetchUnused(PrefetchSourceType pfSource)
     {

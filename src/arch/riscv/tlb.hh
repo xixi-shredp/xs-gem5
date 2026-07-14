@@ -34,7 +34,10 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <list>
+#include <unordered_map>
+#include <vector>
 
 #include "arch/generic/tlb.hh"
 #include "arch/riscv/isa.hh"
@@ -68,6 +71,7 @@ class TLB : public BaseTLB
     bool isStage2;
     bool isTheSharedL2;
     bool enableL1DirectCompression;
+    size_t dataPrefetchPteBufferSize;
     size_t size;
     size_t sizeBack;
     size_t l2TlbL3Size;
@@ -86,6 +90,37 @@ class TLB : public BaseTLB
     TlbEntryTrie trie;          // for quick access
     EntryList freeList;         // free entries
     uint64_t lruSeq;
+    struct DataPrefetchPteKey
+    {
+        Addr pageBase = 0;
+        Addr rootPpn = 0;
+        uint16_t asid = 0;
+        uint8_t addrXlateMode = 0;
+        uint8_t translateMode = 0;
+        uint8_t logBytes = 0;
+
+        bool operator==(const DataPrefetchPteKey &other) const;
+    };
+
+    struct DataPrefetchPteKeyHash
+    {
+        size_t operator()(const DataPrefetchPteKey &key) const;
+    };
+
+    struct DataPrefetchPteSlot
+    {
+        DataPrefetchPteKey key;
+        TlbEntry entry;
+        std::list<size_t>::iterator lruIt;
+        bool valid = false;
+    };
+
+    std::vector<DataPrefetchPteSlot> dataPrefetchPteBuffer;
+    std::unordered_map<DataPrefetchPteKey, size_t,
+                       DataPrefetchPteKeyHash> dataPrefetchPteIndex;
+    std::list<size_t> dataPrefetchPteLru;
+    std::vector<size_t> dataPrefetchPteFreeList;
+
     bool  hitInSp;
     uint64_t hitPreEntry;
     uint64_t hitPreNum;
@@ -171,6 +206,17 @@ class TLB : public BaseTLB
         statistics::Scalar l1InitialLookupHits;
         statistics::Scalar l1InitialLookupMisses;
         statistics::Scalar l1InitialCompressedHits;
+        statistics::Scalar dataPrefetchPteBufferLookups;
+        statistics::Scalar dataPrefetchPteBufferDemandHits;
+        statistics::Scalar dataPrefetchPteBufferPrefetchHits;
+        statistics::Scalar dataPrefetchPteBufferInserts;
+        statistics::Scalar dataPrefetchPteBufferPromotions;
+        statistics::Scalar dataPrefetchPteBufferUnusedEvictions;
+        statistics::Scalar dataPrefetchPteBufferFlushes;
+        statistics::Scalar dataPrefetchPteBufferL1ConflictRemovals;
+        statistics::Scalar dataPrefetchPteBufferPrefetchOnlyWalks;
+        statistics::Scalar dataPrefetchPteBufferDemandCoalesces;
+        statistics::Scalar dataPrefetchPteBufferTwoStageBypasses;
 
         statistics::Vector l2tlbRemove;
         statistics::Vector l2tlbUsedRemove;
@@ -264,6 +310,14 @@ class TLB : public BaseTLB
                                       const std::array<PTE, l2tlbLineSize> &ptes,
                                       uint8_t translateMode, int level);
     void recordL1CompressedEntry(const TlbEntry &entry);
+    bool isHardwareDataPrefetchRequest(const RequestPtr &req) const;
+    bool usesDataPrefetchPteBuffer(const RequestPtr &req) const;
+    TlbEntry *lookupDataPrefetchPteBuffer(Addr vaddr, SATP satp,
+                                          bool promote);
+    void insertDataPrefetchPteBuffer(const TlbEntry &entry, SATP satp);
+    void recordDataPrefetchPteBufferPrefetchOnlyWalk();
+    void recordDataPrefetchPteBufferDemandCoalesce();
+    void recordDataPrefetchPteBufferTwoStageBypass();
 
     Fault L2TLBPagefault(Addr vaddr, BaseMMU::Mode mode, const RequestPtr &req, bool is_pre, bool is_back_pre);
 
@@ -352,6 +406,14 @@ class TLB : public BaseTLB
   private:
     uint64_t nextSeq() { return ++lruSeq; }
     void updateL2TLBSeq(TlbEntryTrie *Trie_l2,Addr vpn,Addr step, uint16_t asid,uint8_t translateMode);
+    DataPrefetchPteKey makeDataPrefetchPteKey(
+        Addr vaddr, SATP satp, uint8_t translateMode,
+        unsigned log_bytes) const;
+    void touchDataPrefetchPteSlot(size_t idx);
+    void removeDataPrefetchPteSlot(size_t idx, bool unused_eviction);
+    void removeOverlappingDataPrefetchPteEntries(const TlbEntry &entry);
+    void clearDataPrefetchPteBuffer(bool count_flushes);
+    void demapDataPrefetchPteBuffer(Addr vaddr, uint16_t asid);
 
 
     void evictLRU();

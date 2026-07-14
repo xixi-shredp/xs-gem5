@@ -89,7 +89,21 @@ Walker::WalkerStats::WalkerStats(statistics::Group *parent)
                    statistics::units::Cycle,
                    statistics::units::Count>::get(),
                "Average PTW memory latency",
-               ptwMemCycle / ptwMemCount)
+               ptwMemCycle / ptwMemCount),
+      ADD_STAT(ptwDemandQueueEnqueues, statistics::units::Count::get(),
+               "demand translations admitted to the PTW miss queue"),
+      ADD_STAT(ptwPrefetchQueueEnqueues, statistics::units::Count::get(),
+               "hardware data-prefetch translations admitted to the PTW miss queue"),
+      ADD_STAT(ptwPrefetchQueueDrops, statistics::units::Count::get(),
+               "hardware data-prefetch translations dropped to preserve demand capacity"),
+      ADD_STAT(ptwDemandLevelBlocked, statistics::units::Count::get(),
+               "demand walks blocked by a PTW level token"),
+      ADD_STAT(ptwPrefetchLevelBlocked, statistics::units::Count::get(),
+               "hardware data-prefetch walks blocked by a PTW level token"),
+      ADD_STAT(ptwDemandRetrySelections, statistics::units::Count::get(),
+               "demand miss-queue entries selected for retry"),
+      ADD_STAT(ptwPrefetchRetrySelections, statistics::units::Count::get(),
+               "hardware data-prefetch miss-queue entries selected for retry")
 {
 }
 
@@ -152,27 +166,42 @@ Walker::retryPtwLevelBlockedStates()
         return;
 
     for (auto *walker_state : currStates) {
-        if (walker_state->retryBlockedPtwLevel())
-            break;
+        if (walker_state->isDemandWalk() &&
+            walker_state->retryBlockedPtwLevel())
+            return;
+    }
+    for (auto *walker_state : currStates) {
+        if (!walker_state->isDemandWalk() &&
+            walker_state->retryBlockedPtwLevel())
+            return;
     }
 }
 
 bool
 Walker::usePtwLevelLimitForStart(bool from_forward_pre_req,
                                  bool from_back_pre_req,
-                                 bool is_prefetch) const
+                                 bool is_prefetch,
+                                 bool is_data_prefetch) const
 {
-    return enablePtwLevelLimit && !from_forward_pre_req &&
-           !from_back_pre_req && !is_prefetch;
+    if (!enablePtwLevelLimit || from_forward_pre_req || from_back_pre_req)
+        return false;
+    if (!is_prefetch)
+        return true;
+    return enableDataPrefetchPtwThrottle && is_data_prefetch;
 }
 
 bool
 Walker::canStartPtwLevel(int level, bool from_forward_pre_req,
-                         bool from_back_pre_req, bool is_prefetch)
+                         bool from_back_pre_req, bool is_prefetch,
+                         bool is_data_prefetch)
 {
     if (!usePtwLevelLimitForStart(from_forward_pre_req, from_back_pre_req,
-                                  is_prefetch))
+                                  is_prefetch, is_data_prefetch))
         return true;
+
+    if (enableDataPrefetchPtwThrottle && is_data_prefetch &&
+        hasPendingDemandPtwMiss())
+        return false;
 
     panic_if(level < 0 || level >= static_cast<int>(ptwLevelLimit.size()),
              "Invalid PTW level %d\n", level);
@@ -248,6 +277,32 @@ Walker::notifyTlbRefillHint(const TlbEntry &entry, uint8_t translateMode)
 }
 
 bool
+Walker::hasPendingDemandPtwMiss() const
+{
+    if (!ptwMissQueueWaiters.empty())
+        return true;
+    for (const auto &entry : ptwMissQueue) {
+        if (!tlb->isHardwareDataPrefetchRequest(entry.req))
+            return true;
+    }
+    return false;
+}
+
+void
+Walker::insertDemandPtwMiss(const MissQueueEntry &entry)
+{
+    if (!enableDataPrefetchPtwThrottle) {
+        ptwMissQueue.push_back(entry);
+        return;
+    }
+    auto position = ptwMissQueue.begin();
+    while (position != ptwMissQueue.end() &&
+           !tlb->isHardwareDataPrefetchRequest(position->req))
+        ++position;
+    ptwMissQueue.insert(position, entry);
+}
+
+bool
 Walker::enqueuePtwMiss(ThreadContext *tc, BaseMMU::Translation *translation,
                        const RequestPtr &req, BaseMMU::Mode mode, bool front)
 {
@@ -260,7 +315,21 @@ Walker::enqueuePtwMiss(ThreadContext *tc, BaseMMU::Translation *translation,
     entry.req = req;
     entry.mode = mode;
 
+    const bool data_prefetch =
+        enableDataPrefetchPtwThrottle &&
+        tlb->isHardwareDataPrefetchRequest(req);
+    if (!front && data_prefetch) {
+        const size_t prefetch_capacity =
+            ptwMissQueueSize > ptwDemandReserve ?
+                ptwMissQueueSize - ptwDemandReserve : 0;
+        if (ptwMissQueue.size() >= prefetch_capacity) {
+            stats.ptwPrefetchQueueDrops++;
+            return false;
+        }
+    }
+
     if (!front && ptwMissQueue.size() >= ptwMissQueueSize) {
+        assert(!data_prefetch);
         ptwMissQueueWaiters.push_back(entry);
         DPRINTF(PageTableWalker,
                 "PTW MissQueue full, hold vaddr %#lx waiter size %u\n",
@@ -271,8 +340,12 @@ Walker::enqueuePtwMiss(ThreadContext *tc, BaseMMU::Translation *translation,
     if (front) {
         ptwMissQueue.push_front(entry);
         ptwMissQueueHeadRequeued = true;
-    } else {
+    } else if (data_prefetch) {
         ptwMissQueue.push_back(entry);
+        stats.ptwPrefetchQueueEnqueues++;
+    } else {
+        insertDemandPtwMiss(entry);
+        stats.ptwDemandQueueEnqueues++;
     }
     DPRINTF(PageTableWalker,
             "Enqueue PTW miss vaddr %#lx queue size %u\n",
@@ -288,8 +361,9 @@ Walker::retryPtwMissQueue()
 
     while (!ptwMissQueueWaiters.empty() &&
            ptwMissQueue.size() < ptwMissQueueSize) {
-        ptwMissQueue.push_back(ptwMissQueueWaiters.front());
+        insertDemandPtwMiss(ptwMissQueueWaiters.front());
         ptwMissQueueWaiters.pop_front();
+        stats.ptwDemandQueueEnqueues++;
     }
     if (ptwMissQueue.empty())
         return;
@@ -300,6 +374,11 @@ Walker::retryPtwMissQueue()
         ptwMissQueueHeadRequeued = false;
         MissQueueEntry entry = ptwMissQueue.front();
         ptwMissQueue.pop_front();
+        if (enableDataPrefetchPtwThrottle &&
+            tlb->isHardwareDataPrefetchRequest(entry.req))
+            stats.ptwPrefetchRetrySelections++;
+        else
+            stats.ptwDemandRetrySelections++;
         DPRINTF(PageTableWalker,
                 "Dequeue PTW miss vaddr %#lx queue size %u\n",
                 entry.req->getVaddr(), ptwMissQueue.size());
@@ -309,8 +388,9 @@ Walker::retryPtwMissQueue()
             break;
         while (!ptwMissQueueWaiters.empty() &&
                ptwMissQueue.size() < ptwMissQueueSize) {
-            ptwMissQueue.push_back(ptwMissQueueWaiters.front());
+            insertDemandPtwMiss(ptwMissQueueWaiters.front());
             ptwMissQueueWaiters.pop_front();
+            stats.ptwDemandQueueEnqueues++;
         }
     }
     retryingPtwMissQueue = false;
@@ -437,6 +517,7 @@ Walker::doL2TLBHitSchedule(const RequestPtr &req, ThreadContext *tc, BaseMMU::Tr
     l2state.entry = entry;
     l2state.entryVsstage = entryVsstage;
     l2state.entryGstage = entryGstage;
+    l2state.satp = tc->readMiscReg(MISCREG_SATP);
     L2TLBrequestors.push_back(l2state);
 }
 
@@ -499,12 +580,13 @@ Walker::WalkerPort::recvReqRetry()
 void
 Walker::recvReqRetry()
 {
-    std::list<WalkerState *>::iterator iter;
-    for (iter = currStates.begin(); iter != currStates.end(); iter++) {
-        WalkerState * walkerState = *(iter);
-        if (walkerState->isRetrying()) {
-            walkerState->retry();
-        }
+    for (auto *walker_state : currStates) {
+        if (walker_state->isDemandWalk() && walker_state->isRetrying())
+            walker_state->retry();
+    }
+    for (auto *walker_state : currStates) {
+        if (!walker_state->isDemandWalk() && walker_state->isRetrying())
+            walker_state->retry();
     }
 }
 
@@ -566,6 +648,8 @@ Walker::WalkerState::initState(ThreadContext *_tc, const RequestPtr &_req, BaseM
         vsatp = _tc->readMiscReg(MISCREG_VSATP);
         fromPre = false;
         fromBackPre = false;
+        dataPrefetchPteBufferWalk = false;
+        dataPrefetchPteRefillPending = false;
         translateMode = twoStageMode;
         hgatp = _tc->readMiscReg(MISCREG_HGATP);
         isHInst = _req->get_h_inst();
@@ -602,6 +686,9 @@ Walker::WalkerState::initState(ThreadContext *_tc, const RequestPtr &_req, BaseM
         mainReq->setLevel(PTW_TOP_LEVEL(satp.mode));
         fromPre = _from_forward_pre_req;
         fromBackPre = _from_back_pre_req;
+        dataPrefetchPteBufferWalk =
+            walker->tlb->usesDataPrefetchPteBuffer(_req);
+        dataPrefetchPteRefillPending = false;
         translateMode = defaultmode;
         hgatp = _tc->readMiscReg(MISCREG_HGATP);
         isHInst = false;
@@ -670,6 +757,11 @@ Walker::WalkerState::tryCoalesce(ThreadContext *_tc, BaseMMU::Translation *trans
             return std::make_pair(true, NoFault);
 
         } else {
+            if (dataPrefetchPteBufferWalk &&
+                !walker->tlb->usesDataPrefetchPteBuffer(req)) {
+                dataPrefetchPteBufferWalk = false;
+                walker->tlb->recordDataPrefetchPteBufferDemandCoalesce();
+            }
             if ((fromPre || fromBackPre) && (!from_forward_pre_req) && (!from_back_pre_req)) {
                 DPRINTF(PageTableWalker, "from_forward_pre_req be coalesced\n");
                 preHitInPtw = true;
@@ -721,13 +813,24 @@ Walker::dol2TLBHit()
         if (l2tlbFault == NoFault) {
             if (enableL1L2replace){ //write back entry from L2 to L1
                 if (dol2TLBHitrequestors.entry != nullptr) {
-                    TlbEntry l1_entry;
-                    if (tlb->isL1DirectCompressionEnabled() &&
-                        tlb->buildSingleL1CompressedEntry(dol2TLBHitrequestors.req->getVaddr(),
-                                                          *dol2TLBHitrequestors.entry, direct, l1_entry)) {
-                        tlb->insert(l1_entry.vaddr, l1_entry, false, direct);
-                        tlb->recordL1CompressedEntry(l1_entry);
-                    } else if (!tlb->isL1DirectCompressionEnabled()) {
+                    if (tlb->usesDataPrefetchPteBuffer(
+                            dol2TLBHitrequestors.req) &&
+                        !dol2TLBHitrequestors.req->get_two_stage_state()) {
+                        TlbEntry buffer_entry = *dol2TLBHitrequestors.entry;
+                        buffer_entry.translateMode = direct;
+                        tlb->insertDataPrefetchPteBuffer(
+                            buffer_entry, dol2TLBHitrequestors.satp);
+                    } else if (tlb->isL1DirectCompressionEnabled()) {
+                        TlbEntry l1_entry;
+                        if (tlb->buildSingleL1CompressedEntry(
+                                dol2TLBHitrequestors.req->getVaddr(),
+                                *dol2TLBHitrequestors.entry, direct,
+                                l1_entry)) {
+                            tlb->insert(
+                                l1_entry.vaddr, l1_entry, false, direct);
+                            tlb->recordL1CompressedEntry(l1_entry);
+                        }
+                    } else {
                         tlb->insert(dol2TLBHitrequestors.entry->vaddr, *dol2TLBHitrequestors.entry, false, direct);
                     }
                 }
@@ -1637,7 +1740,11 @@ Walker::WalkerState::stepWalk(PacketPtr &write)
 
         if (doTLBInsert) {  //write back L1
             if (!functional) {
-                if (((!entry.fromForwardPreReq) && (!entry.fromBackPreReq)) || (preHitInPtw)) {
+                if (dataPrefetchPteBufferWalk) {
+                    entry.translateMode = direct;
+                    dataPrefetchPteRefillPending = true;
+                } else if (((!entry.fromForwardPreReq) &&
+                            (!entry.fromBackPreReq)) || (preHitInPtw)) {
                     if (walker->tlb->isL1DirectCompressionEnabled()) {
                         std::array<PTE, l2tlbLineSize> l1_compress_ptes;
                         for (int compress_i = 0; compress_i < l2tlbLineSize; compress_i++) {
@@ -1837,10 +1944,29 @@ Walker::WalkerState::endWalk()
 bool
 Walker::WalkerState::usePtwLevelLimit() const
 {
-    return timing && (translateMode == defaultmode ||
-                      translateMode == twoStageMode) &&
-           !fromPre && !fromBackPre &&
-           mainReq && !mainReq->isPrefetch();
+    if (!timing || (translateMode != defaultmode &&
+                    translateMode != twoStageMode) ||
+        fromPre || fromBackPre || !mainReq) {
+        return false;
+    }
+    if (!mainReq->isPrefetch())
+        return true;
+    return walker->enableDataPrefetchPtwThrottle &&
+           walker->tlb->isHardwareDataPrefetchRequest(mainReq);
+}
+
+bool
+Walker::WalkerState::isDemandWalk() const
+{
+    if (!walker->enableDataPrefetchPtwThrottle || fromPre || fromBackPre)
+        return true;
+    for (const auto &requestor : requestors) {
+        if (requestor.req && !requestor.fromForwardPreReq &&
+            !requestor.fromBackPreReq &&
+            !walker->tlb->isHardwareDataPrefetchRequest(requestor.req))
+            return true;
+    }
+    return false;
 }
 
 int
@@ -1858,6 +1984,11 @@ Walker::WalkerState::waitForPtwLevel(int target_level, Addr next_read,
 {
     if (!usePtwLevelLimit())
         return false;
+
+    if (isDemandWalk())
+        walker->stats.ptwDemandLevelBlocked++;
+    else
+        walker->stats.ptwPrefetchLevelBlocked++;
 
     waitingForPtwLevel = true;
     blockedPtwLevel = target_level;
@@ -2322,6 +2453,7 @@ Walker::WalkerState::recvPacket(PacketPtr pkt)
                 "!nextline finished ptw for %#x finished Dec is %d\n",
                 (mainReq->getVaddr() >> 12) << 12,
                 (mainReq->getVaddr() >> 12) << 12);
+        bool data_prefetch_refilled = false;
         for (auto &r : requestors) {
             if ((!r.fromForwardPreReq) && (!r.fromBackPreReq)) {
                 if (mainFault == NoFault) {
@@ -2339,7 +2471,10 @@ Walker::WalkerState::recvPacket(PacketPtr pkt)
                         squashed_num++;
                     }
                     request_num++;
-                    Addr paddr = walker->tlb->translateWithTLB(vaddr, satp.asid, mode, direct);
+                    Addr paddr = dataPrefetchPteRefillPending ?
+                        walker->tlb->getEntryPaddr(&entry, vaddr) :
+                        walker->tlb->translateWithTLB(
+                            vaddr, satp.asid, mode, direct);
                     r.req->setPaddr(paddr);
                     walker->pma->check(r.req);
 
@@ -2361,6 +2496,12 @@ Walker::WalkerState::recvPacket(PacketPtr pkt)
                             r.translation->finish(mainFault, r.req, r.tc, mode);
                             return false;
                         }
+                    }
+                    if (dataPrefetchPteRefillPending &&
+                        !data_prefetch_refilled) {
+                        walker->tlb->insertDataPrefetchPteBuffer(entry, satp);
+                        walker->tlb->recordDataPrefetchPteBufferPrefetchOnlyWalk();
+                        data_prefetch_refilled = true;
                     }
                     // Let the CPU continue.
                     DPRINTF(PageTableWalker,
@@ -2397,6 +2538,7 @@ Walker::WalkerState::recvPacket(PacketPtr pkt)
             nextState = Waiting;
             return true;
         } else {
+            bool data_prefetch_refilled = false;
             for (auto &r : requestors) {
                 if (r.fromForwardPreReq != r.req->get_forward_pre_tlb()) {
                     panic( "wrong pref vaddr %lx prevaddr %lx\n", r.req->getVaddr(),r.req->getForwardPreVaddr());
@@ -2415,7 +2557,10 @@ Walker::WalkerState::recvPacket(PacketPtr pkt)
                         squashed_num++;
                     }
                     request_num++;
-                    Addr paddr = walker->tlb->translateWithTLB(vaddr, satp.asid, mode, direct);
+                    Addr paddr = dataPrefetchPteRefillPending ?
+                        walker->tlb->getEntryPaddr(&entry, vaddr) :
+                        walker->tlb->translateWithTLB(
+                            vaddr, satp.asid, mode, direct);
                     r.req->setPaddr(paddr);
                     walker->pma->check(r.req);
 
@@ -2425,6 +2570,13 @@ Walker::WalkerState::recvPacket(PacketPtr pkt)
                     mainFault =
                         walker->pmp->pmpCheck(r.req, mode, pmode, r.tc);
                     assert(mainFault == NoFault);
+
+                    if (dataPrefetchPteRefillPending &&
+                        !data_prefetch_refilled) {
+                        walker->tlb->insertDataPrefetchPteBuffer(entry, satp);
+                        walker->tlb->recordDataPrefetchPteBufferPrefetchOnlyWalk();
+                        data_prefetch_refilled = true;
+                    }
 
                     // Let the CPU continue.
                     DPRINTF(PageTableWalker,

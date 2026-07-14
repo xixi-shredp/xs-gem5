@@ -52,6 +52,8 @@ class RiscvPagetableWalker(ClockedObject):
     pma_checker = Param.PMAChecker(Parent.any, "PMA Checker")
     pmp = Param.PMP(Parent.any, "PMP")
     open_nextline = Param.Bool(True, "open nextline pre")
+    enable_data_prefetch_ptw_throttle = Param.Bool(False,
+            "Share PTW resources with hardware data prefetches")
     enable_ptw_level_limit = Param.Bool(True,
             "Enable one-stage direct PTW parallelism limits by walk level")
     ptw_level0_limit = Param.Unsigned(6, "PTW level-0 parallelism limit")
@@ -60,6 +62,8 @@ class RiscvPagetableWalker(ClockedObject):
     ptw_level3_limit = Param.Unsigned(1, "PTW level-3 parallelism limit")
     ptw_miss_queue_size = Param.Unsigned(40,
             "Number of pending one-stage direct PTW misses")
+    ptw_demand_reserve = Param.Unsigned(4,
+            "PTW miss queue entries reserved for demand translations")
 
 class RiscvTLB(BaseTLB):
     type = 'RiscvTLB'
@@ -91,6 +95,8 @@ class RiscvTLB(BaseTLB):
     l2tlb_line_size = Param.Int(8, "l2TLB_line size")
     enable_l1_direct_compression = Param.Bool(
         False, "enable L1 direct one-stage TLB compression")
+    data_prefetch_pte_buffer_size = Param.Unsigned(
+        0, "entries in the direct one-stage data-prefetch PTE buffer")
     regulation_num = Param.Int(70000, "train nextline num")
     arch_db = Param.ArchDBer(Parent.any, "Arch DB")
     walker = Param.RiscvPagetableWalker(\

@@ -383,37 +383,68 @@ class Request
         o3::XsDynInstMetaPtr instXsMetadata;
         PrefetchSourceType prefetchSource;
         int prefetchDepth;
+        uint32_t prefetchDistance;
+        uint8_t preferredPrefetchLevel;
+        uint8_t issuedPrefetchLevel;
 
         XsMetadata() :
             validXsMetadata(false),
             instXsMetadata(nullptr),
             prefetchSource(PF_NONE),
-            prefetchDepth(0) {}
+            prefetchDepth(0),
+            prefetchDistance(0),
+            preferredPrefetchLevel(0),
+            issuedPrefetchLevel(0) {}
 
         XsMetadata(o3::XsDynInstMetaPtr instMeta) :
             validXsMetadata(true),
             instXsMetadata(instMeta),
             prefetchSource(PF_NONE) ,
-            prefetchDepth(0) {}
+            prefetchDepth(0),
+            prefetchDistance(0),
+            preferredPrefetchLevel(0),
+            issuedPrefetchLevel(0) {}
 
         XsMetadata(PrefetchSourceType pfSource) :
             validXsMetadata(true),
             instXsMetadata(nullptr),
             prefetchSource(pfSource) ,
-            prefetchDepth(0) {}
+            prefetchDepth(0),
+            prefetchDistance(0),
+            preferredPrefetchLevel(0),
+            issuedPrefetchLevel(0) {}
 
         XsMetadata(PrefetchSourceType pfSource,int pfDepth) :
             validXsMetadata(true),
             instXsMetadata(nullptr),
             prefetchSource(pfSource) ,
-            prefetchDepth(pfDepth) {}
+            prefetchDepth(pfDepth),
+            prefetchDistance(0),
+            preferredPrefetchLevel(0),
+            issuedPrefetchLevel(0) {}
+
+        XsMetadata(PrefetchSourceType pfSource, int pfDepth,
+                   uint32_t distance, uint8_t preferredLevel,
+                   uint8_t issuedLevel) :
+            validXsMetadata(true),
+            instXsMetadata(nullptr),
+            prefetchSource(pfSource),
+            prefetchDepth(pfDepth),
+            prefetchDistance(distance),
+            preferredPrefetchLevel(preferredLevel),
+            issuedPrefetchLevel(issuedLevel) {}
 
         void invalidate() {
             validXsMetadata = false;
             instXsMetadata = nullptr;
             prefetchSource = PF_NONE;
+            prefetchDepth = 0;
+            prefetchDistance = 0;
+            preferredPrefetchLevel = 0;
+            issuedPrefetchLevel = 0;
         }
     } XsMetadata;
+
 
   private:
     typedef uint16_t PrivateFlagsType;

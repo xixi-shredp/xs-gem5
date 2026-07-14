@@ -132,12 +132,18 @@ class MSHRQueue : public Queue<MSHR>
         return allocated + extra >= numEntries - numReserve;
     }
 
+    unsigned prefetchCreditsWithExtraAllocated(int extra) const
+    {
+        // Preserve the legacy extra prefetch guard entry in addition to
+        // the queue overflow and demand reserves.
+        const int credits = numEntries - (numReserve + 1 + demandReserve) -
+            (allocated + extra);
+        return credits > 0 ? credits : 0;
+    }
+
     bool canPrefetchWithExtraAllocated(int extra) const
     {
-        // @todo we may want to revisit the +1, currently added to
-        // keep regressions unchanged
-        return allocated + extra < numEntries -
-            (numReserve + 1 + demandReserve);
+        return prefetchCreditsWithExtraAllocated(extra) > 0;
     }
 
     /**

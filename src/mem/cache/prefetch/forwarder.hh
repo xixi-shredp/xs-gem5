@@ -62,6 +62,7 @@ class PrefetcherForwarder : public Base
     void pfHitInWB(PrefetchSourceType pf_type) override;
 
     void recvPrefetchFromCache(const PacketPtr &pkt) override;
+    void notifyPrefetchResult(const PacketPtr &pkt, bool admitted) override;
 };
 
 } // namespace prefetch

@@ -280,6 +280,21 @@ inline Addr VADDR_SEXT(uint8_t addrXlateMode, Addr vaddr) {
     }
 }
 
+inline Addr
+VADDR_CANONICALIZE(uint8_t addrXlateMode, Addr vaddr)
+{
+    switch (addrXlateMode) {
+      case AddrXlateMode::BARE:
+        return vaddr;
+      case AddrXlateMode::SV39:
+        return Addr(szext<SV39_VADDR_BITS>(vaddr));
+      case AddrXlateMode::SV48:
+        return Addr(szext<SV48_VADDR_BITS>(vaddr));
+      default:
+        panic("addrXlateMode should be BARE/SV39/SV48.");
+    }
+}
+
 inline int64_t H_VADDR_MASK(uint8_t addrXlateMode) {
     switch(addrXlateMode){
         case AddrXlateMode::BARE : return ((int64_t)1 << H_SV48X4_VADDR_BITS) - 1;

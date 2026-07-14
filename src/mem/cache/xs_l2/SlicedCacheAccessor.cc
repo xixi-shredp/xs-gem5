@@ -25,6 +25,20 @@ SlicedCacheAccessor::level() const
     return l2_wrapper->cache_accessors[0]->level();
 }
 
+unsigned
+SlicedCacheAccessor::prefetchMshrCredits(Addr addr) const
+{
+    fatal_if(l2_wrapper->cache_accessors.empty(),
+             "No slice accessors available.");
+    return getSlice(addr)->prefetchMshrCredits(addr);
+}
+
+void
+SlicedCacheAccessor::notifyPrefetchPending()
+{
+    l2_wrapper->scheduleSendPrefetch();
+}
+
 bool
 SlicedCacheAccessor::hasBeenPrefetched(Addr addr, bool is_secure) const
 {
@@ -58,6 +72,13 @@ SlicedCacheAccessor::inMissQueue(Addr addr, bool is_secure) const
 {
     fatal_if(l2_wrapper->cache_accessors.empty(), "No slice accessors available.");
     return getSlice(addr)->inMissQueue(addr, is_secure);
+}
+
+bool
+SlicedCacheAccessor::inWriteQueue(Addr addr, bool is_secure) const
+{
+    fatal_if(l2_wrapper->cache_accessors.empty(), "No slice accessors available.");
+    return getSlice(addr)->inWriteQueue(addr, is_secure);
 }
 
 bool

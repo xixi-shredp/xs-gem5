@@ -39,7 +39,8 @@ SimObject('Prefetcher.py', sim_objects=[
     'IrregularStreamBufferPrefetcher', 'SlimAMPMPrefetcher',
     'WorkerPrefetcher', 'DespacitoStreamPrefetcher',
     'BOPPrefetcher', 'SBOOEPrefetcher', 'STeMSPrefetcher', 'PIFPrefetcher', 'IPCPrefetcher',
-    'CompositeWithWorkerPrefetcher', 'L2CompositeWithWorkerPrefetcher', 'PrefetcherForwarder'])
+    'CompositeWithWorkerPrefetcher', 'L2CompositeWithWorkerPrefetcher', 'PrefetcherForwarder',
+    'CentralizedPrefetcherEndpoint', 'CentralizedDataPrefetcher'])
 
 
 DebugFlag('BOPPrefetcher')
@@ -62,6 +63,7 @@ DebugFlag('DespacitoStreamPrefetcher')
 
 Source('access_map_pattern_matching.cc')
 Source('base.cc')
+Source('centralized.cc')
 Source('multi.cc')
 Source('bop.cc')
 Source('delta_correlating_prediction_tables.cc')

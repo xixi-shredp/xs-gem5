@@ -67,7 +67,10 @@ def _get_cache_opts(cpu, level, options):
         opts['assoc'] = getattr(options, assoc_attr)
 
     prefetcher_attr = '{}_hwp_type'.format(level)
-    if hasattr(options, prefetcher_attr) and (not options.no_pf):
+    centralized = getattr(options, 'centralized_data_prefetcher', False)
+    centralized_level = level in ('l1d', 'l2', 'l2_wrapper', 'l3')
+    if (hasattr(options, prefetcher_attr) and (not options.no_pf) and
+            not (centralized and centralized_level)):
         opts['prefetcher'] = create_prefetcher(cpu, level, options)
 
     return opts
@@ -138,8 +141,11 @@ def config_aligned_l2(options, system, l2_cache_class):
                                         for _ in range(num_l2_slices)]
         # Create the actual classic L2 cache that stores data
         for j in range(num_l2_slices):
-            system.l2_wrappers[i].slices[j].inner_cache = l2_cache_class(clk_domain=system.cpu_clk_domain,
-                                                            **_get_cache_opts(system.cpu[i], 'l2', options))
+            inner_opts = _get_cache_opts(system.cpu[i], 'l2', options)
+            if options.centralized_data_prefetcher:
+                inner_opts['prefetcher'] = PrefetcherForwarder()
+            system.l2_wrappers[i].slices[j].inner_cache = l2_cache_class(
+                clk_domain=system.cpu_clk_domain, **inner_opts)
 
     system.tol2bus_list = [L1ToL2Bus(
         clk_domain=system.cpu_clk_domain) for i in range(options.num_cpus)]
@@ -147,7 +153,9 @@ def config_aligned_l2(options, system, l2_cache_class):
     for i in range(options.num_cpus):
         l2_wrapper = system.l2_wrappers[i]
         xbar = l2_wrapper.xbar
-        if options.no_pf:
+        if options.centralized_data_prefetcher:
+            l2_wrapper.prefetcher = create_centralized_endpoint(2)
+        elif options.no_pf:
             l2_wrapper.prefetcher = NULL
         else:
             l2_wrapper.prefetcher = create_prefetcher(system.cpu[i], 'l2_wrapper', options)
@@ -167,7 +175,11 @@ def config_aligned_l2(options, system, l2_cache_class):
             l2_wrapper.addSliceAccessor(cache_slice)
 
             cache_slice.setCacheAccessor(inner_cache)
-            if not options.no_pf and options.l2_hwp_type == 'PrefetcherForwarder':
+            if options.centralized_data_prefetcher:
+                inner_cache.prefetcher.setRealPrefetcher(
+                    l2_wrapper.prefetcher)
+            elif (not options.no_pf and
+                    options.l2_hwp_type == 'PrefetcherForwarder'):
                 inner_cache.prefetcher.setRealPrefetcher(l2_wrapper.prefetcher)
 
             # Cut off the resources in inner_cache according to slice num
@@ -199,6 +211,16 @@ def config_aligned_l2(options, system, l2_cache_class):
         l2_wrapper.cpu_side = system.tol2bus_list[i].mem_side_ports
 
 def config_cache(options, system):
+    centralized = getattr(options, 'centralized_data_prefetcher', False)
+    if centralized:
+        if (options.no_pf or options.classic_l2 or not options.caches or
+                not options.l2cache or not options.kmh_align or
+                options.cacheline_size != 64 or
+                not is_pf_buffer_enabled(options)):
+            m5.fatal(
+                "--centralized-data-prefetcher requires enabled prefetching, "
+                "L1 caches, aligned KMH L2, 64-byte lines, and pf-buffer")
+
     if options.external_memory_system and (options.caches or options.l2cache):
         print("External caches and internal caches are exclusive options.\n")
         sys.exit(1)
@@ -268,8 +290,11 @@ def config_cache(options, system):
                 system.tol2bus_list[i].width = 256 # byte per cycle
 
         if options.l3cache:
+            l3_opts = _get_cache_opts(NULL, 'l3', options)
+            if centralized:
+                l3_opts['prefetcher'] = create_centralized_endpoint(3)
             system.l3 = L3Cache(clk_domain=system.cpu_clk_domain,
-                                        **_get_cache_opts(NULL, 'l3', options))
+                                **l3_opts)
             system.tol3bus = L2ToL3Bus(clk_domain=system.cpu_clk_domain)
             if not options.classic_l2:
                 # In Aligned L2, an extra 4 cycles are simulated in L2Cache Pipeline, instead of L2ToL3Bus
@@ -302,7 +327,15 @@ def config_cache(options, system):
     for i in range(options.num_cpus):
         if options.caches:
             icache = icache_class(**_get_cache_opts(system.cpu[i], 'l1i', options))
-            dcache = dcache_class(**_get_cache_opts(system.cpu[i], 'l1d', options))
+            dcache_opts = _get_cache_opts(system.cpu[i], 'l1d', options)
+            if centralized:
+                configure_centralized_prefetch_translation(system.cpu[i])
+                l3_endpoint = (system.l3.prefetcher
+                    if options.l3cache else NULL)
+                dcache_opts['prefetcher'] = create_centralized_engine(
+                    system.cpu[i], i, system.l2_wrappers[i].prefetcher,
+                    l3_endpoint)
+            dcache = dcache_class(**dcache_opts)
             if dcache.prefetcher != NULL and options.cpu_type == 'DerivO3CPU':
                 system.cpu[i].add_pf_downstream(dcache.prefetcher)
 
@@ -313,12 +346,14 @@ def config_cache(options, system):
             dcache.do_fast_writeline = not options.kmh_align
             dcache.pipe_latency = 3 if options.kmh_align else 0
             l2_prefetcher = system.l2_caches[i].prefetcher if options.classic_l2 else system.l2_wrappers[i].prefetcher
-            if (not options.no_pf) and options.l1_to_l2_pf_hint:
+            if (not centralized and not options.no_pf and
+                    options.l1_to_l2_pf_hint):
                 assert dcache.prefetcher != NULL and \
                     l2_prefetcher != NULL
                 dcache.prefetcher.add_pf_downstream(l2_prefetcher)
 
-            if (not options.no_pf) and options.l3cache and options.l2_to_l3_pf_hint:
+            if (not centralized and not options.no_pf and options.l3cache and
+                    options.l2_to_l3_pf_hint):
                 assert l2_prefetcher != NULL and \
                     system.l3.prefetcher != NULL
                 l2_prefetcher.add_pf_downstream(system.l3.prefetcher)

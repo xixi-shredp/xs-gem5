@@ -907,6 +907,25 @@ BaseCache::dcacheMainPipeCanPrefetch() const
         dcacheMainPipeHeldMSHRCredits);
 }
 
+unsigned
+BaseCache::prefetchMshrCredits(Addr) const
+{
+    return mshrQueue.prefetchCreditsWithExtraAllocated(
+        dcacheMainPipeHeldMSHRCredits);
+}
+
+void
+BaseCache::notifyPrefetchPending()
+{
+    if (prefetcher && dcacheMainPipeCanPrefetch() && !isBlocked()) {
+        const Tick next_pf_time =
+            std::max(nextPrefetchReadyTime(), clockEdge());
+        if (next_pf_time != MaxTick) {
+            schedMemSideSendEvent(next_pf_time);
+        }
+    }
+}
+
 void
 BaseCache::registerDcacheMainPipeLSQ(o3::LSQ *lsq)
 {
@@ -1496,6 +1515,7 @@ BaseCache::getNextQueueEntry()
                 prefetcher->pfHitInCache(pf_type);
                 if (pf_type == PrefetchSourceType::SStream)
                     prefetcher->streamPflate();
+                prefetcher->notifyPrefetchResult(pkt, false);
                 // free the request and packet
                 delete pkt;
             } else if (mshrQueue.findMatch(pf_addr, pkt->isSecure())) {
@@ -1504,6 +1524,7 @@ BaseCache::getNextQueueEntry()
                 prefetcher->pfHitInMSHR(pf_type);
                 if (pf_type == PrefetchSourceType::SStream)
                     prefetcher->streamPflate();
+                prefetcher->notifyPrefetchResult(pkt, false);
                 // free the request and packet
                 delete pkt;
             } else if (writeBuffer.findMatch(pf_addr, pkt->isSecure())) {
@@ -1512,6 +1533,7 @@ BaseCache::getNextQueueEntry()
                 prefetcher->pfHitInWB(pf_type);
                 if (pf_type == PrefetchSourceType::SStream)
                     prefetcher->streamPflate();
+                prefetcher->notifyPrefetchResult(pkt, false);
                 // free the request and packet
                 delete pkt;
             } else {
@@ -1525,6 +1547,7 @@ BaseCache::getNextQueueEntry()
                 // schedule the send
                 DPRINTF(HWPrefetch, "Allocating MSHR for prefetching addr %#x\n", pf_addr);
                 auto buf = allocateMissBuffer(pkt, curTick(), false);
+                prefetcher->notifyPrefetchResult(pkt, buf != nullptr);
                 return buf;
             }
             // if (prefetcher->hasHintsWaiting() && !memSidePort.hasSchedSendEvent()) {

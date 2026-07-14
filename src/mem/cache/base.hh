@@ -1675,6 +1675,10 @@ public:
 
     unsigned level() const override { return cacheLevel; }
 
+    unsigned prefetchMshrCredits(Addr) const override;
+
+    void notifyPrefetchPending() override;
+
     bool hasBeenPrefetched(Addr addr, bool is_secure) const override
     {
         CacheBlk *block = tags->findBlock(addr, is_secure);
@@ -1715,6 +1719,10 @@ public:
 
     bool inMissQueue(Addr addr, bool is_secure) const override {
         return mshrQueue.findMatch(addr, is_secure);
+    }
+
+    bool inWriteQueue(Addr addr, bool is_secure) const override {
+        return writeBuffer.findMatch(addr, is_secure);
     }
 
     bool coalesce() const override;

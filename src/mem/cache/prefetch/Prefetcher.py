@@ -1255,6 +1255,79 @@ class XSCompositePrefetcher(QueuedPrefetcher):
     enable_spp = Param.Bool(False, "Enable SPP component")
     enable_opt = Param.Bool(False,"Enable opt component")
 
+class CentralizedPrefetcherEndpoint(QueuedPrefetcher):
+    type = "CentralizedPrefetcherEndpoint"
+    cxx_class = "gem5::prefetch::CentralizedPrefetcherEndpoint"
+    cxx_header = "mem/cache/prefetch/centralized.hh"
+
+    is_sub_prefetcher = True
+    use_virtual_addresses = True
+    on_read = False
+    on_write = False
+    on_data = False
+    on_inst = False
+    queue_size = 32
+    max_prefetch_requests_with_pending_translation = 32
+    queue_squash = False
+    use_pf_buffer = False
+
+    cache_level = Param.Unsigned(2, "Cache level served by this endpoint")
+    min_mshr_credits = Param.Unsigned(
+        1, "Minimum target-slice MSHR credits required")
+    per_core_queue_size = Param.Unsigned(
+        8, "Maximum ingress candidates buffered per core")
+    arbitration_width = Param.Unsigned(
+        1, "Per-cycle per-core ingress arbitration width")
+
+
+class CentralizedDataPrefetcher(XSCompositePrefetcher):
+    type = "CentralizedDataPrefetcher"
+    cxx_class = "gem5::prefetch::CentralizedDataPrefetcher"
+    cxx_header = "mem/cache/prefetch/centralized.hh"
+
+    use_virtual_addresses = True
+    use_pf_buffer = True
+    prefetch_train = False
+    queue_squash = False
+    queue_filter = True
+    queue_size = 32
+    max_prefetch_requests_with_pending_translation = 32
+
+    enable_activepage = False
+    enable_pht = True
+    enable_sstride = True
+    enable_xsstream = True
+    enable_bop = True
+    enable_temporal = True
+    enable_berti = False
+    enable_cplx = False
+    enable_spp = False
+    enable_opt = False
+
+    bop_large = XSVirtualLargeBOP(
+        is_sub_prefetcher=True, enable_adaptoffset=False)
+    bop_small = XSPhysicalSmallBOP(
+        is_sub_prefetcher=True, enable_adaptoffset=False)
+
+    l2_endpoint = Param.CentralizedPrefetcherEndpoint(
+        NULL, "Passive L2 injection endpoint")
+    l3_endpoint = Param.CentralizedPrefetcherEndpoint(
+        NULL, "Optional passive shared-L3 injection endpoint")
+    central_queue_size = Param.Unsigned(
+        64, "Ready plus translating centralized candidates")
+    dispatch_width = Param.Unsigned(
+        1, "Candidates considered by the dispatcher each cycle")
+    l1_distance_threshold = Param.Unsigned(
+        32, "Maximum L1 preferred distance in cache lines")
+    l2_distance_threshold = Param.Unsigned(
+        128, "Maximum L2 preferred distance in cache lines")
+    l1_min_mshr_credits = Param.Unsigned(
+        1, "Minimum L1 MSHR credits required")
+    core_id = Param.Unsigned(0, "Stable core ID for shared endpoint RR")
+    train_on_store = Param.Bool(
+        False, "Allow committed store requests to train the central engine")
+
+
 class MultiPrefetcher(BasePrefetcher):
     type = 'MultiPrefetcher'
     cxx_class = 'gem5::prefetch::Multi'

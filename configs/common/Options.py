@@ -171,6 +171,9 @@ def addNoISAOptions(parser, configure_xiangshan=False):
 
     parser.add_argument("--no-pf", default=False,
                         action="store_true", help="L1 icache hardware prefetcher")
+    parser.add_argument(
+        "--centralized-data-prefetcher", action="store_true", default=False,
+        help="use the aligned-KMH centralized data prefetch framework")
     parser.add_argument("--l1i-hwp-type", default=None,
                         choices=ObjectList.hwp_list.get_names(), help="L1 icache hardware prefetcher")
     parser.add_argument("--l1d-hwp-type", default='XSCompositePrefetcher',

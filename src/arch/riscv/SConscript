@@ -43,6 +43,9 @@
 
 Import('*')
 
+if env['TARGET_ISA'] == 'riscv':
+    GTest('pagetable.test', 'pagetable.test.cc')
+
 Source('decoder.cc', tags='riscv isa')
 Source('faults.cc', tags='riscv isa')
 Source('isa.cc', tags='riscv isa')

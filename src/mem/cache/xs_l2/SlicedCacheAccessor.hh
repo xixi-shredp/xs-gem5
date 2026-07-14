@@ -25,11 +25,14 @@ public:
 
     bool inCache(Addr addr, bool is_secure) const override;
     unsigned level() const override;
+    unsigned prefetchMshrCredits(Addr addr) const override;
+    void notifyPrefetchPending() override;
     bool hasBeenPrefetched(Addr addr, bool is_secure) const override;
     bool hasBeenPrefetched(Addr addr, bool is_secure, RequestorID requestor) const override;
     bool hasEverBeenPrefetched(Addr addr, bool is_secure) const override;
     Request::XsMetadata getHitBlkXsMetadata(PacketPtr pkt) override;
     bool inMissQueue(Addr addr, bool is_secure) const override;
+    bool inWriteQueue(Addr addr, bool is_secure) const override;
     bool coalesce() const override;
     const uint8_t* findBlock(Addr addr, bool is_secure) const override;
 };
