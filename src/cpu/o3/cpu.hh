@@ -417,6 +417,7 @@ class CPU : public BaseCPU
     ListIt squashInstIt(ListIt &instIt, ThreadID tid);
 
     // flush fetch buffer while flushing tlb
+    void invalidateMopCache(Fetch::MopInvalidationReason reason);
     void flushTLBs() override;
 
     /** Cleans up all instructions on the remove list. */

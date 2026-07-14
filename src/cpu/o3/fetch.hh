@@ -54,6 +54,8 @@
 #include "cpu/o3/comm.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/limits.hh"
+#include "cpu/o3/mop_cache.hh"
+#include "cpu/o3/smt_sched.hh"
 #include "cpu/pc_event.hh"
 #include "cpu/pred/bpred_unit.hh"
 #include "cpu/pred/btb/decoupled_bpred.hh"
@@ -65,7 +67,6 @@
 #include "mem/port.hh"
 #include "sim/eventq.hh"
 #include "sim/probe/probe.hh"
-#include "cpu/o3/smt_sched.hh"
 
 namespace gem5
 {
@@ -278,6 +279,9 @@ class Fetch
     /** Trace-mode status (delegated to TraceFetch). */
     bool isTraceMode() const;
     bool isTraceEOF() const;
+
+    enum class MopInvalidationReason { FenceI, TlbFlush, Takeover };
+    void invalidateMopCache(MopInvalidationReason reason);
 
     /** Clear all thread-specific states*/
     void clearStates(ThreadID tid);
@@ -561,6 +565,10 @@ class Fetch
      */
     void performInstructionFetch(ThreadID tid);
 
+    MopContext currentMopContext(ThreadID tid) const;
+    bool startMopLookup(ThreadID tid, const PCStateBase &pc);
+    void cancelMopLookup(ThreadID tid, bool count_squash);
+
 
     /**
      * Processes a single instruction, including decoding, building the
@@ -573,7 +581,8 @@ class Fetch
      */
     bool
     processSingleInstruction(ThreadID tid, PCStateBase &pc,
-                             StaticInstPtr &curMacroop);
+                             StaticInstPtr &curMacroop,
+                             const MopEntry *cached_entry = nullptr);
 
     /**
      * Checks if the decoder requires more memory to proceed and fetches
@@ -634,6 +643,35 @@ class Fetch
 
     /** Trace-mode implementation owner (optional, enabled by params). */
     std::unique_ptr<TraceFetch> traceFetch;
+
+    std::unique_ptr<MopCache> mopCache;
+    const Cycles mopCacheLookupLatency;
+    struct MopLookupState
+    {
+        bool pending = false;
+        bool accounted = false;
+        Tick readyTick = 0;
+        uint64_t ftqId = 0;
+        Addr startPC = 0;
+        MopContext context;
+        MopCache::LookupResult result;
+        size_t cursor = 0;
+        SquashVersion squashVersion{};
+
+        void
+        reset()
+        {
+            pending = false;
+            accounted = false;
+            readyTick = 0;
+            ftqId = 0;
+            startPC = 0;
+            context = {};
+            result = {};
+            cursor = 0;
+        }
+    };
+    MopLookupState mopLookup[MaxThreads];
 
     /** PC of each thread. */
     // std::unique_ptr<PCStateBase> pc[MaxThreads];
@@ -1126,6 +1164,24 @@ class Fetch
         statistics::Distribution resolveEnqueueCount;
         /** Stat for entry occupancy distribution of the resolve queue. */
         statistics::Distribution resolveQueueOccupancy;
+
+        statistics::Scalar mopCacheLookups;
+        statistics::Scalar mopCacheHits;
+        statistics::Scalar mopCacheMisses;
+        statistics::Scalar mopCacheSuppliedInsts;
+        statistics::Scalar mopCacheAvoidedICacheRequests;
+        statistics::Scalar mopCacheFallbackRequests;
+        statistics::Scalar mopCachePendingCycles;
+        statistics::Scalar mopCachePortConflicts;
+        statistics::Scalar mopCacheFills;
+        statistics::Scalar mopCacheFillDrops;
+        statistics::Scalar mopCacheEvictions;
+        statistics::Scalar mopCacheSquashedResponses;
+        statistics::Scalar mopCacheStaleResponses;
+        statistics::Scalar mopCacheInvalidations;
+        statistics::Scalar mopCacheFenceIInvalidations;
+        statistics::Scalar mopCacheTlbInvalidations;
+        statistics::Scalar mopCacheTakeoverInvalidations;
 
         // Trace metadata accounting (trace mode)
         /** Number of stored trace metadata records (seqNum -> traceInst). */

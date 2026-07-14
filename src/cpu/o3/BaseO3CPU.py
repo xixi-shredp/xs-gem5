@@ -127,6 +127,13 @@ class BaseO3CPU(BaseCPU):
     fetchBufferSize = Param.Unsigned(66, "Fetch buffer size in bytes")
     fetchQueueSize = Param.Unsigned(48, "Fetch queue size in micro-ops "
                                     "per-thread")
+    enableMopCache = Param.Bool(False, "Enable the decoded MOP cache")
+    mopCacheEntries = Param.Unsigned(1024, "Number of MOP cache entries")
+    mopCacheWays = Param.Unsigned(4, "MOP cache associativity")
+    mopCacheLookupWidth = Param.Unsigned(8, "MOP cache lookup width")
+    mopCacheLookupLatency = Param.Cycles(1, "MOP cache lookup latency")
+    mopCacheReadPorts = Param.Unsigned(1, "MOP cache read ports")
+    mopCacheFillWidth = Param.Unsigned(8, "MOP cache fill width")
 
     renameToDecodeDelay = Param.Cycles(1, "Rename to decode delay")
     iewToDecodeDelay = Param.Cycles(1, "Issue/Execute/Writeback to decode "

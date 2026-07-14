@@ -584,7 +584,8 @@ decode QUADRANT {
                 0x0: fence({{
                 }}, uint64_t, IsReadBarrier, IsWriteBarrier, MemReadOp);
                 0x1: fence_i({{
-                }}, uint64_t, IsNonSpeculative, IsSerializeAfter, No_OpClass);
+                }}, uint64_t, IsNonSpeculative, IsSerializeAfter,
+                    IsInstCacheInvalidate, No_OpClass);
             }
         }
 

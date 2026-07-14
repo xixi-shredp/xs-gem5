@@ -69,6 +69,7 @@ class StaticInstFlags(Enum):
         'IsLoadReserved',   # Load reserved
         'IsStoreConditional',   # Store conditional instruction.
         'IsInstPrefetch',   # Instruction-cache prefetch.
+        'IsInstCacheInvalidate', # Invalidates cached instruction contents.
         'IsDataPrefetch',   # Data-cache prefetch.
 
         'IsControl',        # Control transfer instruction.

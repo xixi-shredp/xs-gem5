@@ -482,8 +482,24 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
     if args.mem_type == 'DRAMsim3':
         assert args.dramsim3_ini is not None
 
+    enable_mop_cache = getattr(args, 'enable_mop_cache', False)
+    mop_cache_entries = getattr(args, 'mop_cache_entries', 1024)
+    mop_cache_ways = getattr(args, 'mop_cache_ways', 4)
+    mop_cache_lookup_width = getattr(args, 'mop_cache_lookup_width', 8)
+    mop_cache_lookup_latency = getattr(args, 'mop_cache_lookup_latency', 1)
+    mop_cache_read_ports = getattr(args, 'mop_cache_read_ports', 1)
+    mop_cache_fill_width = getattr(args, 'mop_cache_fill_width', 8)
     for cpu in test_sys.cpu:
         cpu.store_prefetch_train = not args.kmh_align
+        cpu.enableMopCache = enable_mop_cache
+        cpu.mopCacheEntries = mop_cache_entries
+        cpu.mopCacheWays = mop_cache_ways
+        cpu.mopCacheLookupWidth = mop_cache_lookup_width
+        cpu.mopCacheLookupLatency = mop_cache_lookup_latency
+        cpu.mopCacheReadPorts = mop_cache_read_ports
+        cpu.mopCacheFillWidth = mop_cache_fill_width
+    if enable_mop_cache and getattr(args, 'enable_trace_mode', False):
+        fatal("--enable-mop-cache is incompatible with --enable-trace-mode")
 
     # Configure trace mode if enabled
     if hasattr(args, 'enable_trace_mode') and args.enable_trace_mode:
@@ -881,6 +897,14 @@ def xiangshan_system_init():
         default=False,
         help="Use BTBTAGEUpperBound in kmhv3 instead of the default BTBTAGE",
     )
+    parser.add_argument("--enable-mop-cache", action="store_true", default=False,
+                        help="Enable the decoded MOP cache frontend source")
+    parser.add_argument("--mop-cache-entries", type=int, default=1024)
+    parser.add_argument("--mop-cache-ways", type=int, default=4)
+    parser.add_argument("--mop-cache-lookup-width", type=int, default=8)
+    parser.add_argument("--mop-cache-lookup-latency", type=int, default=1)
+    parser.add_argument("--mop-cache-read-ports", type=int, default=1)
+    parser.add_argument("--mop-cache-fill-width", type=int, default=8)
     parser.add_argument(
         "--disable-l1-direct-compression",
         action="store_false",

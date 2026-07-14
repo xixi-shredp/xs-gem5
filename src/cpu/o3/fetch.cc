@@ -68,6 +68,7 @@
 #include "debug/Fetch.hh"
 #include "debug/FetchFault.hh"
 #include "debug/FetchVerbose.hh"
+#include "debug/MopCache.hh"
 #include "debug/O3CPU.hh"
 #include "debug/O3PipeView.hh"
 #include "debug/TraceReader.hh"
@@ -92,6 +93,7 @@ Fetch::Fetch(CPU *_cpu, const BaseO3CPUParams &params)
       cpu(_cpu),
       branchPred(nullptr),
       resolveQueueSize(params.resolveQueueSize),
+      mopCacheLookupLatency(params.mopCacheLookupLatency),
       decodeToFetchDelay(params.decodeToFetchDelay),
       renameToFetchDelay(params.renameToFetchDelay),
       iewToFetchDelay(params.iewToFetchDelay),
@@ -167,6 +169,18 @@ Fetch::Fetch(CPU *_cpu, const BaseO3CPUParams &params)
     if (isTraceMode() && traceFetch && !traceFetch->allowDecoupledFrontend()) {
         fatal("Trace mode requires allowDecoupledFrontend=true for decoupled+BTB-only fetch\n");
     }
+
+    if (params.enableMopCache) {
+        if (isTraceMode())
+            fatal("MOP cache is incompatible with trace mode\n");
+        MopCache::Config config;
+        config.entries = params.mopCacheEntries;
+        config.ways = params.mopCacheWays;
+        config.lookupWidth = params.mopCacheLookupWidth;
+        config.readPorts = params.mopCacheReadPorts;
+        config.fillWidth = params.mopCacheFillWidth;
+        mopCache = std::make_unique<MopCache>(config);
+    }
 }
 
 Fetch::~Fetch() = default;
@@ -181,6 +195,82 @@ bool
 Fetch::isTraceEOF() const
 {
     return traceFetch && traceFetch->isEOF();
+}
+
+MopContext
+Fetch::currentMopContext(ThreadID tid) const
+{
+    const auto &riscv_decoder = decoder[tid]->as<RiscvISA::Decoder>();
+    const bool vtype_ready = riscv_decoder.isVtypeReady();
+    MopContext context;
+    context.tid = tid;
+    context.satp = cpu->readMiscRegNoEffect(RiscvISA::MISCREG_SATP, tid);
+    context.vsatp = cpu->readMiscRegNoEffect(RiscvISA::MISCREG_VSATP, tid);
+    context.hgatp = cpu->readMiscRegNoEffect(RiscvISA::MISCREG_HGATP, tid);
+    context.privilege = cpu->readMiscRegNoEffect(RiscvISA::MISCREG_PRV, tid);
+    context.virt = cpu->readMiscRegNoEffect(RiscvISA::MISCREG_VIRMODE, tid);
+    context.vtypeReady = vtype_ready;
+    context.vtype = vtype_ready ?
+        static_cast<uint64_t>(riscv_decoder.getVtype()) : 0ULL;
+    return context;
+}
+
+bool
+Fetch::startMopLookup(ThreadID tid, const PCStateBase &pc)
+{
+    if (!mopCache || mopLookup[tid].pending || ftqEmpty(tid))
+        return false;
+    const auto &stream = dbpbtb->ftqFetchingTarget(tid);
+    const MopContext context = currentMopContext(tid);
+    auto result = mopCache->lookupBundle(pc.instAddr(), context,
+                                         stream.predEndPC);
+    if (!result.portAvailable) {
+        ++fetchStats.mopCachePortConflicts;
+        DPRINTF(MopCache, "[tid:%u] lookup port conflict at %#lx\n", tid,
+                pc.instAddr());
+        return false;
+    }
+    ++fetchStats.mopCacheLookups;
+    auto &state = mopLookup[tid];
+    state.pending = true;
+    state.readyTick = cpu->clockEdge(mopCacheLookupLatency);
+    state.ftqId = dbpbtb->ftqHeadId(tid);
+    state.startPC = pc.instAddr();
+    state.context = context;
+    state.result = std::move(result);
+    state.cursor = 0;
+    state.squashVersion = localSquashVer[tid];
+    DPRINTF(MopCache, "[tid:%u] lookup PC %#lx ready at %lu\n", tid,
+            state.startPC, state.readyTick);
+    return true;
+}
+
+void
+Fetch::cancelMopLookup(ThreadID tid, bool count_squash)
+{
+    if (mopLookup[tid].pending && count_squash)
+        ++fetchStats.mopCacheSquashedResponses;
+    mopLookup[tid].reset();
+}
+
+void
+Fetch::invalidateMopCache(MopInvalidationReason reason)
+{
+    if (!mopCache)
+        return;
+    const size_t invalidated = mopCache->invalidate();
+    for (ThreadID tid = 0; tid < numThreads; ++tid)
+        cancelMopLookup(tid, false);
+    ++fetchStats.mopCacheInvalidations;
+    switch (reason) {
+      case MopInvalidationReason::FenceI:
+        ++fetchStats.mopCacheFenceIInvalidations; break;
+      case MopInvalidationReason::TlbFlush:
+        ++fetchStats.mopCacheTlbInvalidations; break;
+      case MopInvalidationReason::Takeover:
+        ++fetchStats.mopCacheTakeoverInvalidations; break;
+    }
+    DPRINTF(MopCache, "Invalidated %zu MOP cache entries\n", invalidated);
 }
 
 std::string Fetch::name() const { return cpu->name() + ".fetch"; }
@@ -288,6 +378,40 @@ Fetch::FetchStatGroup::FetchStatGroup(CPU *cpu, Fetch *fetch)
              "Number of times an entry is enqueued to the resolve queue"),
     ADD_STAT(resolveQueueOccupancy, statistics::units::Count::get(),
              "Number of entries in the resolve queue"),
+    ADD_STAT(mopCacheLookups, statistics::units::Count::get(),
+             "Number of MOP cache lookup requests"),
+    ADD_STAT(mopCacheHits, statistics::units::Count::get(),
+             "Number of MOP cache entry hits"),
+    ADD_STAT(mopCacheMisses, statistics::units::Count::get(),
+             "Number of MOP cache entry misses"),
+    ADD_STAT(mopCacheSuppliedInsts, statistics::units::Count::get(),
+             "Number of instructions supplied by the MOP cache"),
+    ADD_STAT(mopCacheAvoidedICacheRequests, statistics::units::Count::get(),
+             "Number of instruction cache requests avoided by MOP hits"),
+    ADD_STAT(mopCacheFallbackRequests, statistics::units::Count::get(),
+             "Number of MOP miss fallback requests"),
+    ADD_STAT(mopCachePendingCycles, statistics::units::Cycle::get(),
+             "Number of cycles waiting for MOP cache responses"),
+    ADD_STAT(mopCachePortConflicts, statistics::units::Count::get(),
+             "Number of MOP cache lookup port conflicts"),
+    ADD_STAT(mopCacheFills, statistics::units::Count::get(),
+             "Number of MOP cache fills"),
+    ADD_STAT(mopCacheFillDrops, statistics::units::Count::get(),
+             "Number of MOP cache fills dropped for bandwidth"),
+    ADD_STAT(mopCacheEvictions, statistics::units::Count::get(),
+             "Number of MOP cache evictions"),
+    ADD_STAT(mopCacheSquashedResponses, statistics::units::Count::get(),
+             "Number of MOP cache responses cancelled by squash"),
+    ADD_STAT(mopCacheStaleResponses, statistics::units::Count::get(),
+             "Number of stale MOP cache responses"),
+    ADD_STAT(mopCacheInvalidations, statistics::units::Count::get(),
+             "Number of MOP cache invalidations"),
+    ADD_STAT(mopCacheFenceIInvalidations, statistics::units::Count::get(),
+             "Number of MOP cache fence.i invalidations"),
+    ADD_STAT(mopCacheTlbInvalidations, statistics::units::Count::get(),
+             "Number of MOP cache TLB invalidations"),
+    ADD_STAT(mopCacheTakeoverInvalidations, statistics::units::Count::get(),
+             "Number of MOP cache takeover invalidations"),
     ADD_STAT(traceMetaStores, statistics::units::Count::get(),
              "Number of stored trace metadata records (seqNum -> traceInst)"),
     ADD_STAT(traceMetaCleanupSquashCalls, statistics::units::Count::get(),
@@ -478,6 +602,7 @@ Fetch::clearStates(ThreadID tid)
     threads[tid].cacheReq.reset();
     threads[tid].reset();
     fetchQueue[tid].clear();
+    cancelMopLookup(tid, false);
 
     // TODO not sure what to do with priorityList for now
     // priorityList.push_back(tid);
@@ -513,6 +638,7 @@ Fetch::resetStage()
         priorityList.push_back(tid);
         waitForVsetvl[tid] = false;
         smtBorrowThrottleCycles[tid] = 0;
+        cancelMopLookup(tid, false);
     }
 
     wroteToTimeBuffer = false;
@@ -756,6 +882,7 @@ Fetch::drainSanityCheck() const
     for (ThreadID i = 0; i < numThreads; ++i) {
         assert(threads[i].cacheReq.packets.empty());
         assert(fetchStatus[i] == Idle);
+        assert(!mopLookup[i].pending);
     }
 
     branchPred->drainSanityCheck();
@@ -773,6 +900,9 @@ Fetch::isDrained() const
     for (ThreadID i = 0; i < numThreads; ++i) {
         // Verify fetch queues are drained
         if (!fetchQueue[i].empty())
+            return false;
+
+        if (mopLookup[i].pending)
             return false;
 
         // Return false if not idle or drain stalled
@@ -793,12 +923,14 @@ Fetch::takeOverFrom()
 {
     assert(cpu->getInstPort().isConnected());
     resetStage();
+    invalidateMopCache(MopInvalidationReason::Takeover);
 
 }
 
 void
 Fetch::drainStall(ThreadID tid)
 {
+    cancelMopLookup(tid, false);
 }
 
 void
@@ -1169,6 +1301,7 @@ Fetch::doSquash(PCStateBase &new_pc, const DynInstPtr squashInst, const InstSeqN
     else
         macroop[tid] = NULL;
     decoder[tid]->reset();
+    cancelMopLookup(tid, true);
 
     // Clear the icache miss if it's outstanding.
     DPRINTF(Fetch, "[tid:%i] Squash: clear cacheReq, current fetchStatus[tid]=%d\n", tid, fetchStatus[tid]);
@@ -1305,6 +1438,9 @@ Fetch::squash(PCStateBase &new_pc, const InstSeqNum seq_num,
 void
 Fetch::tick()
 {
+    if (mopCache)
+        mopCache->beginCycle();
+
     // Initialize state for this tick cycle
     bool status_change = initializeTickState();
 
@@ -2012,7 +2148,8 @@ Fetch::checkMemoryNeeds(ThreadID tid, const PCStateBase &this_pc,
 
 bool
 Fetch::processSingleInstruction(ThreadID tid, PCStateBase &pc,
-                               StaticInstPtr &curMacroop)
+                                StaticInstPtr &curMacroop,
+                                const MopEntry *cached_entry)
 {
     auto *dec_ptr = decoder[tid];
     bool predictedBranch = false;
@@ -2024,8 +2161,48 @@ Fetch::processSingleInstruction(ThreadID tid, PCStateBase &pc,
     // Decode the instruction, handling macro-op transitions.
     StaticInstPtr staticInst = nullptr;
     if (!curMacroop) {
-        // Decode a new instruction if not currently in a macro-op.
-        staticInst = dec_ptr->decode(pc);
+        MopContext decode_context;
+        if (!cached_entry && mopCache)
+            decode_context = currentMopContext(tid);
+
+        if (cached_entry) {
+            assert(pc.instAddr() == cached_entry->pc);
+            auto &riscv_decoder = dec_ptr->as<RiscvISA::Decoder>();
+            riscv_decoder.setPCStateWithInstDesc(cached_entry->compressed, pc);
+            staticInst = cached_entry->staticInst;
+            assert(staticInst);
+            if (staticInst->isVectorConfig()) {
+                auto *vset = static_cast<RiscvISA::VConfOp*>(
+                        staticInst.get());
+                if (vset->vtypeIsImm)
+                    riscv_decoder.setVtype(vset->earlyVtype);
+                else
+                    riscv_decoder.clearVtype();
+            }
+        } else {
+            // Decode a new instruction if not currently in a macro-op.
+            staticInst = dec_ptr->decode(pc);
+            assert(staticInst);
+            if (mopCache) {
+                const auto &riscv_pc = pc.as<RiscvISA::PCState>();
+                const auto fill_result = mopCache->fill(
+                        pc.instAddr(), riscv_pc.npc(), staticInst,
+                        riscv_pc.compressed(), decode_context);
+                switch (fill_result) {
+                  case MopCache::FillResult::Filled:
+                  case MopCache::FillResult::Updated:
+                    ++fetchStats.mopCacheFills;
+                    break;
+                  case MopCache::FillResult::Evicted:
+                    ++fetchStats.mopCacheFills;
+                    ++fetchStats.mopCacheEvictions;
+                    break;
+                  case MopCache::FillResult::NoBandwidth:
+                    ++fetchStats.mopCacheFillDrops;
+                    break;
+                }
+            }
+        }
         ++fetchStats.insts;
 
         if (staticInst->isMacroop()) {
@@ -2129,6 +2306,76 @@ Fetch::performInstructionFetch(ThreadID tid)
     // Control flags for main fetch loop
     bool predictedBranch = false;
 
+    if (mopCache && !curMacroop && !threads[tid].valid) {
+        auto &lookup = mopLookup[tid];
+        if (!lookup.pending) {
+            startMopLookup(tid, pc_state);
+            ++fetchStats.mopCachePendingCycles;
+            return;
+        }
+        if (curTick() < lookup.readyTick) {
+            ++fetchStats.mopCachePendingCycles;
+            return;
+        }
+        if (ftqEmpty(tid) || dbpbtb->ftqHeadId(tid) != lookup.ftqId ||
+            pc_state.instAddr() != lookup.startPC ||
+            currentMopContext(tid) != lookup.context ||
+            localSquashVer[tid].getVersion() !=
+                lookup.squashVersion.getVersion()) {
+            ++fetchStats.mopCacheStaleResponses;
+            lookup.reset();
+            return;
+        }
+        if (!lookup.accounted) {
+            fetchStats.mopCacheHits += lookup.result.entries.size();
+            if (lookup.result.missed)
+                ++fetchStats.mopCacheMisses;
+            if (!lookup.result.missed && lookup.result.reachedEnd &&
+                !lookup.result.entries.empty())
+                ++fetchStats.mopCacheAvoidedICacheRequests;
+            lookup.accounted = true;
+        }
+        while (lookup.cursor < lookup.result.entries.size() &&
+               numInst < fetchWidth && fetchQueue[tid].size() < fetchQueueSize &&
+               !predictedBranch && !waitForVsetvl[tid]) {
+            const MopEntry &entry = lookup.result.entries[lookup.cursor];
+            if (entry.pc != pc_state.instAddr()) {
+                ++fetchStats.mopCacheStaleResponses;
+                lookup.reset();
+                return;
+            }
+            ++lookup.cursor;
+            predictedBranch = processSingleInstruction(tid, pc_state,
+                                                        curMacroop, &entry);
+            ++fetchStats.mopCacheSuppliedInsts;
+            while (curMacroop && numInst < fetchWidth &&
+                   fetchQueue[tid].size() < fetchQueueSize) {
+                predictedBranch = processSingleInstruction(tid, pc_state,
+                                                            curMacroop);
+            }
+            lookup.startPC = pc_state.instAddr();
+        }
+        if (lookup.cursor == lookup.result.entries.size() && !curMacroop) {
+            const bool missed = lookup.result.missed;
+            lookup.reset();
+            if (missed) {
+                ++fetchStats.mopCacheFallbackRequests;
+            } else {
+                if (!predictedBranch && numInst < fetchWidth &&
+                    fetchQueue[tid].size() < fetchQueueSize &&
+                    !waitForVsetvl[tid] && !ftqEmpty(tid))
+                    startMopLookup(tid, pc_state);
+                if (numInst > 0)
+                    wroteToTimeBuffer = true;
+                return;
+            }
+        } else {
+            if (numInst > 0)
+                wroteToTimeBuffer = true;
+            return;
+        }
+    }
+
     DPRINTF(Fetch, "[tid:%i] Adding instructions to queue to decode.\n", tid);
 
     // Main instruction fetch loop - process until fetch width or other limits
@@ -2186,7 +2433,8 @@ Fetch::performInstructionFetch(ThreadID tid)
     }
 
     assert(fetchStatus[tid] == Running && "Fetch should be running");
-    sendNextCacheRequest(tid, pc_state);
+    if (!mopCache || !mopLookup[tid].pending)
+        sendNextCacheRequest(tid, pc_state);
 }
 
 void

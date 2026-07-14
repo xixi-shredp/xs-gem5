@@ -1513,10 +1513,17 @@ CPU::squashInstIt(ListIt &instIt, ThreadID tid)
 }
 
 void
+CPU::invalidateMopCache(Fetch::MopInvalidationReason reason)
+{
+    fetch.invalidateMopCache(reason);
+}
+
+void
 CPU::flushTLBs()
 {
     BaseCPU::flushTLBs();
     fetch.flushFetchBuffer();
+    fetch.invalidateMopCache(Fetch::MopInvalidationReason::TlbFlush);
 }
 
 void

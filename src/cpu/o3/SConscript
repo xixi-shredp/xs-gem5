@@ -43,6 +43,7 @@ if env['CONF']['TARGET_ISA'] != 'null':
     Source('decode.cc')
     Source('dyn_inst.cc')
     Source('fetch.cc')
+    Source('mop_cache.cc')
     Source('free_list.cc')
     Source('fu_pool.cc')
     Source('iew.cc')
@@ -87,6 +88,7 @@ if env['CONF']['TARGET_ISA'] != 'null':
     DebugFlag('InstCommited')
     DebugFlag('FetchFault')
     DebugFlag('FetchVerbose')
+    DebugFlag('MopCache')
     DebugFlag('Counters')
     DebugFlag('Schedule')
     DebugFlag('Dispatch')
@@ -150,3 +152,5 @@ else:
           # Stats Root is required when constructing statistics::Group in tests
           '../../sim/root.cc',
           with_tag('gem5 trace'))
+
+GTest('mop_cache.test', 'mop_cache.test.cc', 'mop_cache.cc')

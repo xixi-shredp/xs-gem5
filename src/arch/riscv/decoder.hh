@@ -95,6 +95,9 @@ class Decoder : public InstDecoder
 
     void clearVtype();
 
+    bool isVtypeReady() const { return vtypeReady; }
+    VTYPE getVtype() const { return machVtype; }
+
     bool stall() override;
 };
 

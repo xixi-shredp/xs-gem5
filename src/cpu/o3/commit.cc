@@ -1435,6 +1435,10 @@ Commit::commitInsts()
 
                     // Updates misc. registers.
                     head_inst->updateMiscRegs();
+                    if (head_inst->staticInst->isInstCacheInvalidate()) {
+                        cpu->invalidateMopCache(
+                            Fetch::MopInvalidationReason::FenceI);
+                    }
                     if (head_inst->staticInst->isVectorConfig()) {
                         auto vset = static_cast<RiscvISA::VConfOp *>(
                             head_inst->staticInst.get());
