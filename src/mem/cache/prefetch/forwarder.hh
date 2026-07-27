@@ -57,6 +57,19 @@ class PrefetcherForwarder : public Base
     // stats
     void incrDemandMhsrMisses() override;
     void prefetchUnused(PrefetchSourceType pf_type) override;
+    void prefetchUnused(
+        Addr paddr, const Request::XsMetadata &metadata) override;
+    void prefetchLate(const Request::XsMetadata &metadata,
+                      bool firstDemandMerge = true) override;
+    void recordPrefetchAdmitted(
+        const Request::XsMetadata &metadata) override;
+    void recordPrefetchFill(
+        const Request::XsMetadata &metadata) override;
+    void recordUpperPrefetchConsumed(
+        const Request::XsMetadata &metadata) override;
+    void recordPrefetchFillVictim(
+        const Request::XsMetadata &metadata, bool dirty,
+        bool demandTouched) override;
     void pfHitInMSHR(PrefetchSourceType pf_type) override;
     void pfHitInCache(PrefetchSourceType pf_type) override;
     void pfHitInWB(PrefetchSourceType pf_type) override;

@@ -89,6 +89,14 @@ class BasePrefetcher(ClockedObject):
 
     is_sub_prefetcher = Param.Bool(False, "Is this a sub-prefetcher")
 
+    # pf-ahead (cross cache-level prefetch) master switches.
+    no_pfahead = Param.Bool(False,
+        "Completely disable pf-ahead: drop prefetch requests that target a "
+        "deeper cache level than the owning cache")
+    no_pfahead_reserved = Param.Bool(False,
+        "Disable pf-ahead cross-level offloading but keep the request as a "
+        "normal current-level prefetch (demote instead of drop)")
+
     training_buffer_size = Param.Unsigned(8,
         "Maximum number of training requests buffered per cycle")
 
@@ -192,6 +200,70 @@ class QueuedPrefetcher(BasePrefetcher):
     use_pf_buffer = Param.Bool(False, "use prefetch buffer to filter prefetches")
     max_pf_buffer_size = Param.Int(16, "size of prefetch buffer")
 
+
+class SandboxMultiPrefetchers(QueuedPrefetcher):
+    type = "SandboxMultiPrefetchers"
+    cxx_class = "gem5::prefetch::SandboxMulti"
+    cxx_header = "mem/cache/prefetch/sandbox_multi.hh"
+
+    prefetchers = VectorParam.BasePrefetcher(
+        [], "Queued child prefetchers managed by the sandbox policy"
+    )
+    sandbox_entries = Param.Unsigned(
+        256, "Maximum number of shadow candidates retained in the sandbox"
+    )
+    evaluation_window = Param.Unsigned(
+        256, "Number of accesses used to evaluate one child prefetcher"
+    )
+    score_threshold_pct = Param.Percent(
+        25, "Score threshold as a percent of the evaluation window"
+    )
+    bandwidth_requests_per_access = Param.Float(
+        2.0,
+        "Target aggregate memory requests per observed access used to "
+        "derive the dynamic prefetch budget",
+    )
+    min_prefetches_per_access = Param.Unsigned(
+        0, "Minimum dynamic prefetch budget per observed access"
+    )
+    max_prefetches_per_access = Param.Unsigned(
+        8, "Global cap on real prefetches issued per observed access"
+    )
+    max_prefetches_per_child = Param.Unsigned(
+        3, "Maximum real prefetches a single active child may contribute"
+    )
+    max_active_prefetchers = Param.Unsigned(
+        4, "Maximum number of active children considered on one access"
+    )
+
+class ReSemblePrefetcher(QueuedPrefetcher):
+    type = "ReSemblePrefetcher"
+    cxx_class = "gem5::prefetch::ReSemble"
+    cxx_header = "mem/cache/prefetch/resemble.hh"
+
+    prefetchers = VectorParam.BasePrefetcher(
+        [], "Child prefetchers managed by ReSemble"
+    )
+    prediction_types = VectorParam.String(
+        [], "Prediction type label for each child prefetcher"
+    )
+    hidden_dim = Param.Unsigned(32, "Hidden layer width of the controller")
+    hash_bits = Param.Unsigned(12, "Feature hashing width in bits")
+    alpha = Param.Float(0.01, "Learning rate of the controller")
+    gamma = Param.Float(0.90, "Discount factor of the controller")
+    epsilon_start = Param.Float(0.0, "Initial exploration rate")
+    epsilon_end = Param.Float(0.0, "Final exploration rate")
+    epsilon_decay = Param.Float(1.0, "Multiplicative epsilon decay")
+    reward_window = Param.Unsigned(64, "Reward accounting window size")
+    replay_capacity = Param.Unsigned(128, "Replay buffer capacity")
+    batch_size = Param.Unsigned(16, "Mini-batch size for controller updates")
+    policy_update_interval = Param.Unsigned(
+        1, "Number of accesses between online policy updates"
+    )
+    target_update_interval = Param.Unsigned(
+        8, "Number of accesses between target network refreshes"
+    )
+    seed = Param.Unsigned(1, "Deterministic seed for controller RNG")
 
 class XSStridePrefetcher(QueuedPrefetcher):
     type = 'XSStridePrefetcher'
@@ -450,6 +522,538 @@ class IndirectMemoryPrefetcher(QueuedPrefetcher):
         "Counter threshold to enable the stream prefetcher")
     streaming_distance = Param.Unsigned(4,
         "Number of prefetches to generate when using the stream prefetcher")
+
+class AMDContiguousStreamPrefetcher(QueuedPrefetcher):
+    type = "AMDContiguousStreamPrefetcher"
+    cxx_class = "gem5::prefetch::AMDContiguousStreamPrefetcher"
+    cxx_header = "mem/cache/prefetch/amd_contiguous_stream.hh"
+
+    stream_entries = Param.Unsigned(16, "Active contiguous stream entries")
+    last_access_entries = Param.Unsigned(
+        16, "Recent accesses used to create new streams")
+    degree = Param.Unsigned(4, "Maximum prefetches per stream update")
+    use_requestor_id = Param.Bool(False, "Include requestor ID in matching")
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
+class AMDRIPRegionPrefetcher(QueuedPrefetcher):
+    type = "AMDRIPRegionPrefetcher"
+    cxx_class = "gem5::prefetch::AMDRIPRegionPrefetcher"
+    cxx_header = "mem/cache/prefetch/amd_rip_region.hh"
+
+    line_entry_entries = Param.Unsigned(
+        32, "Entries in the line entry training table")
+    region_history_entries = Param.Unsigned(
+        512, "Entries in the RIP/Addr[5:4] region history table")
+    negative_lines = Param.Unsigned(
+        4, "Cache lines before the home line covered by a region")
+    positive_lines = Param.Unsigned(
+        6, "Cache lines after the home line covered by a region")
+    rip_bits = Param.Unsigned(20, "Low RIP bits used by the predictor")
+    address_offset_shift = Param.Unsigned(
+        4, "First address bit in the line-alignment offset field")
+    address_offset_bits = Param.Unsigned(
+        2, "Number of line-alignment offset bits")
+    counter_bits = Param.Unsigned(
+        2, "Bits per region-history line-offset counter")
+    counter_threshold = Param.Unsigned(
+        2, "Minimum counter value required to issue a prefetch")
+    min_pattern_bits = Param.Unsigned(
+        2, "Minimum non-home lines needed to train a pseudo-random pattern")
+    use_requestor_id = Param.Bool(False, "Include requestor ID in matching")
+    degree = Param.Unsigned(10, "Maximum prefetches to generate per miss")
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
+class AMDRegionStreamPrefetchers(QueuedPrefetcher):
+    type = "AMDRegionStreamPrefetchers"
+    cxx_class = "gem5::prefetch::AMDRegionStreamPrefetchers"
+    cxx_header = "mem/cache/prefetch/amd_region_stream.hh"
+
+    stream_prefetcher = Param.BasePrefetcher(
+        AMDContiguousStreamPrefetcher(is_sub_prefetcher=True),
+        "Stream prefetcher child",
+    )
+    region_prefetcher = Param.BasePrefetcher(
+        AMDRIPRegionPrefetcher(is_sub_prefetcher=True),
+        "AMD RIP region prefetcher child",
+    )
+    block_stream_on_region_pending = Param.Bool(
+        True,
+        "Block stream processing while region prefetch requests are pending",
+    )
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
+class AMDRegionTypePrefetcher(QueuedPrefetcher):
+    type = "AMDRegionTypePrefetcher"
+    cxx_class = "gem5::prefetch::AMDRegionTypePrefetcher"
+    cxx_header = "mem/cache/prefetch/amd_region_type.hh"
+
+    region_size = Param.Unsigned(2048, "Memory region size in bytes")
+    observation_entries = Param.Unsigned(
+        64, "Entries in the pattern observation table")
+    region_type_entries = Param.Unsigned(
+        512, "Entries in the region-address to region-type table")
+    recorded_pattern_entries = Param.Unsigned(
+        1024, "Entries in the region-type to recorded-pattern table")
+    observation_window = Param.Unsigned(
+        256, "Access-count window before completing an active observation")
+    observation_timeout = Param.Unsigned(
+        1024, "Idle access-count timeout before completing an observation")
+    duplicate_prefetch_window = Param.Unsigned(
+        32, "Access-count window suppressing duplicate pattern replays")
+    recorded_pattern_assoc = Param.Unsigned(
+        16, "Logical associativity for recorded-pattern way metadata")
+    region_type_candidates = Param.Unsigned(
+        2, "Candidate recorded patterns retained per region-type entry")
+    use_requestor_id = Param.Bool(
+        False, "Include RequestorID in region observation and mapping keys")
+    confidence_counter_bits = Param.Unsigned(
+        3, "Bits in recorded-pattern and region-type confidence counters")
+    initial_confidence = Param.Unsigned(
+        4, "Initial confidence for newly learned region-type mappings")
+    confidence_threshold = Param.Unsigned(
+        2, "Minimum confidence required before replaying a recorded pattern")
+    aging_interval = Param.Unsigned(
+        4096, "Access-count interval for confidence aging")
+    similarity_threshold = Param.Unsigned(
+        2, "Maximum exclusive Hamming distance for near pattern matching")
+    min_pattern_bits = Param.Unsigned(
+        2, "Minimum set subdivision bits required before installing a pattern")
+    degree = Param.Unsigned(8, "Maximum prefetches generated per trigger")
+    prefetch_distance = Param.Unsigned(
+        0, "Maximum byte distance from trigger; zero means full region")
+    merge_policy = Param.String(
+        "or", "Merge policy for matching patterns: or, and, or replace")
+    prefetch_current = Param.Bool(
+        False, "Allow replay to prefetch the triggering subdivision")
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
+
+    queue_squash = True
+    queue_filter = True
+    cache_snoop = True
+
+class AppleAMPMPrefetcher(QueuedPrefetcher):
+    type = "AppleAMPMPrefetcher"
+    cxx_class = "gem5::prefetch::AppleAMPM"
+    cxx_header = "mem/cache/prefetch/apple_ampm.hh"
+
+    on_inst = False
+    prefetch_on_access = True
+    prefetch_on_pf_hit = True
+
+    limit_stride = Param.Unsigned(
+        0, "Limit the strides checked up to -X/X; zero disables the limit"
+    )
+    degree = Param.Unsigned(4, "Maximum prefetches generated per access")
+    hot_zone_size = Param.MemorySize("2KiB", "Memory covered by a hot zone")
+
+    access_map_table_entries = Param.MemorySize(
+        "256", "Number of entries in the access map table"
+    )
+    access_map_table_assoc = Param.Unsigned(
+        8, "Associativity of the access map table"
+    )
+    access_map_table_indexing_policy = Param.BaseIndexingPolicy(
+        SetAssociative(
+            entry_size=1,
+            assoc=Parent.access_map_table_assoc,
+            size=Parent.access_map_table_entries,
+        ),
+        "Indexing policy of the access map table",
+    )
+    access_map_table_replacement_policy = Param.BaseReplacementPolicy(
+        LRURP(), "Replacement policy of the access map table"
+    )
+
+    initial_quality_factor = Param.Unsigned(
+        75, "Initial per-access-map quality factor tokens"
+    )
+    max_quality_factor = Param.Unsigned(
+        100, "Maximum per-access-map quality factor tokens"
+    )
+    prefetch_token_cost = Param.Unsigned(
+        8, "Quality factor tokens consumed by a non-store-only prefetch"
+    )
+    store_only_prefetch_token_cost = Param.Unsigned(
+        10, "Quality factor tokens consumed by a store-only prefetch"
+    )
+    successful_prefetch_tokens = Param.Unsigned(
+        12, "Quality factor tokens restored by a successful prefetch"
+    )
+    cache_hit_penalty_tokens = Param.Unsigned(
+        4, "Quality factor tokens removed when a generated prefetch hits cache"
+    )
+    pointer_prefetch_tokens = Param.Unsigned(
+        12, "Quality factor tokens restored when pointer activity is active"
+    )
+    quality_factor_bypass_accesses = Param.Unsigned(
+        0,
+        "Bypass quality factor after this many accessed lines in a map; "
+        "zero means never bypass",
+    )
+
+    use_pointer_value_heuristic = Param.Bool(
+        True,
+        "Approximate pointer-read detection by tracking loaded values that "
+        "are later used as load addresses",
+    )
+    pointer_field_max = Param.Unsigned(15, "Maximum pointer field value")
+    pointer_initial_value = Param.Unsigned(0, "Initial pointer field value")
+    pointer_increment = Param.Unsigned(
+        4, "Pointer field increment for detected pointer reads"
+    )
+    pointer_decrement = Param.Unsigned(
+        1, "Pointer field decrement for load accesses without pointer signal"
+    )
+    pointer_threshold = Param.Unsigned(
+        1, "Pointer field threshold that marks pointer activity active"
+    )
+    pointer_tracking_entries = Param.Unsigned(
+        64, "Loaded pointer-like values retained for future load matching"
+    )
+    pointer_tracking_window = Param.Unsigned(
+        256,
+        "Maximum later accesses before a retained pointer-like value ages out",
+    )
+    pointer_min_addr = Param.Addr(
+        4096, "Minimum loaded value considered as a possible pointer"
+    )
+    pointer_value_distance = Param.MemorySize(
+        "0B",
+        "Optional maximum distance between the load address and loaded value; "
+        "zero disables the locality filter",
+    )
+
+class AMDAOPPrefetcher(QueuedPrefetcher):
+    type = "AMDAOPPrefetcher"
+    cxx_class = "gem5::prefetch::AMDAOP"
+    cxx_header = "mem/cache/prefetch/amd_aop.hh"
+
+    on_inst = False
+    on_write = True
+    prefetch_on_access = True
+    prefetch_on_pf_hit = True
+    use_virtual_addresses = True
+    cache_snoop = True
+    page_bytes = "4KiB"
+
+    stride_table_entries = Param.Unsigned(
+        128, "Entries in the striding load table corresponding to table 304"
+    )
+    target_table_entries = Param.Unsigned(
+        256,
+        "Entries in the pointer target PC-pair table corresponding to table 306",
+    )
+    recent_pointer_entries = Param.Unsigned(
+        128, "Recently loaded pointer values retained for target-pair learning"
+    )
+    pending_address_load_entries = Param.Unsigned(
+        128, "Outstanding address-load prefetches waiting for fill data"
+    )
+    pointer_value_entries = Param.Unsigned(
+        512, "Cached pointer-array values indexed by element address"
+    )
+
+    confidence_counter_bits = Param.Unsigned(
+        3, "Number of bits in stride and target confidence counters"
+    )
+    initial_confidence = Param.Unsigned(
+        1, "Initial confidence for new entries"
+    )
+    stride_confidence_threshold = Param.Unsigned(
+        3, "Minimum confidence for a load PC to be considered striding"
+    )
+    target_confidence_threshold = Param.Unsigned(
+        3, "Minimum confidence for a pointer target PC pair"
+    )
+
+    use_requestor_id = Param.Bool(False, "Partition tables by requestor id")
+    address_load_degree = Param.Unsigned(
+        2, "Number of future pointer-array elements to prefetch per trigger"
+    )
+    target_degree = Param.Unsigned(
+        4, "Maximum pointer-target prefetches generated per trigger"
+    )
+    lookahead = Param.Unsigned(
+        2, "Number of strides skipped before the first future address load"
+    )
+    pointer_bytes = Param.Unsigned(8, "Pointer element width in bytes")
+    pointer_align_bits = Param.Unsigned(
+        3, "Required low zero bits for values treated as pointers"
+    )
+    index_scale = Param.Unsigned(
+        0,
+        "Scale applied to non-address loaded values used as index operands; "
+        "zero disables index-mode target learning",
+    )
+    min_pointer_addr = Param.Addr(
+        4096, "Minimum loaded value considered as a possible pointer"
+    )
+    max_target_offset = Param.MemorySize(
+        "2KiB",
+        "Maximum absolute pointer-target offset; for index-mode targets this "
+        "bounds the tolerated offset delta during pair matching",
+    )
+    pointer_tracking_window = Param.Unsigned(
+        512, "Maximum accesses before a recent pointer value ages out"
+    )
+    cache_status_threshold = Param.Unsigned(
+        64, "Halve per-target cache hit/miss counters after this many samples"
+    )
+    min_cache_status_for_throttling = Param.Unsigned(
+        16, "Minimum samples before low-miss-rate target throttling"
+    )
+    low_miss_rate_threshold_pct = Param.Unsigned(
+        10, "Detrain target entries below this miss-rate percentage"
+    )
+    prefetch_current_pointer = Param.Bool(
+        False, "Also prefetch the target of the currently loaded pointer"
+    )
+
+class DSPatchPrefetcher(QueuedPrefetcher):
+    type = "DSPatchPrefetcher"
+    cxx_class = "gem5::prefetch::DSPatch"
+    cxx_header = "mem/cache/prefetch/dspatch.hh"
+
+    on_inst = False
+    prefetch_on_access = True
+    page_buffer_entries = Param.Unsigned(
+        64, "Number of 4KiB pages tracked in the DSPatch page buffer"
+    )
+    signature_table_entries = Param.Unsigned(
+        256, "Number of tagless direct-mapped DSPatch signature entries"
+    )
+    region_size = Param.MemorySize(
+        "4KiB", "Spatial region tracked by each DSPatch page-buffer entry"
+    )
+    bandwidth_utilization_quartile = Param.Unsigned(
+        0,
+        "Fallback static memory bandwidth utilization quartile used for "
+        "CovP/AccP selection when memory-controller and local bandwidth "
+        "tracking are disabled: 0 <25%, 1 25-50%, 2 50-75%, 3 >=75%",
+    )
+    use_memory_controller_bandwidth = Param.Bool(
+        True,
+        "Use the MemCtrl CAS-count bandwidth quartile for DSPatch "
+        "CovP/AccP selection",
+    )
+    dynamic_bandwidth_monitor = Param.Bool(
+        False,
+        "Use a local rolling access-rate estimate to update the DSPatch "
+        "bandwidth quartile when a real DRAM bandwidth signal is unavailable",
+    )
+    bandwidth_window_cycles = Param.Unsigned(
+        4096, "Cycles per DSPatch local bandwidth-estimation window"
+    )
+    bandwidth_low_threshold = Param.Unsigned(
+        64, "Observed accesses per window for the 25% bandwidth quartile"
+    )
+    bandwidth_mid_threshold = Param.Unsigned(
+        128, "Observed accesses per window for the 50% bandwidth quartile"
+    )
+    bandwidth_high_threshold = Param.Unsigned(
+        256, "Observed accesses per window for the 75% bandwidth quartile"
+    )
+    max_or_count = Param.Unsigned(
+        3, "Maximum CovP OR updates before DSPatch stops growing the pattern"
+    )
+    accuracy_threshold_pct = Param.Percent(
+        50, "Accuracy threshold for DSPatch CovP/AccP quality counters"
+    )
+    coverage_threshold_pct = Param.Percent(
+        50, "Coverage threshold for DSPatch CovP quality counter"
+    )
+
+class ARMOffsetBasedPointerPrefetcher(QueuedPrefetcher):
+    type = "ARMOffsetBasedPointerPrefetcher"
+    cxx_class = "gem5::prefetch::ARMOffsetBasedPointerPrefetcher"
+    cxx_header = "mem/cache/prefetch/arm_offset_based_pointer.hh"
+
+    on_inst = False
+    prefetch_on_access = True
+
+    history_entries = Param.Unsigned(
+        64, "Number of trigger access PCs retained in the history buffer"
+    )
+    pointer_cache_entries = Param.Unsigned(
+        64, "Number of recent detected pointers retained in the pointer cache"
+    )
+    structure_entries = Param.Unsigned(
+        64, "Number of learned data structure relationships"
+    )
+    pending_entries = Param.Unsigned(
+        32, "Number of pending pointer-line prefetches"
+    )
+    spatial_entries = Param.Unsigned(
+        8, "Number of SMS-style offsets retained per trigger PC"
+    )
+    recent_pointer_search_entries = Param.Unsigned(
+        16, "Recent pointer cache entries searched while learning"
+    )
+    max_element_bytes = Param.MemorySize(
+        "512B", "Maximum trigger-to-trigger distance considered structural"
+    )
+    max_pointer_offset_bytes = Param.MemorySize(
+        "256B", "Maximum pointer-location offset considered structural"
+    )
+    max_pointer_target_offset_bytes = Param.MemorySize(
+        "256B", "Maximum pointer-target to trigger offset"
+    )
+    min_pointer_address = Param.Addr(
+        4096, "Ignore candidate pointer values below this address"
+    )
+    pointer_bytes = Param.Unsigned(
+        8, "Pointer detector width in bytes; use 4 for 32-bit targets"
+    )
+    pointer_msw_match_bits = Param.Unsigned(
+        16, "Most-significant address bits that must match pointer context"
+    )
+    pointer_align_bits = Param.Unsigned(
+        3, "Required low zero bits for pointer candidates"
+    )
+    confidence_bits = Param.Unsigned(
+        3, "Bits in learned-relationship confidence counters"
+    )
+    min_confidence = Param.Unsigned(
+        2, "Minimum relationship confidence before issuing prefetches"
+    )
+    degree = Param.Unsigned(
+        2, "Number of table-structure data prefetches generated per access"
+    )
+    lookahead = Param.Unsigned(
+        2, "Number of dependent pointer dereferences to look ahead"
+    )
+    scan_cacheline_on_fill = Param.Bool(
+        True, "Scan filled cache lines for pointer candidates"
+    )
+    enable_table_detector = Param.Bool(
+        True, "Learn constant trigger-address displacement structures"
+    )
+    enable_linked_list_detector = Param.Bool(
+        True, "Learn pointer-inside-current-element linked-list structures"
+    )
+    enable_pointer_table_detector = Param.Bool(
+        True, "Learn arrays of pointers to data elements"
+    )
+
+class ARMHintPrefetcher(QueuedPrefetcher):
+    type = "ARMHintPrefetcher"
+    cxx_class = "gem5::prefetch::ARMHintPrefetcher"
+    cxx_header = "mem/cache/prefetch/arm_hint.hh"
+
+    on_inst = False
+    prefetch_on_access = True
+    prefetch_on_pf_hit = True
+    queue_filter = True
+    cache_snoop = True
+    page_bytes = "256TiB"
+
+    source_table_entries = Param.Unsigned(
+        64, "Number of source-stream entries carrying indirect hints"
+    )
+    recent_source_entries = Param.Unsigned(
+        64, "Number of recently observed address-indicating source values"
+    )
+    pending_entries = Param.Unsigned(
+        64, "Number of entries in the indirect prefetch buffer"
+    )
+    stride_confidence_threshold = Param.Unsigned(
+        1, "Source-stream confidence required to prefetch source data"
+    )
+    indirect_confidence_threshold = Param.Unsigned(
+        2, "Observed source-target matches required to learn offset/shift"
+    )
+    degree = Param.Unsigned(4, "Number of first-level source prefetches")
+    lookahead = Param.Unsigned(
+        0, "Additional source-stream strides skipped before prefetching"
+    )
+    address_indicating_bytes = Param.Unsigned(
+        4,
+        "Bytes to decode from a filled source line"
+        "when request size is unknown",
+    )
+    source_element_bytes = Param.Unsigned(
+        0,
+        "Bytes per address-indicating element; 0 uses request hint, "
+        "address_indicating_bytes, or scalar request size",
+    )
+    source_element_stride = Param.Unsigned(
+        0,
+        "Byte distance between vector elements; 0 means packed elements",
+    )
+    max_source_elements = Param.Unsigned(
+        16,
+        "Maximum address-indicating elements decoded from one source request",
+    )
+    signed_index = Param.Bool(
+        False,
+        "Sign-extend decoded elements before base+index target formation",
+    )
+    min_candidate_address = Param.Addr(
+        4096, "Reject generated targets below this physical address"
+    )
+    max_candidate_address = Param.Addr(
+        0, "Reject generated targets above this address; 0 disables the check"
+    )
+    target_alignment = Param.Unsigned(
+        8, "Required target alignment in bytes; 0 or 1 disables the check"
+    )
+    shift_values = VectorParam.Int(
+        [6, 4, 3, 2, 0],
+        "Index-to-address shifts evaluated for target formation",
+    )
+    require_indirect_hint = Param.Bool(
+        True,
+        "Only treat explicit request hints or configured hint_pcs as "
+        "address-indicating sources",
+    )
+    hint_pcs = VectorParam.Addr(
+        [],
+        "Fallback PC list treated as explicit indirect-memory hints when "
+        "the CPU model does not attach IndirectMemoryPrefetchHint",
+    )
+    use_requestor_id = Param.Bool(
+        False, "Include requestor id in source stream and hint matching"
+    )
+    enable_direct_pointer = Param.Bool(
+        True, "Treat a loaded value as a direct pointer when it validates"
+    )
+    enable_static_offset = Param.Bool(
+        False, "Use the configured static base and shift without learning"
+    )
+    static_base = Param.Addr(
+        0, "Static target base when static-offset mode is enabled"
+    )
+    static_shift = Param.Int(
+        0, "Static target shift when static-offset mode is enabled"
+    )
+    enable_processor_hint_target = Param.Bool(
+        False,
+        "Attach the configured target base and shift to CPU-produced "
+        "IndirectMemoryPrefetchHint requests",
+    )
+    processor_hint_base = Param.Addr(
+        0,
+        "Target base carried by processor-side indirect-memory hints",
+    )
+    processor_hint_shift = Param.Int(
+        0,
+        "Target index shift carried by processor-side indirect-memory hints",
+    )
+    validate_candidate_addresses = Param.Bool(
+        True, "Reject generated targets outside configured physical memory"
+    )
 
 class SignaturePathPrefetcher(QueuedPrefetcher):
     type = 'SignaturePathPrefetcher'
@@ -843,6 +1447,319 @@ class FallenBOPPrefetcher(BOPPrefetcher):
 
     autoLearning = False
     offsets = [24]
+
+class PatternMergingPrefetcher(QueuedPrefetcher):
+    # Paper: Merging Similar Patterns for Hardware Prefetching (MICRO 2022)
+    type = "PatternMergingPrefetcher"
+    cxx_class = "gem5::prefetch::PatternMerging"
+    cxx_header = "mem/cache/prefetch/pattern_merging.hh"
+
+    ft_entries = Param.Unsigned(64, "Number of entries in the Filter Table")
+    at_entries = Param.Unsigned(
+        32, "Number of entries in the Accumulation Table"
+    )
+    opt_entries = Param.Unsigned(
+        64, "Number of entries in the Offset Pattern Table"
+    )
+    ppt_entries = Param.Unsigned(
+        32, "Number of entries in the PC Pattern Table"
+    )
+    pb_entries = Param.Unsigned(16, "Number of entries in the Prefetch Buffer")
+    ft_assoc = Param.Unsigned(8, "Filter Table associativity")
+    at_assoc = Param.Unsigned(2, "Accumulation Table associativity")
+    pb_assoc = Param.Unsigned(1, "Prefetch Buffer associativity")
+    region_size = Param.MemorySize("4KiB", "Spatial region size")
+    pattern_length = Param.Unsigned(
+        64, "Number of cache lines tracked in each spatial pattern"
+    )
+    counter_bits = Param.Unsigned(
+        5, "Number of bits in each OPT/PPT saturating counter"
+    )
+    ppt_monitoring_range = Param.Unsigned(
+        2, "Number of adjacent offsets monitored by each PPT counter"
+    )
+    l1_threshold_percent = Param.Percent(
+        50, "AFE threshold for high-priority prefetch candidates"
+    )
+    l2_threshold_percent = Param.Percent(
+        15, "AFE threshold for L2 prefetch candidates"
+    )
+    l2_prefetch_skip_cache_levels = Param.Unsigned(
+        1, "Cache levels above an L2-targeted PMP prefetch that do not fill"
+    )
+    llc_prefetch_skip_cache_levels = Param.Unsigned(
+        2, "Cache levels above an LLC-targeted PMP prefetch that do not fill"
+    )
+    max_prefetches_per_access = Param.Unsigned(
+        64, "Maximum number of PMP candidates emitted per observed access"
+    )
+
+    queue_squash = True
+    queue_filter = True
+    cache_snoop = True
+    prefetch_on_access = True
+    on_write = False
+    on_inst = False
+
+class KairosPrefetcher(QueuedPrefetcher):
+    type = "KairosPrefetcher"
+    cxx_class = "gem5::prefetch::Kairos"
+    cxx_header = "mem/cache/prefetch/kairos.hh"
+
+    degree = Param.Unsigned(4, "Max chain-walk prefetches per access")
+    kd_size = Param.Unsigned(32, "Detecting Unit entries")
+    tu_size = Param.Unsigned(16, "Training Unit entries")
+    ht_sets = Param.Unsigned(4096, "Metadata cache sets")
+    ht_ways_init = Param.Unsigned(48, "Initial metadata ways per set")
+    ht_ways_min = Param.Unsigned(12, "Minimum metadata ways per set")
+    ht_ways_max = Param.Unsigned(96, "Maximum metadata ways per set")
+    tracking_window = Param.Unsigned(262144, "Accesses per PID window")
+    alpha = Param.Float(0.6, "PID alpha (utility weight)")
+    beta = Param.Float(-0.3, "PID beta (delta miss-rate weight)")
+    gamma = Param.Float(0.1, "PID gamma (second-derivative weight)")
+    theta_plus = Param.Float(0.5, "PID positive threshold")
+    theta_minus = Param.Float(-0.25, "PID negative threshold")
+    tau = Param.Float(1.2, "Miss-rate explosion threshold")
+
+    enable_llc_metadata = Param.Bool(
+        False,
+        "Count Kairos LLC metadata accesses without injecting real XS traffic",
+    )
+    metadata_base_addr = Param.Addr(
+        0x8000000000,
+        "Base physical address of the shadow region used for metadata traffic",
+    )
+    llc_metadata_ways_init = Param.Unsigned(
+        4, "Initial number of LLC physical ways reserved for metadata"
+    )
+    llc_metadata_ways_min = Param.Unsigned(
+        1, "Min number of LLC ways reserved for metadata"
+    )
+    llc_metadata_ways_max = Param.Unsigned(
+        8, "Max number of LLC ways reserved for metadata"
+    )
+    llc_metadata_initial_ways = VectorParam.Unsigned(
+        [],
+        "Initial LLC metadata ways; accepted for config compatibility",
+    )
+
+class StreamlinePrefetcher(QueuedPrefetcher):
+    type = "StreamlinePrefetcher"
+    cxx_class = "gem5::prefetch::Streamline"
+    cxx_header = "mem/cache/prefetch/streamline.hh"
+
+    prefetch_on_access = True
+
+    training_unit_assoc = Param.Int(8, "Associativity of the training unit")
+    training_unit_entries = Param.MemorySize(
+        "256", "Number of per-PC training-unit entries"
+    )
+    metadata_store_assoc = Param.Int(
+        8, "Number of LLC ways reserved per active metadata set"
+    )
+    metadata_store_entries = Param.MemorySize(
+        "16384", "Maximum number of 64B metadata blocks in the store"
+    )
+    metadata_base_addr = Param.Addr(
+        0x8000000000, "Base address of the Streamline shadow metadata region"
+    )
+    metadata_line_stride = Param.Unsigned(
+        2048,
+        "Number of LLC cache lines separating Streamline partial-tag groups",
+    )
+    metadata_buffer_entries = Param.Int(
+        3, "Number of per-PC buffered metadata entries"
+    )
+    max_degree = Param.Int(4, "Maximum Streamline prefetch degree")
+    epoch_size = Param.Int(1024, "Per-PC instability epoch for degree control")
+    insertions_low_thresh = Param.Int(
+        400, "Insertion threshold for degree four"
+    )
+    insertions_mid_thresh = Param.Int(
+        600, "Insertion threshold for degree three"
+    )
+    insertions_high_thresh = Param.Int(
+        800, "Insertion threshold for degree two"
+    )
+    metadata_port = RequestPort(
+        "Dedicated request port for Streamline LLC metadata traffic"
+    )
+
+    @cxxMethod
+    def debugMetadataEntryTargetCount(self):
+        pass
+
+    @cxxMethod
+    def debugTriggerFields(self, trigger_hash):
+        pass
+
+    @cxxMethod
+    def debugDescribeStreamEntry(self, trigger_hash, targets):
+        pass
+
+    @cxxMethod
+    def debugAppendTrainingAddress(self, current_stream, address):
+        pass
+
+    @cxxMethod
+    def debugAlignStreams(self, old_stream, new_stream):
+        pass
+
+    @cxxMethod
+    def debugDegreeForInsertions(self, insertions, max_degree,
+                                 low_insertion_threshold,
+                                 mid_insertion_threshold,
+                                 high_insertion_threshold):
+        pass
+
+    @cxxMethod
+    def debugMetadataSetCount(self, metadata_entries, metadata_assoc):
+        pass
+
+    @cxxMethod
+    def debugActiveMetadataSetCount(self, partition_level, max_metadata_sets,
+                                    sample_set_count):
+        pass
+
+    @cxxMethod
+    def debugIsMetadataSetActive(self, metadata_set, partition_level,
+                                 max_metadata_sets, sample_set_count):
+        pass
+
+    @cxxMethod
+    def debugMetadataLineAddress(self, metadata_base, metadata_line_stride,
+                                 max_metadata_sets, metadata_set,
+                                 partial_tag):
+        pass
+
+    @cxxMethod
+    def debugRuntimeMetadataLineAddress(self, address):
+        pass
+
+    @cxxMethod
+    def debugChooseMetadataVictim(self, etrs, valids):
+        pass
+
+    @cxxMethod
+    def debugMetadataSamplerCoordinates(self, metadata_set):
+        pass
+
+    @cxxMethod
+    def debugTrainMetadataSampler(self, metadata_set, stream_entry, pc):
+        pass
+
+    @cxxMethod
+    def debugPredictMetadataSamplerEtr(self, metadata_set, stream_entry):
+        pass
+
+    @cxxMethod
+    def debugChooseMetadataVictimForEntries(self, metadata_set,
+                                            flattened_entries):
+        pass
+
+    @cxxMethod
+    def debugMetadataHitScore(self, accuracy):
+        pass
+
+    @cxxMethod
+    def debugSelectPartitionLevel(self, scores, current_level):
+        pass
+
+    @cxxMethod
+    def debugSampledPartitionLevel(self, metadata_set, max_metadata_sets,
+                                   sample_set_count):
+        pass
+
+    @cxxMethod
+    def debugPackMetadataBlock(self, entries):
+        pass
+
+    @cxxMethod
+    def debugUnpackMetadataBlock(self, packed_block):
+        pass
+
+    @cxxMethod
+    def debugUpdateMetadataBuffer(self, current_buffer, stream_entry,
+                                  buffer_entries):
+        pass
+
+    @cxxMethod
+    def debugPlanBufferedPrefetch(self, current_buffer, address, degree):
+        pass
+
+    @cxxMethod
+    def debugNeedsMetadataRead(self, current_buffer, address):
+        pass
+
+    @cxxMethod
+    def debugRecordPartitionSample(self, partition_level, score):
+        pass
+
+    @cxxMethod
+    def debugCurrentPartitionLevel(self):
+        pass
+
+    @cxxMethod
+    def debugCurrentPartitionLevelStat(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionTransitionCount(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionTransitionsStat(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionScores(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionSampledAccesses(self):
+        pass
+
+    @cxxMethod
+    def debugPartitionUpdateInterval(self):
+        pass
+
+    @cxxMethod
+    def debugResetRuntimeState(self):
+        pass
+
+    @cxxMethod
+    def debugObserveAccess(self, pc, address):
+        pass
+
+class BingoPrefetcher(QueuedPrefetcher):
+    # Paper: Bakhshalipour et al., HPCA 2019
+    type = 'BingoPrefetcher'
+    cxx_class = 'gem5::prefetch::Bingo'
+    cxx_header = 'mem/cache/prefetch/bingo.hh'
+
+    region_size = Param.Unsigned(2048, 'Spatial region (page) size in bytes')
+    pattern_len = Param.Unsigned(32,
+        'Blocks per region (must equal region_size / blkSize)')
+    ft_size = Param.Unsigned(64, 'FilterTable entries (fully-assoc, LRU)')
+    at_size = Param.Unsigned(128,
+        'AccumulationTable entries (fully-assoc, LRU)')
+    pht_size = Param.Unsigned(16384,
+        'Total PHT entries (must be a multiple of pht_ways, '
+        'pht_size/pht_ways must be power of two)')
+    pht_ways = Param.Unsigned(16, 'PHT associativity')
+    pc_width = Param.Unsigned(16, 'PC bits used in tag/key')
+    min_addr_width = Param.Unsigned(5,
+        'Offset width in bits (log2(pattern_len))')
+    max_addr_width = Param.Unsigned(16,
+        'Address bits used in max (PC+Address) tag')
+    thresh = Param.Float(0.20,
+        'Voting threshold for PC+Offset min-match candidates')
+    rotate_pattern = Param.Bool(True,
+        'Rotate pattern by -offset on insert / +offset on find')
+
+    prefetch_on_access = True
+    prefetch_on_pf_hit = False
+    on_inst = False
 
 class SBOOEPrefetcher(QueuedPrefetcher):
     type = 'SBOOEPrefetcher'
@@ -1323,12 +2240,70 @@ class CentralizedDataPrefetcher(XSCompositePrefetcher):
         128, "Maximum L2 preferred distance in cache lines")
     l1_min_mshr_credits = Param.Unsigned(
         1, "Minimum L1 MSHR credits required")
+    dynamic_arbitration = Param.Bool(
+        False, "Enable quality-aware centralized prefetch arbitration")
+    quality_table_entries = Param.Unsigned(
+        4096, "Entries in the centralized quality table")
+    quality_table_assoc = Param.Unsigned(
+        4, "Associativity of the centralized quality table")
+    quality_initial_score = Param.Int(
+        8, "Initial centralized quality score")
+    quality_max_score = Param.Int(
+        15, "Maximum centralized quality score")
+    quality_l1_threshold = Param.Int(
+        8, "Minimum quality score for L1 admission")
+    quality_l2_threshold = Param.Int(
+        4, "Minimum quality score for L2 admission")
+    quality_drop_threshold = Param.Int(
+        1, "Drop candidates below this quality score")
+    quality_useful_weight = Param.Int(
+        3, "Quality increment for useful prefetches")
+    quality_unused_weight = Param.Int(
+        -6, "Quality update for unused prefetches")
+    quality_late_weight = Param.Int(
+        1, "Quality update for late demand merges")
+    quality_duplicate_demand_weight = Param.Int(
+        0, "Quality update for demand-resident duplicate coverage")
+    quality_hotness_max = Param.Unsigned(
+        31, "Maximum dynamic hotness score")
+    quality_hotness_observation_weight = Param.Unsigned(
+        1, "Hotness increment for each generated candidate observation")
+    quality_hotness_useful_weight = Param.Unsigned(
+        4, "Hotness increment for useful prefetch feedback")
+    quality_hotness_late_weight = Param.Unsigned(
+        2, "Hotness increment for late prefetch feedback")
+    quality_hotness_decay_period = Param.Unsigned(
+        2048, "Candidate observations per lazy hotness decay epoch")
+    quality_hotness_l1_threshold = Param.Unsigned(
+        12, "Hotness threshold for preferring L1 dispatch")
+    quality_hotness_l2_threshold = Param.Unsigned(
+        6, "Hotness threshold for preferring L2 dispatch")
+    cmc_near_distance = Param.Unsigned(
+        32, "CMC candidates at or below this distance may prefer L1")
+    cmc_far_l1_threshold = Param.Int(
+        12, "Minimum quality for far CMC candidates to prefer L1")
+    l1_pollution_threshold = Param.Int(
+        16, "L1 pollution guard threshold")
+    l1_pollution_bypass_threshold = Param.Int(
+        12, "Quality score required to bypass L1 pollution guard")
+    l1_pollution_unused_weight = Param.Int(
+        4, "L1 pollution increment for unused prefetches")
+    l1_pollution_useful_weight = Param.Int(
+        -8, "L1 pollution update for useful prefetches")
+    l1_pollution_decay = Param.Int(
+        1, "L1 pollution decay applied during dynamic dispatch")
+    duplicate_filter_entries = Param.Unsigned(
+        4096, "Entries in each centralized source-aware recent duplicate filter")
     core_id = Param.Unsigned(0, "Stable core ID for shared endpoint RR")
     train_on_store = Param.Bool(
         False, "Allow committed store requests to train the central engine")
+    managed_prefetcher_names = VectorParam.String(
+        [], "Names of algorithms managed by the centralized framework")
+    managed_prefetchers = VectorParam.BasePrefetcher(
+        [], "Internal managers/algorithms that generate candidates for the centralized dispatcher")
 
 
-class MultiPrefetcher(BasePrefetcher):
+class MultiPrefetcher(QueuedPrefetcher):
     type = 'MultiPrefetcher'
     cxx_class = 'gem5::prefetch::Multi'
     cxx_header = 'mem/cache/prefetch/multi.hh'
@@ -1342,6 +2317,68 @@ class MultiPrefetcher(BasePrefetcher):
 
     prefetchers = VectorParam.BasePrefetcher([XSCompositePrefetcher(), BOPPrefetcher()],
         "Array of prefetchers")
+
+class IPOPMultiPrefetcher(MultiPrefetcher):
+    type = "IPOPMultiPrefetcher"
+    cxx_class = "gem5::prefetch::IPOPMulti"
+    cxx_header = "mem/cache/prefetch/ipop_multi.hh"
+    record_phase_pe_ipc_csv = Param.Bool(
+        False,
+        "Record each phase's PE values together with the next phase's IPC",
+    )
+    phase_pe_ipc_csv_path = Param.String(
+        "",
+        "CSV output path for phase PE and next-phase IPC logging",
+    )
+    phase_length = Param.Unsigned(1024, "Demand accesses per I-POP phase")
+    pfht_entries = Param.Unsigned(512, "Number of PfHT entries")
+    poht_entries = Param.Unsigned(512, "Number of PoHT entries")
+    table_tag_bits = Param.Unsigned(6, "Tag bits stored in PfHT/PoHT")
+    ipop_on_levels = Param.Unsigned(5, "Number of ON aggressiveness levels")
+    ipop_off_levels = Param.Unsigned(3, "Number of OFF cooldown levels")
+    ideal_dram_latency = Param.Cycles(
+        100, "Ideal DRAM access latency used to derive I-POP thresholds"
+    )
+    phase_on_miss = Param.Bool(
+        False,
+        "Advance I-POP phases on completed demand misses instead of all demand accesses",
+    )
+    warmup_phases = Param.Unsigned(
+        0,
+        "Completed I-POP phases during which ON-to-OFF transitions are suppressed",
+    )
+    t_noc = Param.Cycles(0, "I-POP NoC contention penalty")
+    t_bus = Param.Cycles(1, "I-POP DRAM bus contention penalty")
+    t_bank = Param.Cycles(1, "I-POP DRAM bank contention penalty")
+    channel_shift = Param.Unsigned(
+        0, "Bit position of the least-significant I-POP channel index bit"
+    )
+    channel_bits = Param.Unsigned(
+        0, "Number of I-POP channel index bits; 0 models a single channel"
+    )
+    bank_shift = Param.Unsigned(
+        10,
+        "Bit position of the least-significant I-POP bank index bit",
+    )
+    bank_bits = Param.Unsigned(5, "Number of I-POP bank index bits")
+
+class BanditPrefetcher(MultiPrefetcher):
+    type = "BanditPrefetcher"
+    cxx_class = "gem5::prefetch::Bandit"
+    cxx_header = "mem/cache/prefetch/bandit.hh"
+
+    arm_masks = VectorParam.UInt64(
+        [], "Per-arm bitmask over the sub-prefetcher list"
+    )
+    gamma = Param.Float(0.999, "DUCB discount factor in (0, 1]")
+    c = Param.Float(0.04, "Exploration constant")
+    bandit_step = Param.UInt64(
+        1000, "Main-loop bandit step duration in demand accesses"
+    )
+    bandit_step_rr = Param.UInt64(
+        1000, "Initial round-robin bandit step duration in demand accesses"
+    )
+    cpu = Param.BaseCPU(NULL, "CPU used to read committed instruction counts")
 
 class L2CompositeWithWorkerPrefetcher(CompositeWithWorkerPrefetcher):
     type = 'L2CompositeWithWorkerPrefetcher'
@@ -1360,6 +2397,23 @@ class L2CompositeWithWorkerPrefetcher(CompositeWithWorkerPrefetcher):
     enable_cdp = Param.Bool(False, "Enable CDP")
     enable_cmc = Param.Bool(False, "Enable CMC")
     enable_despacito_stream = Param.Bool(False, "Enable despacito stream")
+
+class L2WorkerSlotPrefetcher(CompositeWithWorkerPrefetcher):
+    type = 'L2WorkerSlotPrefetcher'
+    cxx_class = 'gem5::prefetch::L2WorkerSlotPrefetcher'
+    cxx_header = "mem/cache/prefetch/l2_worker_slot.hh"
+
+    vbop = Param.BasePrefetcher(BOPPrefetcher(is_sub_prefetcher=True),
+                                "Virtual-address BOP slot")
+    pbop = Param.BasePrefetcher(SmallBOPPrefetcher(is_sub_prefetcher=True),
+                                "Physical-address BOP slot")
+    tp = Param.BasePrefetcher(DespacitoStreamPrefetcher(is_sub_prefetcher=True),
+                              "Temporal prefetcher slot")
+
+    enable_vbop = Param.Bool(True, "Enable VBOP slot")
+    enable_pbop = Param.Bool(True, "Enable PBOP slot")
+    enable_tp = Param.Bool(True, "Enable TP slot")
+
 
 class L3CompositeWithWorkerPrefetcher(CompositeWithWorkerPrefetcher):
     type = 'L3CompositeWithWorkerPrefetcher'

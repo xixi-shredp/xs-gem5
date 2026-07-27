@@ -146,6 +146,11 @@ def addNoISAOptions(parser, configure_xiangshan=False):
     parser.add_argument("--no-l3cache", action="store_true")
     parser.add_argument("--l1-to-l2-pf-hint", action="store_true")
     parser.add_argument("--l2-to-l3-pf-hint", action="store_true")
+    parser.add_argument("--no-pfahead", action="store_true", default=False,
+        help="Completely disable pf-ahead: drop cross-level prefetch requests")
+    parser.add_argument("--no-pfahead-reserved", action="store_true",
+        default=False,
+        help="Disable pf-ahead offloading but keep requests as local prefetches")
 
     parser.add_argument("--num-dirs", type=int, default=1)
     parser.add_argument("--num-l2caches", type=int, default=1)
@@ -174,6 +179,52 @@ def addNoISAOptions(parser, configure_xiangshan=False):
     parser.add_argument(
         "--centralized-data-prefetcher", action="store_true", default=False,
         help="use the aligned-KMH centralized data prefetch framework")
+    parser.add_argument(
+        "--centralized-prefetcher-config", type=str, default=None,
+        help="JSON config for the centralized multi-prefetcher manager")
+    parser.add_argument("--pf-dse-config", default=None, type=str,
+                        help="pf-dse JSON config used to instantiate non-centralized data prefetchers")
+    parser.add_argument("--pf-dse-strict-params", action="store_true", default=False,
+                        help="Fail when --pf-dse-config contains a SimObject parameter xs-gem5 cannot apply")
+    parser.add_argument(
+        "--centralized-l1-min-mshr-credits", type=int, default=1,
+        help="minimum L1 MSHR credits required by centralized prefetcher")
+    parser.add_argument(
+        "--centralized-l2-min-mshr-credits", type=int, default=1,
+        help="minimum L2 endpoint MSHR credits required by centralized prefetcher")
+    parser.add_argument(
+        "--centralized-l3-min-mshr-credits", type=int, default=1,
+        help="minimum L3 endpoint MSHR credits required by centralized prefetcher")
+    parser.add_argument(
+        "--centralized-dynamic-arbitration", action="store_true",
+        default=False,
+        help="enable quality-aware centralized prefetch arbitration")
+    parser.add_argument("--centralized-quality-table-entries", type=int, default=4096)
+    parser.add_argument("--centralized-quality-table-assoc", type=int, default=4)
+    parser.add_argument("--centralized-quality-initial-score", type=int, default=8)
+    parser.add_argument("--centralized-quality-max-score", type=int, default=15)
+    parser.add_argument("--centralized-quality-l1-threshold", type=int, default=8)
+    parser.add_argument("--centralized-quality-l2-threshold", type=int, default=4)
+    parser.add_argument("--centralized-quality-drop-threshold", type=int, default=1)
+    parser.add_argument("--centralized-quality-useful-weight", type=int, default=3)
+    parser.add_argument("--centralized-quality-unused-weight", type=int, default=-6)
+    parser.add_argument("--centralized-quality-late-weight", type=int, default=1)
+    parser.add_argument("--centralized-quality-duplicate-demand-weight", type=int, default=0)
+    parser.add_argument("--centralized-quality-hotness-max", type=int, default=31)
+    parser.add_argument("--centralized-quality-hotness-observation-weight", type=int, default=1)
+    parser.add_argument("--centralized-quality-hotness-useful-weight", type=int, default=4)
+    parser.add_argument("--centralized-quality-hotness-late-weight", type=int, default=2)
+    parser.add_argument("--centralized-quality-hotness-decay-period", type=int, default=2048)
+    parser.add_argument("--centralized-quality-hotness-l1-threshold", type=int, default=12)
+    parser.add_argument("--centralized-quality-hotness-l2-threshold", type=int, default=6)
+    parser.add_argument("--centralized-cmc-near-distance", type=int, default=32)
+    parser.add_argument("--centralized-cmc-far-l1-threshold", type=int, default=12)
+    parser.add_argument("--centralized-l1-pollution-threshold", type=int, default=16)
+    parser.add_argument("--centralized-l1-pollution-bypass-threshold", type=int, default=12)
+    parser.add_argument("--centralized-l1-pollution-unused-weight", type=int, default=4)
+    parser.add_argument("--centralized-l1-pollution-useful-weight", type=int, default=-8)
+    parser.add_argument("--centralized-l1-pollution-decay", type=int, default=1)
+    parser.add_argument("--centralized-duplicate-filter-entries", type=int, default=4096)
     parser.add_argument("--l1i-hwp-type", default=None,
                         choices=ObjectList.hwp_list.get_names(), help="L1 icache hardware prefetcher")
     parser.add_argument("--l1d-hwp-type", default='XSCompositePrefetcher',

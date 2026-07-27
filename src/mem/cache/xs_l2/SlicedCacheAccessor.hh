@@ -31,7 +31,14 @@ public:
     bool hasBeenPrefetched(Addr addr, bool is_secure, RequestorID requestor) const override;
     bool hasEverBeenPrefetched(Addr addr, bool is_secure) const override;
     Request::XsMetadata getHitBlkXsMetadata(PacketPtr pkt) override;
+    bool getHitBlkXsMetadata(Addr addr, bool is_secure,
+                             Request::XsMetadata &metadata) const override;
+    bool getHitBlkFillInfo(Addr addr, bool is_secure,
+                           Tick &fill_tick, bool &had_demand) const override;
     bool inMissQueue(Addr addr, bool is_secure) const override;
+    bool getMissQueueXsMetadata(Addr addr, bool is_secure,
+                                Request::XsMetadata &metadata,
+                                bool &has_cpu, bool &has_pref) const override;
     bool inWriteQueue(Addr addr, bool is_secure) const override;
     bool coalesce() const override;
     const uint8_t* findBlock(Addr addr, bool is_secure) const override;

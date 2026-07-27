@@ -154,7 +154,8 @@ def config_aligned_l2(options, system, l2_cache_class):
         l2_wrapper = system.l2_wrappers[i]
         xbar = l2_wrapper.xbar
         if options.centralized_data_prefetcher:
-            l2_wrapper.prefetcher = create_centralized_endpoint(2)
+            l2_wrapper.prefetcher = create_centralized_endpoint(
+                2, getattr(options, 'centralized_l2_min_mshr_credits', 1))
         elif options.no_pf:
             l2_wrapper.prefetcher = NULL
         else:
@@ -292,7 +293,8 @@ def config_cache(options, system):
         if options.l3cache:
             l3_opts = _get_cache_opts(NULL, 'l3', options)
             if centralized:
-                l3_opts['prefetcher'] = create_centralized_endpoint(3)
+                l3_opts['prefetcher'] = create_centralized_endpoint(
+                    3, getattr(options, 'centralized_l3_min_mshr_credits', 1))
             system.l3 = L3Cache(clk_domain=system.cpu_clk_domain,
                                 **l3_opts)
             system.tol3bus = L2ToL3Bus(clk_domain=system.cpu_clk_domain)
@@ -334,7 +336,46 @@ def config_cache(options, system):
                     if options.l3cache else NULL)
                 dcache_opts['prefetcher'] = create_centralized_engine(
                     system.cpu[i], i, system.l2_wrappers[i].prefetcher,
-                    l3_endpoint)
+                    l3_endpoint,
+                    getattr(options, 'centralized_l1_min_mshr_credits', 1),
+                    getattr(options, 'centralized_dynamic_arbitration', False),
+                    getattr(options, 'centralized_quality_table_entries', 4096),
+                    getattr(options, 'centralized_quality_table_assoc', 4),
+                    getattr(options, 'centralized_quality_initial_score', 8),
+                    getattr(options, 'centralized_quality_max_score', 15),
+                    getattr(options, 'centralized_quality_l1_threshold', 8),
+                    getattr(options, 'centralized_quality_l2_threshold', 4),
+                    getattr(options, 'centralized_quality_drop_threshold', 1),
+                    getattr(options, 'centralized_quality_useful_weight', 3),
+                    getattr(options, 'centralized_quality_unused_weight', -6),
+                    getattr(options, 'centralized_quality_late_weight', 1),
+                    getattr(options,
+                            'centralized_quality_duplicate_demand_weight', 0),
+                    getattr(options, 'centralized_quality_hotness_max', 31),
+                    getattr(options,
+                            'centralized_quality_hotness_observation_weight', 1),
+                    getattr(options,
+                            'centralized_quality_hotness_useful_weight', 4),
+                    getattr(options,
+                            'centralized_quality_hotness_late_weight', 2),
+                    getattr(options,
+                            'centralized_quality_hotness_decay_period', 2048),
+                    getattr(options,
+                            'centralized_quality_hotness_l1_threshold', 12),
+                    getattr(options,
+                            'centralized_quality_hotness_l2_threshold', 6),
+                    getattr(options, 'centralized_cmc_near_distance', 32),
+                    getattr(options, 'centralized_cmc_far_l1_threshold', 12),
+                    getattr(options, 'centralized_l1_pollution_threshold', 16),
+                    getattr(options,
+                            'centralized_l1_pollution_bypass_threshold', 12),
+                    getattr(options,
+                            'centralized_l1_pollution_unused_weight', 4),
+                    getattr(options,
+                            'centralized_l1_pollution_useful_weight', -8),
+                    getattr(options, 'centralized_l1_pollution_decay', 1),
+                    getattr(options, 'centralized_duplicate_filter_entries', 4096),
+                    getattr(options, 'centralized_prefetcher_config', None))
             dcache = dcache_class(**dcache_opts)
             if dcache.prefetcher != NULL and options.cpu_type == 'DerivO3CPU':
                 system.cpu[i].add_pf_downstream(dcache.prefetcher)

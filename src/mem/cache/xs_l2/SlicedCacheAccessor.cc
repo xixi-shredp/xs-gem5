@@ -68,10 +68,37 @@ SlicedCacheAccessor::getHitBlkXsMetadata(PacketPtr pkt)
 }
 
 bool
+SlicedCacheAccessor::getHitBlkXsMetadata(
+    Addr addr, bool is_secure, Request::XsMetadata &metadata) const
+{
+    fatal_if(l2_wrapper->cache_accessors.empty(), "No slice accessors available.");
+    return getSlice(addr)->getHitBlkXsMetadata(addr, is_secure, metadata);
+}
+
+bool
+SlicedCacheAccessor::getHitBlkFillInfo(
+    Addr addr, bool is_secure, Tick &fill_tick, bool &had_demand) const
+{
+    fatal_if(l2_wrapper->cache_accessors.empty(), "No slice accessors available.");
+    return getSlice(addr)->getHitBlkFillInfo(
+        addr, is_secure, fill_tick, had_demand);
+}
+
+bool
 SlicedCacheAccessor::inMissQueue(Addr addr, bool is_secure) const
 {
     fatal_if(l2_wrapper->cache_accessors.empty(), "No slice accessors available.");
     return getSlice(addr)->inMissQueue(addr, is_secure);
+}
+
+bool
+SlicedCacheAccessor::getMissQueueXsMetadata(
+    Addr addr, bool is_secure, Request::XsMetadata &metadata,
+    bool &has_cpu, bool &has_pref) const
+{
+    fatal_if(l2_wrapper->cache_accessors.empty(), "No slice accessors available.");
+    return getSlice(addr)->getMissQueueXsMetadata(
+        addr, is_secure, metadata, has_cpu, has_pref);
 }
 
 bool

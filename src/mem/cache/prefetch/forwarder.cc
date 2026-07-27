@@ -187,6 +187,60 @@ PrefetcherForwarder::prefetchUnused(PrefetchSourceType pf_type)
 }
 
 void
+PrefetcherForwarder::prefetchUnused(
+    Addr paddr, const Request::XsMetadata &metadata)
+{
+    if (real_pf) {
+        real_pf->prefetchUnused(paddr, metadata);
+    }
+}
+
+void
+PrefetcherForwarder::prefetchLate(
+    const Request::XsMetadata &metadata, bool firstDemandMerge)
+{
+    if (real_pf) {
+        real_pf->prefetchLate(metadata, firstDemandMerge);
+    }
+}
+
+void
+PrefetcherForwarder::recordPrefetchAdmitted(
+    const Request::XsMetadata &metadata)
+{
+    if (real_pf) {
+        real_pf->recordPrefetchAdmitted(metadata);
+    }
+}
+
+void
+PrefetcherForwarder::recordPrefetchFill(
+    const Request::XsMetadata &metadata)
+{
+    if (real_pf) {
+        real_pf->recordPrefetchFill(metadata);
+    }
+}
+
+void
+PrefetcherForwarder::recordUpperPrefetchConsumed(
+    const Request::XsMetadata &metadata)
+{
+    if (real_pf) {
+        real_pf->recordUpperPrefetchConsumed(metadata);
+    }
+}
+
+void
+PrefetcherForwarder::recordPrefetchFillVictim(
+    const Request::XsMetadata &metadata, bool dirty, bool demandTouched)
+{
+    if (real_pf) {
+        real_pf->recordPrefetchFillVictim(metadata, dirty, demandTouched);
+    }
+}
+
+void
 PrefetcherForwarder::pfHitInMSHR(PrefetchSourceType pf_type)
 {
     if (real_pf) {

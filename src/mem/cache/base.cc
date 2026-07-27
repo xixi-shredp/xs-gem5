@@ -550,6 +550,11 @@ BaseCache::handleTimingReqMiss(PacketPtr pkt, MSHR *mshr, CacheBlk *blk,
                     // Demand request merging into prefetch-only MSHR
                     if (pkt->isDemand()) {
                         stats.demandMergedIntoPfMSHR++;
+                        if (prefetcher) {
+                            prefetcher->prefetchLate(
+                                mshr->getPFMetadata(),
+                                mshr->markPrefetchLateReported());
+                        }
                         DPRINTF(Cache, "Demand request %#lx merged into prefetch MSHR\n",
                                 pkt->getAddr());
                     }
@@ -801,6 +806,10 @@ BaseCache::recvTimingReq(PacketPtr pkt)
             pkt->req->setPFSource(blk->getXsMetadata().prefetchSource);
             DPRINTF(Cache, "Mark req %p pf source: %i\n", pkt->req, pkt->req->getPFSource());
             pkt->req->setPFDepth(0);
+            if (pkt->cmd.isHWPrefetch()) {
+                prefetcher->recordUpperPrefetchConsumed(
+                    blk->getXsMetadata());
+            }
             blk->clearPrefetched();
             first_acc_after_pf = true;
         }
@@ -1547,6 +1556,10 @@ BaseCache::getNextQueueEntry()
                 // schedule the send
                 DPRINTF(HWPrefetch, "Allocating MSHR for prefetching addr %#x\n", pf_addr);
                 auto buf = allocateMissBuffer(pkt, curTick(), false);
+                if (buf != nullptr) {
+                    prefetcher->recordPrefetchAdmitted(
+                        pkt->req->getXsMetadata());
+                }
                 prefetcher->notifyPrefetchResult(pkt, buf != nullptr);
                 return buf;
             }
@@ -2333,6 +2346,7 @@ BaseCache::handleFill(PacketPtr pkt, CacheBlk *blk, PacketList &writebacks,
     // The block will be ready when the payload arrives and the fill is done
     blk->setWhenReady(clockEdge(dataLatency + pipeLatency) + pkt->headerDelay +
                       pkt->payloadDelay);
+    blk->setLastFillInfo(curTick(), pkt->isDemand());
 
     // NOTE: Dcache sends the block address back to lsu
     // notify lsu to clear data on data bus
@@ -2392,12 +2406,36 @@ BaseCache::allocateBlock(const PacketPtr pkt, PacketList &writebacks,
     if (!victim)
         return nullptr;
 
+    struct VictimState
+    {
+        bool dirty;
+        bool demandTouched;
+    };
+    std::vector<VictimState> pf_fill_victims;
+    if (prefetcher) {
+        for (const auto *evict_blk : evict_blks) {
+            if (evict_blk->isValid()) {
+                pf_fill_victims.push_back({
+                    evict_blk->isSet(CacheBlk::DirtyBit),
+                    evict_blk->getDemandHits() != 0});
+            }
+        }
+    }
+
     // Print victim block's information
     DPRINTF(CacheRepl, "Replacement victim: %s\n", victim->print());
 
     // Try to evict blocks; if it fails, give up on allocation
     if (!handleEvictions(evict_blks, writebacks, evicted_dirty)) {
         return nullptr;
+    }
+
+    if (prefetcher && pkt->req->hasXsMetadata()) {
+        const auto &metadata = pkt->req->getXsMetadata();
+        for (const auto &victim_state : pf_fill_victims) {
+            prefetcher->recordPrefetchFillVictim(
+                metadata, victim_state.dirty, victim_state.demandTouched);
+        }
     }
 
     // Insert new block at victimized entry
@@ -2425,7 +2463,8 @@ BaseCache::invalidateBlock(CacheBlk *blk)
     }
     // If block is still marked as prefetched, then it hasn't been used
     if (blk->wasPrefetched()) {
-        prefetcher->prefetchUnused(regenerateBlkAddr(blk), blk->getXsMetadata().prefetchSource);
+        prefetcher->prefetchUnused(
+            regenerateBlkAddr(blk), blk->getXsMetadata());
     }
 
     // Notify that the data contents for this address are no longer present

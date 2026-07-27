@@ -180,6 +180,27 @@ class RubyPrefetcherProxy : public CacheAccessor, public Named
         return cacheCntrl->getHitBlkXsMetadata(pkt->getAddr(), pkt->isSecure());
     }
 
+    bool getHitBlkXsMetadata(Addr addr, bool is_secure,
+                             Request::XsMetadata &metadata) const override
+    {
+        if (!cacheCntrl->inCache(addr, is_secure)) {
+            return false;
+        }
+        metadata = cacheCntrl->getHitBlkXsMetadata(addr, is_secure);
+        return true;
+    }
+
+    bool getHitBlkFillInfo(Addr addr, bool is_secure,
+                            Tick &fill_tick, bool &had_demand) const override
+    {
+        if (!cacheCntrl->inCache(addr, is_secure)) {
+            return false;
+        }
+        fill_tick = 0;
+        had_demand = false;
+        return true;
+    }
+
     bool inMissQueue(Addr addr, bool is_secure) const override
     {
         return cacheCntrl->inMissQueue(addr, is_secure);

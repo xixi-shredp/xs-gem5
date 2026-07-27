@@ -188,6 +188,8 @@ class MSHR : public QueueEntry, public Printable
 
         int pfDepth = 0;
 
+        Request::XsMetadata pfMetadata;
+
         TargetList(const std::string &name = ".unnamedTargetList");
 
         /**
@@ -228,6 +230,7 @@ class MSHR : public QueueEntry, public Printable
 
             pfSource = PF_NONE;
             pfDepth = 0;
+            pfMetadata.invalidate();
         }
 
         /**
@@ -380,6 +383,18 @@ class MSHR : public QueueEntry, public Printable
         return targets.pfDepth;
     }
 
+    const Request::XsMetadata &getPFMetadata() const {
+        return targets.pfMetadata;
+    }
+
+    /** Return true only for the first demand merged into this PF-only MSHR. */
+    bool markPrefetchLateReported()
+    {
+        const bool first = !prefetchLateReported;
+        prefetchLateReported = true;
+        return first;
+    }
+
     /**
      * Replaces the matching packet in the Targets list with a dummy packet to
      * ensure the MSHR remains allocated until the corresponding locked write
@@ -424,6 +439,8 @@ class MSHR : public QueueEntry, public Printable
     TargetList targets;
 
     TargetList deferredTargets;
+
+    bool prefetchLateReported = false;
 
   public:
     /**

@@ -80,8 +80,26 @@ struct CacheAccessor
 
     virtual Request::XsMetadata getHitBlkXsMetadata(PacketPtr pkt) = 0;
 
+    /** Return XsMetadata for a cache-resident block without mutating state. */
+    virtual bool getHitBlkXsMetadata(Addr addr, bool is_secure,
+                                     Request::XsMetadata &metadata) const = 0;
+
+    /** Return timing/source metadata for a cache-resident block fill. */
+    virtual bool getHitBlkFillInfo(Addr addr, bool is_secure,
+                                   Tick &fill_tick,
+                                   bool &had_demand) const = 0;
+
     /** Determine if address is in cache miss queue */
     virtual bool inMissQueue(Addr addr, bool is_secure) const = 0;
+
+    /** Return aggregated metadata for a matching miss queue entry. */
+    virtual bool getMissQueueXsMetadata(Addr addr, bool is_secure,
+                                        Request::XsMetadata &metadata,
+                                        bool &has_cpu,
+                                        bool &has_pref) const
+    {
+        return false;
+    }
 
     /** Determine if address is in the cache write queue */
     virtual bool inWriteQueue(Addr, bool) const { return false; }

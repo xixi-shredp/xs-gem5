@@ -198,6 +198,10 @@ namespace RiscvISA
             Addr blockedPtwRead;
             unsigned blockedPtwReadSize;
             Request::Flags blockedPtwFlags;
+            bool dataPrefetchWalkTracked;
+            bool dataPrefetchWalkCompletionRecorded;
+            unsigned dataPrefetchSourceBucket;
+            Tick dataPrefetchWalkStartTick;
 
 
           public:
@@ -219,7 +223,11 @@ namespace RiscvISA
                 tlbHit(false),tlbHitPte(0),tlbflags(Request::PHYSICAL),
                 waitingForPtwLevel(false), reservedPtwLevel(-1),
                 blockedPtwLevel(-1), blockedPtwRead(0), blockedPtwReadSize(0),
-                blockedPtwFlags(Request::PHYSICAL)
+                blockedPtwFlags(Request::PHYSICAL),
+                dataPrefetchWalkTracked(false),
+                dataPrefetchWalkCompletionRecorded(false),
+                dataPrefetchSourceBucket(NUM_PF_SOURCES),
+                dataPrefetchWalkStartTick(0)
             {
                 requestors.emplace_back(nullptr, _req, _translation);
             }
@@ -266,6 +274,7 @@ namespace RiscvISA
             Fault stepWalk(PacketPtr &write);
             void sendPackets();
             void endWalk();
+            void resetStatsWindow();
             bool usePtwLevelLimit() const;
             int currentPtwResourceLevel() const;
             bool waitForPtwLevel(int target_level, Addr next_read,
@@ -331,6 +340,12 @@ namespace RiscvISA
             statistics::Scalar ptwPrefetchLevelBlocked;
             statistics::Scalar ptwDemandRetrySelections;
             statistics::Scalar ptwPrefetchRetrySelections;
+            statistics::Vector ptwPrefetchQueueEnqueuesBySource;
+            statistics::Vector ptwPrefetchQueueDropsBySource;
+            statistics::Vector ptwPrefetchLevelBlockedBySource;
+            statistics::Vector ptwPrefetchRetrySelectionsBySource;
+            statistics::Vector ptwPrefetchWalkCompletionsBySource;
+            statistics::Vector ptwPrefetchWalkCyclesBySource;
         } stats;
 
         struct WalkerSenderState : public Packet::SenderState
@@ -401,6 +416,7 @@ namespace RiscvISA
         unsigned outstandingPtwMemReqs;
 
         void updatePtwMemCycleStats();
+        static unsigned prefetchSourceBucket(const RequestPtr &req);
         bool ptwLevelAvailable(WalkerState *state, int level) const;
         bool reservePtwLevel(WalkerState *state, int level);
         void releasePtwLevel(WalkerState *state);

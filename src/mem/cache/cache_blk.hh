@@ -187,6 +187,7 @@ class CacheBlk : public TaggedEntry
         setCoherenceBits(other.coherence);
         setTaskId(other.getTaskId());
         setXsMetadata(other.getXsMetadata());
+        setLastFillInfo(other.getLastFillTick(), other.lastFillHadDemand());
         setWhenReady(curTick());
         setRefCount(other.getRefCount());
         setDemandHits(other.getDemandHits());
@@ -212,6 +213,7 @@ class CacheBlk : public TaggedEntry
 
         setTaskId(context_switch_task_id::Unknown);
         this->_xsMeta.invalidate();
+        setLastFillInfo(0, false);
         setWhenReady(MaxTick);
         setRefCount(0);
         setDemandHits(0);
@@ -321,6 +323,21 @@ class CacheBlk : public TaggedEntry
 
     /** get the XS metadata associated to this block. */
     Request::XsMetadata getXsMetadata() const { return _xsMeta; }
+
+    Tick getLastFillTick() const { return _lastFillTick; }
+
+    bool lastFillHadDemand() const { return _lastFillHadDemand; }
+
+    void setLastFillInfo(Tick tick, bool had_demand)
+    {
+        _lastFillTick = tick;
+        _lastFillHadDemand = had_demand;
+    }
+
+    void setLastFillHadDemand(bool had_demand)
+    {
+        _lastFillHadDemand = had_demand;
+    }
 
     /** Get the requestor id associated to this block. */
     uint32_t getSrcRequestorId() const { return _srcRequestorId; }
@@ -507,6 +524,9 @@ class CacheBlk : public TaggedEntry
   protected:
     /** The current coherence status of this block. @sa CoherenceBits */
     unsigned coherence = 0;
+
+    Tick _lastFillTick = 0;
+    bool _lastFillHadDemand = false;
 
     // The following setters have been marked as protected because their
     // respective variables should only be modified at 2 moments:

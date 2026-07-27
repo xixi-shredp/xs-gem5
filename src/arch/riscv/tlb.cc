@@ -235,6 +235,18 @@ TLB::isHardwareDataPrefetchRequest(const RequestPtr &req) const
     return is_dtlb && is_L1tlb && req && req->isPrefetchEx();
 }
 
+unsigned
+TLB::dataPrefetchSourceBucket(const RequestPtr &req)
+{
+    if (!req || !req->hasXsMetadata())
+        return NUM_PF_SOURCES;
+
+    const auto source = req->getXsMetadata().prefetchSource;
+    const unsigned bucket = static_cast<unsigned>(source);
+    return bucket < NUM_PF_SOURCES ? bucket :
+        static_cast<unsigned>(NUM_PF_SOURCES);
+}
+
 bool
 TLB::usesDataPrefetchPteBuffer(const RequestPtr &req) const
 {
@@ -257,13 +269,17 @@ TLB::removeDataPrefetchPteSlot(size_t idx, bool unused_eviction)
 {
     auto &slot = dataPrefetchPteBuffer[idx];
     assert(slot.valid);
+    const unsigned source_bucket = slot.sourceBucket;
     dataPrefetchPteIndex.erase(slot.key);
     dataPrefetchPteLru.erase(slot.lruIt);
     slot.valid = false;
+    slot.sourceBucket = NUM_PF_SOURCES;
     slot.entry.trieHandle = nullptr;
     dataPrefetchPteFreeList.push_back(idx);
-    if (unused_eviction)
+    if (unused_eviction) {
         stats.dataPrefetchPteBufferUnusedEvictions++;
+        stats.dataPrefetchPteBufferUnusedEvictionsBySource[source_bucket]++;
+    }
 }
 
 void
@@ -275,7 +291,10 @@ TLB::clearDataPrefetchPteBuffer(bool count_flushes)
     dataPrefetchPteFreeList.clear();
     for (size_t i = dataPrefetchPteBufferSize; i > 0; --i) {
         auto &slot = dataPrefetchPteBuffer[i - 1];
+        if (count_flushes && slot.valid)
+            stats.dataPrefetchPteBufferFlushesBySource[slot.sourceBucket]++;
         slot.valid = false;
+        slot.sourceBucket = NUM_PF_SOURCES;
         slot.entry.trieHandle = nullptr;
         dataPrefetchPteFreeList.push_back(i - 1);
     }
@@ -313,8 +332,11 @@ TLB::removeOverlappingDataPrefetchPteEntries(const TlbEntry &entry)
                 continue;
             }
         }
+        const unsigned source_bucket = slot.sourceBucket;
         removeDataPrefetchPteSlot(idx, false);
         stats.dataPrefetchPteBufferL1ConflictRemovals++;
+        stats.dataPrefetchPteBufferL1ConflictRemovalsBySource[
+            source_bucket]++;
     }
 }
 
@@ -330,13 +352,16 @@ TLB::demapDataPrefetchPteBuffer(Addr vaddr, uint16_t asid)
         const Addr page_mask = ~(slot.entry.size() - 1);
         if (vaddr != 0 && (vaddr & page_mask) != slot.key.pageBase)
             continue;
+        const unsigned source_bucket = slot.sourceBucket;
         removeDataPrefetchPteSlot(idx, false);
         stats.dataPrefetchPteBufferFlushes++;
+        stats.dataPrefetchPteBufferFlushesBySource[source_bucket]++;
     }
 }
 
 TlbEntry *
-TLB::lookupDataPrefetchPteBuffer(Addr vaddr, SATP satp, bool promote)
+TLB::lookupDataPrefetchPteBuffer(Addr vaddr, SATP satp, bool promote,
+                                 const RequestPtr &requester)
 {
     if (dataPrefetchPteBufferSize == 0 ||
         (satp.mode != AddrXlateMode::SV39 &&
@@ -345,6 +370,8 @@ TLB::lookupDataPrefetchPteBuffer(Addr vaddr, SATP satp, bool promote)
     }
 
     stats.dataPrefetchPteBufferLookups++;
+    stats.dataPrefetchPteBufferLookupsBySource[
+        dataPrefetchSourceBucket(requester)]++;
     const int top_level = PTW_TOP_LEVEL(satp.mode);
     for (int level = 0; level <= top_level; ++level) {
         const unsigned log_bytes = PageShift + level * LEVEL_BITS;
@@ -358,20 +385,26 @@ TLB::lookupDataPrefetchPteBuffer(Addr vaddr, SATP satp, bool promote)
         touchDataPrefetchPteSlot(idx);
         if (!promote) {
             stats.dataPrefetchPteBufferPrefetchHits++;
+            stats.dataPrefetchPteBufferPrefetchHitsBySource[
+                dataPrefetchPteBuffer[idx].sourceBucket]++;
             return &dataPrefetchPteBuffer[idx].entry;
         }
 
         TlbEntry promoted_entry = dataPrefetchPteBuffer[idx].entry;
+        const unsigned source_bucket =
+            dataPrefetchPteBuffer[idx].sourceBucket;
         removeDataPrefetchPteSlot(idx, false);
         stats.dataPrefetchPteBufferDemandHits++;
         stats.dataPrefetchPteBufferPromotions++;
+        stats.dataPrefetchPteBufferPromotionsBySource[source_bucket]++;
         return insert(promoted_entry.vaddr, promoted_entry, false, direct);
     }
     return nullptr;
 }
 
 void
-TLB::insertDataPrefetchPteBuffer(const TlbEntry &entry, SATP satp)
+TLB::insertDataPrefetchPteBuffer(const TlbEntry &entry, SATP satp,
+                                 const RequestPtr &producer)
 {
     if (dataPrefetchPteBufferSize == 0 || entry.translateMode != direct)
         return;
@@ -393,12 +426,14 @@ TLB::insertDataPrefetchPteBuffer(const TlbEntry &entry, SATP satp)
     const auto key = makeDataPrefetchPteKey(
         entry.vaddr, satp, direct, entry.logBytes);
     auto found = dataPrefetchPteIndex.find(key);
+    const unsigned source_bucket = dataPrefetchSourceBucket(producer);
     size_t idx;
     if (found != dataPrefetchPteIndex.end()) {
         idx = found->second;
         auto &slot = dataPrefetchPteBuffer[idx];
         slot.entry = entry;
         slot.entry.trieHandle = nullptr;
+        slot.sourceBucket = source_bucket;
         touchDataPrefetchPteSlot(idx);
     } else {
         if (!dataPrefetchPteFreeList.empty()) {
@@ -416,30 +451,39 @@ TLB::insertDataPrefetchPteBuffer(const TlbEntry &entry, SATP satp)
         slot.entry = entry;
         slot.entry.translateMode = direct;
         slot.entry.trieHandle = nullptr;
+        slot.sourceBucket = source_bucket;
         slot.valid = true;
         dataPrefetchPteLru.push_front(idx);
         slot.lruIt = dataPrefetchPteLru.begin();
         dataPrefetchPteIndex.emplace(key, idx);
     }
     stats.dataPrefetchPteBufferInserts++;
+    stats.dataPrefetchPteBufferInsertsBySource[source_bucket]++;
 }
 
 void
-TLB::recordDataPrefetchPteBufferPrefetchOnlyWalk()
+TLB::recordDataPrefetchPteBufferPrefetchOnlyWalk(
+    const RequestPtr &producer)
 {
     stats.dataPrefetchPteBufferPrefetchOnlyWalks++;
+    stats.dataPrefetchPteBufferPrefetchOnlyWalksBySource[
+        dataPrefetchSourceBucket(producer)]++;
 }
 
 void
-TLB::recordDataPrefetchPteBufferDemandCoalesce()
+TLB::recordDataPrefetchPteBufferDemandCoalesce(const RequestPtr &producer)
 {
     stats.dataPrefetchPteBufferDemandCoalesces++;
+    stats.dataPrefetchPteBufferDemandCoalescesBySource[
+        dataPrefetchSourceBucket(producer)]++;
 }
 
 void
-TLB::recordDataPrefetchPteBufferTwoStageBypass()
+TLB::recordDataPrefetchPteBufferTwoStageBypass(const RequestPtr &producer)
 {
     stats.dataPrefetchPteBufferTwoStageBypasses++;
+    stats.dataPrefetchPteBufferTwoStageBypassesBySource[
+        dataPrefetchSourceBucket(producer)]++;
 }
 
 Walker *
@@ -2724,7 +2768,7 @@ TLB::doTranslate(const RequestPtr &req, ThreadContext *tc,
     }
     if (!e[0] && dataPrefetchPteBufferSize != 0) {
         e[0] = lookupDataPrefetchPteBuffer(
-            vaddr, satp, !usesDataPrefetchPteBuffer(req));
+            vaddr, satp, !usesDataPrefetchPteBuffer(req), req);
     }
     Addr paddr = 0;
     Fault fault = NoFault;
@@ -3096,7 +3140,7 @@ TLB::translate(const RequestPtr &req, ThreadContext *tc,
                 || hgatp.mode == NEMU_SATP_SV48 || vsatp.mode == NEMU_SATP_SV48)
                 && (pmode < PrivilegeMode::PRV_M)) {
                 if (!from_miss_queue && usesDataPrefetchPteBuffer(req))
-                    recordDataPrefetchPteBufferTwoStageBypass();
+                    recordDataPrefetchPteBufferTwoStageBypass(req);
                 fault = doTwoStageTranslate(req, tc, translation, mode, delayed,
                                              from_miss_queue);
             } else {
@@ -3108,7 +3152,7 @@ TLB::translate(const RequestPtr &req, ThreadContext *tc,
             two_stage_translation = hasTwoStageTranslation(tc, req, mode);
             if (two_stage_translation) {
                 if (!from_miss_queue && usesDataPrefetchPteBuffer(req))
-                    recordDataPrefetchPteBufferTwoStageBypass();
+                    recordDataPrefetchPteBufferTwoStageBypass(req);
                 assert((vsatp.mode == NEMU_SATP_SV39) || (hgatp.mode == NEMU_SATP_SV39)
                        || (vsatp.mode == NEMU_SATP_SV48) || (hgatp.mode == NEMU_SATP_SV48));
                 fault = doTwoStageTranslate(req, tc, translation, mode, delayed,
@@ -3479,6 +3523,36 @@ TLB::TlbStats::TlbStats(statistics::Group *parent)
                "demand requests coalesced into prefetch-originated walks"),
       ADD_STAT(dataPrefetchPteBufferTwoStageBypasses, statistics::units::Count::get(),
                "two-stage data-prefetch translations bypassing the PTE buffer"),
+      ADD_STAT(dataPrefetchPteBufferLookupsBySource,
+               statistics::units::Count::get(),
+               "PTE-buffer lookup requesters by prefetch source; demand or missing metadata is unknown"),
+      ADD_STAT(dataPrefetchPteBufferPrefetchHitsBySource,
+               statistics::units::Count::get(),
+               "PTE-buffer prefetch hits by entry producer source"),
+      ADD_STAT(dataPrefetchPteBufferInsertsBySource,
+               statistics::units::Count::get(),
+               "PTE-buffer insertions by producer source"),
+      ADD_STAT(dataPrefetchPteBufferPromotionsBySource,
+               statistics::units::Count::get(),
+               "PTE-buffer demand promotions by entry producer source"),
+      ADD_STAT(dataPrefetchPteBufferUnusedEvictionsBySource,
+               statistics::units::Count::get(),
+               "unused PTE-buffer evictions by entry producer source"),
+      ADD_STAT(dataPrefetchPteBufferFlushesBySource,
+               statistics::units::Count::get(),
+               "PTE-buffer invalidation removals by entry producer source"),
+      ADD_STAT(dataPrefetchPteBufferL1ConflictRemovalsBySource,
+               statistics::units::Count::get(),
+               "PTE-buffer L1 conflict removals by entry producer source"),
+      ADD_STAT(dataPrefetchPteBufferPrefetchOnlyWalksBySource,
+               statistics::units::Count::get(),
+               "prefetch-only PTE-buffer refill walks by producer source"),
+      ADD_STAT(dataPrefetchPteBufferDemandCoalescesBySource,
+               statistics::units::Count::get(),
+               "demand coalesces into prefetch-originated walks by producer source"),
+      ADD_STAT(dataPrefetchPteBufferTwoStageBypassesBySource,
+               statistics::units::Count::get(),
+               "two-stage PTE-buffer bypasses by prefetch source"),
       ADD_STAT(l2tlbRemove, statistics::units::Count::get(),
                "l2tlb remove"),
       ADD_STAT(l2tlbUsedRemove, statistics::units::Count::get(),
@@ -3514,6 +3588,35 @@ TLB::TlbStats::TlbStats(statistics::Group *parent)
         .flags(gem5::statistics::total);
     for (int i = 0; i <= l2tlbLineSize; i++) {
         l1CompressPotentialPagesPerBlock.subname(i, csprintf("%d_pages", i));
+    }
+
+    const std::array<const char *, NUM_PF_SOURCES + 1> source_names = {{
+        "PF_NONE", "SStream", "SStride", "SPht", "HWP_BOP", "SPP",
+        "CMC", "IPCP", "IPCP_CS", "IPCP_CPLX", "Berti",
+        "StoreStream", "CDP", "SOpt", "DespacitoStream",
+        "AMDContiguousStream", "AMDRIPRegion", "AMDRegionType",
+        "AMDAOP", "AppleAMPM", "ARMHint",
+        "ARMOffsetBasedPointer", "DSPatch", "PatternMerging",
+        "Kairos", "Streamline", "Bingo", "unknown"
+    }};
+    static_assert(source_names.size() == NUM_PF_SOURCES + 1,
+                  "Prefetch source stat names must match enum size");
+    const std::array<statistics::Vector *, 10> source_stats = {{
+        &dataPrefetchPteBufferLookupsBySource,
+        &dataPrefetchPteBufferPrefetchHitsBySource,
+        &dataPrefetchPteBufferInsertsBySource,
+        &dataPrefetchPteBufferPromotionsBySource,
+        &dataPrefetchPteBufferUnusedEvictionsBySource,
+        &dataPrefetchPteBufferFlushesBySource,
+        &dataPrefetchPteBufferL1ConflictRemovalsBySource,
+        &dataPrefetchPteBufferPrefetchOnlyWalksBySource,
+        &dataPrefetchPteBufferDemandCoalescesBySource,
+        &dataPrefetchPteBufferTwoStageBypassesBySource
+    }};
+    for (auto *stat : source_stats) {
+        stat->init(NUM_PF_SOURCES + 1).flags(statistics::total);
+        for (unsigned i = 0; i < source_names.size(); ++i)
+            stat->subname(i, source_names[i]);
     }
 }
 

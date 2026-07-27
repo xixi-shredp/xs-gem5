@@ -1717,8 +1717,48 @@ public:
         return block->getXsMetadata();
     }
 
+    bool getHitBlkXsMetadata(Addr addr, bool is_secure,
+                             Request::XsMetadata &metadata) const override
+    {
+        CacheBlk *block = tags->findBlock(addr, is_secure);
+        if (!block) {
+            return false;
+        }
+        metadata = block->getXsMetadata();
+        if (!block->wasEverPrefetched()) {
+            metadata.prefetchSource = PrefetchSourceType::PF_NONE;
+        }
+        return true;
+    }
+
+    bool getHitBlkFillInfo(Addr addr, bool is_secure,
+                            Tick &fill_tick, bool &had_demand) const override
+    {
+        CacheBlk *block = tags->findBlock(addr, is_secure);
+        if (!block) {
+            return false;
+        }
+        fill_tick = block->getLastFillTick();
+        had_demand = block->lastFillHadDemand();
+        return true;
+    }
+
     bool inMissQueue(Addr addr, bool is_secure) const override {
         return mshrQueue.findMatch(addr, is_secure);
+    }
+
+    bool getMissQueueXsMetadata(Addr addr, bool is_secure,
+                                Request::XsMetadata &metadata,
+                                bool &has_cpu, bool &has_pref) const override
+    {
+        const MSHR *mshr = mshrQueue.findMatch(addr, is_secure);
+        if (!mshr) {
+            return false;
+        }
+        metadata = mshr->getPFMetadata();
+        has_cpu = mshr->hasFromCPU();
+        has_pref = mshr->hasFromPref();
+        return true;
     }
 
     bool inWriteQueue(Addr addr, bool is_secure) const override {

@@ -37,6 +37,14 @@
 
 #include "mem/cache/prefetch/multi.hh"
 
+#include "mem/cache/prefetch/berti.hh"
+#include "mem/cache/prefetch/bop.hh"
+#include "mem/cache/prefetch/cmc.hh"
+#include "mem/cache/prefetch/despacito_stream.hh"
+#include "mem/cache/prefetch/ipcp.hh"
+#include "mem/cache/prefetch/opt.hh"
+#include "mem/cache/prefetch/xs_stream.hh"
+#include "mem/cache/prefetch/xs_stride.hh"
 #include "params/MultiPrefetcher.hh"
 
 namespace gem5
@@ -47,17 +55,55 @@ namespace prefetch
 {
 
 Multi::Multi(const MultiPrefetcherParams &p)
-  : Base(p),
+  : Queued(p),
     prefetchers(p.prefetchers.begin(), p.prefetchers.end()),
+    childFilter(256),
     lastChosenPf(0)
 {
+}
+
+
+void
+Multi::bindChildFilter(Base *prefetcher)
+{
+    if (prefetcher == nullptr) {
+        return;
+    }
+    if (auto *bop = dynamic_cast<BOP *>(prefetcher)) {
+        bop->filter = &childFilter;
+    }
+    if (auto *stream = dynamic_cast<DespacitoStreamPrefetcher *>(prefetcher)) {
+        stream->filter = &childFilter;
+    }
+    if (auto *cmc = dynamic_cast<CMCPrefetcher *>(prefetcher)) {
+        cmc->filter = &childFilter;
+    }
+    if (auto *berti = dynamic_cast<BertiPrefetcher *>(prefetcher)) {
+        berti->filter = &childFilter;
+    }
+    if (auto *sstride = dynamic_cast<XSStridePrefetcher *>(prefetcher)) {
+        sstride->filter = &childFilter;
+    }
+    if (auto *opt = dynamic_cast<OptPrefetcher *>(prefetcher)) {
+        opt->filter = &childFilter;
+    }
+    if (auto *xsstream = dynamic_cast<XsStreamPrefetcher *>(prefetcher)) {
+        xsstream->filter = &childFilter;
+    }
+    if (auto *ipcp = dynamic_cast<IPCP *>(prefetcher)) {
+        ipcp->rrf = &childFilter;
+    }
 }
 
 void
 Multi::setParentInfo(System *sys, ProbeManager *pm, CacheAccessor* _cache, unsigned blk_size)
 {
-    for (auto pf : prefetchers)
+    Queued::setParentInfo(sys, pm, _cache, blk_size);
+
+    for (auto pf : prefetchers) {
+        bindChildFilter(pf);
         pf->setParentInfo(sys, pm, _cache, blk_size);
+    }
 }
 
 Tick
@@ -69,6 +115,27 @@ Multi::nextPrefetchReadyTime() const
         next_ready = std::min(next_ready, pf->nextPrefetchReadyTime());
 
     return next_ready;
+}
+
+void
+Multi::calculatePrefetch(const PrefetchInfo &pfi,
+                         std::vector<AddrPriority> &addresses)
+{
+    calculatePrefetch(pfi, addresses, false, PrefetchSourceType::PF_NONE,
+                      false);
+}
+
+void
+Multi::calculatePrefetch(const PrefetchInfo &pfi,
+                         std::vector<AddrPriority> &addresses, bool late,
+                         PrefetchSourceType source, bool miss_repeat)
+{
+    for (auto *prefetcher : prefetchers) {
+        auto *queued = dynamic_cast<Queued *>(prefetcher);
+        fatal_if(!queued, "%s: child %s is not a Queued prefetcher",
+                 name(), prefetcher->name());
+        queued->calculatePrefetch(pfi, addresses, late, source, miss_repeat);
+    }
 }
 
 bool
@@ -100,7 +167,7 @@ Multi::getPacket()
 void
 Multi::addTLB(BaseTLB *_t, bool functional)
 {
-    Base::addTLB(_t, functional);
+    Queued::addTLB(_t, functional);
     for (auto pf : prefetchers)
         pf->addTLB(_t, functional);
 }

@@ -254,6 +254,33 @@ Addr cut_offset(Addr addr, int offset)
 }
 
 bool
+CMCPrefetcher::sendBufferedPFWithFilter(Addr addr,
+                                        std::vector<AddrPriority> &addresses,
+                                        int prio,
+                                        const TriggerInfo *trigger)
+{
+    prefetchStats.pfGenerated++;
+
+    if (filter->contains(addr)) {
+        DPRINTF(CMCPrefetcher, "Skip recently prefetched from CMC buffer: %lx\n", addr);
+        prefetchStats.pfFiltered++;
+        return false;
+    }
+
+    DPRINTF(CMCPrefetcher, "CMC buffer: send pf: %lx\n", addr);
+    filter->insert(addr, 0);
+    if (trigger) {
+        addresses.push_back(AddrPriority(addr, prio,
+                                         PrefetchSourceType::CMC,
+                                         *trigger));
+    } else {
+        addresses.push_back(AddrPriority(addr, prio,
+                                         PrefetchSourceType::CMC));
+    }
+    return true;
+}
+
+bool
 CMCPrefetcher::Recorder::train_entry(
     Addr addr,
     bool is_secure,
@@ -327,55 +354,35 @@ CMCPrefetcher::hasPFRequestsInBuffer() {
 }
 bool
 CMCPrefetcher::GetPFRequestsFromBuffer(std::vector<AddrPriority> &addresses) {
-    //if sendingEntry is valid, send next addr
-    if(sendingEntry.isValid()){
-        if(sendIDX_PTR < sendingEntry.addresses.size()){
-            Addr addr = sendingEntry.addresses[sendIDX_PTR];
-            sendIDX_PTR++;
-            if (sendingEntry.trigger) {
-                addresses.push_back(AddrPriority(addr,
-                    recorder->nr_entry - sendIDX_PTR + 1,
-                    PrefetchSourceType::CMC,
-                    *(sendingEntry.trigger)));
-            } else {
-                addresses.push_back(AddrPriority(addr,
-                    recorder->nr_entry - sendIDX_PTR + 1,
-                    PrefetchSourceType::CMC));
+    while (true) {
+        if (!sendingEntry.isValid()) {
+            if (tpDataQueue.empty()) {
+                return false;
             }
-            return true;
-        }else{
-            //finished sending this entry
-            sendingEntry = StorageEntry();
-            sendingEntry.invalidate();
+
+            sendingEntry = StorageEntry(tpDataQueue.front());
+            tpDataQueue.pop_front();
             sendIDX_PTR = 0;
+            if (sendingEntry.addresses.empty()) {
+                panic("CMCPrefetcher: empty addresses in sendingEntry");
+            }
         }
-    }
-    //load next entry from tpDataQueue
-    if(!tpDataQueue.empty()){
-        //copy front entry to sendingEntry
-        sendingEntry = StorageEntry(tpDataQueue.front());
-        tpDataQueue.pop_front();
-        sendIDX_PTR = 0;
-        if(sendIDX_PTR < sendingEntry.addresses.size()){
+
+        while (sendIDX_PTR < sendingEntry.addresses.size()) {
             Addr addr = sendingEntry.addresses[sendIDX_PTR];
             sendIDX_PTR++;
-            if (sendingEntry.trigger) {
-                addresses.push_back(AddrPriority(addr,
-                    recorder->nr_entry - sendIDX_PTR + 1,
-                    PrefetchSourceType::CMC,
-                    *(sendingEntry.trigger)));
-            } else {
-                addresses.push_back(AddrPriority(addr,
-                    recorder->nr_entry - sendIDX_PTR + 1,
-                    PrefetchSourceType::CMC));
+            const int prio = recorder->nr_entry - sendIDX_PTR + 1;
+            const TriggerInfo *trigger = sendingEntry.trigger ?
+                sendingEntry.trigger.get() : nullptr;
+            if (sendBufferedPFWithFilter(addr, addresses, prio, trigger)) {
+                return true;
             }
-            return true;
-        }else{
-            //should not happen
-            panic("CMCPrefetcher: empty addresses in sendingEntry");
         }
+
+        sendingEntry = StorageEntry();
+        sendingEntry.invalidate();
+        sendIDX_PTR = 0;
     }
-    return false;
 }
 
 }  // prefetch

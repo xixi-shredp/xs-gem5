@@ -887,6 +887,10 @@ class Base : public ClockedObject
     /** Use Virtual Addresses for prefetching */
     const bool useVirtualAddresses;
 
+    // pf-ahead (cross cache-level prefetch) master switches.
+    const bool noPfahead;
+    const bool noPfaheadReserved;
+
     /**
      * Determine if this access should be observed
      * @param pkt The memory request causing the event
@@ -938,6 +942,41 @@ class Base : public ClockedObject
         statistics::Vector pfHitInMSHR_srcs;
         statistics::Vector pfHitInWB_srcs;
         statistics::Vector late_srcs;
+        statistics::Scalar crossPagePfIssued;
+        statistics::Vector crossPagePfIssued_srcs;
+        statistics::Scalar crossPagePfUseful;
+        statistics::Vector crossPagePfUseful_srcs;
+        statistics::Scalar crossPagePfUnused;
+        statistics::Vector crossPagePfUnused_srcs;
+        statistics::Scalar crossPagePfLate;
+        statistics::Vector crossPagePfLate_srcs;
+        statistics::Formula crossPagePfAccuracy;
+        /** Target-level lifecycle accounting for centralized prefetches. */
+        statistics::Scalar lifecycleAdmitted;
+        statistics::Vector lifecycleAdmitted_srcs;
+        statistics::Scalar lifecycleFilled;
+        statistics::Vector lifecycleFilled_srcs;
+        statistics::Scalar lifecycleDemandUseful;
+        statistics::Vector lifecycleDemandUseful_srcs;
+        statistics::Scalar lifecycleUpperPfConsumed;
+        statistics::Vector lifecycleUpperPfConsumed_srcs;
+        statistics::Scalar lifecycleUnused;
+        statistics::Vector lifecycleUnused_srcs;
+        statistics::Scalar lifecycleTrueLateUnique;
+        statistics::Vector lifecycleTrueLateUnique_srcs;
+        statistics::Scalar lifecycleLateDemandMerges;
+        statistics::Vector lifecycleLateDemandMerges_srcs;
+        statistics::Formula lifecycleResident;
+        statistics::Formula lifecycleResident_srcs;
+        /** Low-cost pollution proxies for allocations carrying PF metadata. */
+        statistics::Scalar lifecycleFillVictims;
+        statistics::Vector lifecycleFillVictims_srcs;
+        statistics::Scalar lifecycleDirtyVictims;
+        statistics::Vector lifecycleDirtyVictims_srcs;
+        statistics::Scalar lifecycleDemandTouchedVictims;
+        statistics::Vector lifecycleDemandTouchedVictims_srcs;
+        statistics::Scalar lifecycleUntouchedVictims;
+        statistics::Vector lifecycleUntouchedVictims_srcs;
         /** The number of times there is a hit on prefetch but cache block
          * is not in an usable state */
         statistics::Scalar pfUsefulButMiss;
@@ -976,6 +1015,37 @@ class Base : public ClockedObject
     BaseTLB * tlb;
 
   public:
+    struct IPOPEventInfo
+    {
+        Addr addr;
+        bool isSecure;
+        uint64_t prefetcherIdBits;
+        bool accessDram;
+        Tick latency;
+        bool delayedDemand;
+        bool busContention;
+        bool bankContention;
+        Addr contentionAddr;
+        bool hasContentionAddr;
+
+        IPOPEventInfo(Addr addr, bool is_secure, uint64_t prefetcher_id_bits,
+                      bool access_dram, Tick latency = 0,
+                      bool delayed_demand = false, bool bus_contention = false,
+                      bool bank_contention = false, Addr contention_addr = 0,
+                      bool has_contention_addr = false)
+            : addr(addr),
+              isSecure(is_secure),
+              prefetcherIdBits(prefetcher_id_bits),
+              accessDram(access_dram),
+              latency(latency),
+              delayedDemand(delayed_demand),
+              busContention(bus_contention),
+              bankContention(bank_contention),
+              contentionAddr(contention_addr),
+              hasContentionAddr(has_contention_addr)
+        {}
+    };
+
     Base(const BasePrefetcherParams &p);
     virtual ~Base() = default;
 
@@ -1011,6 +1081,27 @@ class Base : public ClockedObject
 
     virtual void prefetchUnused(Addr paddr, PrefetchSourceType pfSource) { prefetchUnused(pfSource); }
 
+    virtual void prefetchUnused(
+        Addr paddr, const Request::XsMetadata &metadata);
+
+    virtual void prefetchLate(
+        const Request::XsMetadata &metadata, bool firstDemandMerge = true);
+
+    virtual void recordPrefetchAdmitted(
+        const Request::XsMetadata &metadata);
+    virtual void recordPrefetchFill(
+        const Request::XsMetadata &metadata);
+    virtual void recordUpperPrefetchConsumed(
+        const Request::XsMetadata &metadata);
+    virtual void recordPrefetchFillVictim(
+        const Request::XsMetadata &metadata, bool dirty,
+        bool demandTouched);
+    virtual void recordPrefetchUseful(
+        const Request::XsMetadata &metadata, bool miss) {}
+
+    void recordCrossPagePrefetchIssued(
+        const Request::XsMetadata &metadata);
+
     virtual void
     incrDemandMhsrMisses()
     {
@@ -1041,6 +1132,35 @@ class Base : public ClockedObject
         prefetchStats.late_srcs[pf_type]++;
     }
     void streamPflate() { streamlatenum++; }
+
+    virtual void
+    setIpopEnabled(bool enabled)
+    {}
+    virtual bool
+    getIpopEnabled() const
+    { return true; }
+    virtual void
+    setIpopAggressivenessLevel(unsigned int level)
+    {}
+    virtual unsigned int
+    getIpopAggressivenessLevel() const
+    { return 1; }
+    virtual unsigned int
+    getIpopMaxAggressivenessLevel() const
+    { return 1; }
+
+    virtual void
+    notifyIpopPrefetchFill(const IPOPEventInfo &info)
+    {}
+    virtual void
+    notifyIpopPrefetchEviction(const IPOPEventInfo &info)
+    {}
+    virtual void
+    notifyIpopDemandHit(const IPOPEventInfo &info)
+    {}
+    virtual void
+    notifyIpopDemandMissComplete(const IPOPEventInfo &info)
+    {}
 
     /**
      * Register probe points for this object.

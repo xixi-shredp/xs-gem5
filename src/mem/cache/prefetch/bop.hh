@@ -235,7 +235,7 @@ class BOP : public Queued
         void calculatePrefetch(const PrefetchInfo &pfi,
                                std::vector<AddrPriority> &addresses) override
         {
-            panic("not implemented");
+            calculatePrefetch(pfi, addresses, false);
         };
 
         using Queued::calculatePrefetch;

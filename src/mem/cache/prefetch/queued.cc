@@ -62,7 +62,7 @@ void
 Queued::DeferredPacket::createPkt(Addr paddr, unsigned blk_size, RequestorID requestor_id, bool tag_prefetch, Tick t,
                                   PrefetchSourceType pf_src, int prf_depth,
                                   uint32_t distance, uint8_t preferred_level,
-                                  uint8_t issued_level)
+                                  uint8_t issued_level, bool cross_page)
 {
     // TODO: mark from BOP here
 
@@ -88,7 +88,8 @@ Queued::DeferredPacket::createPkt(Addr paddr, unsigned blk_size, RequestorID req
 
     req->setFlags(Request::PREFETCH);
     req->setXsMetadata(Request::XsMetadata(
-        pf_src, prf_depth, distance, preferred_level, issued_level));
+        pf_src, prf_depth, distance, preferred_level, issued_level,
+        cross_page));
     DPRINTFR(HWPrefetch, "Create prefetch request for paddr %lx from prefetcher %i\n", paddr, pf_src);
 
     if (pfInfo.isSecure()) {
@@ -141,6 +142,8 @@ Queued::Queued(const QueuedPrefetcherParams &p)
       queueFilter(p.queue_filter), cacheSnoop(p.cache_snoop),
       tagPrefetch(p.tag_prefetch),
       throttleControlPct(p.throttle_control_percentage),
+      ipopEnabled(true),
+      ipopAggressivenessLevel(1),
       tlbReqEvent(
           [this]{ processMissingTranslations(queueSize); },
           name()),
@@ -216,6 +219,22 @@ Queued::getMaxPermittedPrefetches(size_t total) const
 }
 
 void
+Queued::setIpopEnabled(bool enabled)
+{
+    ipopEnabled = enabled;
+}
+
+void
+Queued::setIpopAggressivenessLevel(unsigned int level)
+{
+    if (level == 0 || level > getIpopMaxAggressivenessLevel()) {
+        fatal("%s: I-POP aggressiveness level %u is outside [1, %u]",
+              name(), level, getIpopMaxAggressivenessLevel());
+    }
+    ipopAggressivenessLevel = level;
+}
+
+void
 Queued::calculatePrefetch(const PrefetchInfo &pfi,
     std::vector<AddrPriority> &addresses, bool late, PrefetchSourceType source, bool miss_repeat)
 {
@@ -225,6 +244,13 @@ Queued::calculatePrefetch(const PrefetchInfo &pfi,
 void
 Queued::notify(const PacketPtr &pkt, const PrefetchInfo &pfi)
 {
+    if (!ipopEnabled) {
+        DPRINTF(HWPrefetch,
+                "I-POP disabled candidate generation for %s.\n",
+                name());
+        return;
+    }
+
     Addr blk_addr = blockAddress(pfi.getAddr());
 
     bool late_in_mshr = pkt->missOnLatePf;  // hit in pf mshr
@@ -386,7 +412,8 @@ Queued::getPacket()
     pfq.pop_front();
 
     prefetchStats.pfIssued++;
-    prefetchStats.pfIssued_srcs[pkt->req->getXsMetadata().prefetchSource]++;
+    const auto metadata = pkt->req->getXsMetadata();
+    prefetchStats.pfIssued_srcs[metadata.prefetchSource]++;
     issuedPrefetches += 1;
     assert(pkt != nullptr);
     DPRINTF(HWPrefetch, "Generating prefetch for %#x.\n", pkt->getAddr());
@@ -670,6 +697,23 @@ Queued::insert(const PacketPtr &pkt, PrefetchInfo &new_pfi, const AddrPriority &
     DeferredPacket dpp(this, new_pfi, 0, priority);
     dpp.pfahead = addr_prio.pfahead;
     dpp.pfahead_host = addr_prio.pfahead_host;
+    if (dpp.pfahead && dpp.pfahead_host > cache->level()) {
+        if (noPfahead) {
+            DPRINTF(HWPrefetchOther,
+                    "no-pfahead: drop pfahead req addr:%#x host:%d "
+                    "(self l%d)\n",
+                    new_pfi.getAddr(), dpp.pfahead_host, cache->level());
+            return;
+        }
+        if (noPfaheadReserved) {
+            DPRINTF(HWPrefetchOther,
+                    "no-pfahead-reserved: demote pfahead req addr:%#x "
+                    "host:%d to local prefetch (self l%d)\n",
+                    new_pfi.getAddr(), dpp.pfahead_host, cache->level());
+            dpp.pfahead = false;
+            dpp.pfahead_host = 0;
+        }
+    }
     if (dpp.pfahead) {
         DPRINTF(HWPrefetchOther, "Create one pfahead request\n");
     }
@@ -704,6 +748,22 @@ Queued::addToQueue(std::list<DeferredPacket> &queue,
     unsigned queue_size;
     const char *queue_name;
     if (&queue == &pfq) {
+        if ((noPfahead || noPfaheadReserved) && dpp.pfahead &&
+            dpp.pfahead_host > cache->level()) {
+            if (noPfahead) {
+                DPRINTF(HWPrefetchOther,
+                        "no-pfahead: drop queued pfahead host:%d "
+                        "(self l%d)\n",
+                        dpp.pfahead_host, cache->level());
+                if (dpp.pkt != nullptr) {
+                    delete dpp.pkt;
+                    dpp.pkt = nullptr;
+                }
+                return;
+            }
+            dpp.pfahead = false;
+            dpp.pfahead_host = 0;
+        }
         // if found the dpp is pfahead marked
         // send it to next level pfq
         if (hasHintDownStream() && dpp.pfahead && (dpp.pfahead_host > cache->level())) {
@@ -801,6 +861,11 @@ void
 Queued::offloadToDownStream()
 {
     assert(hintDownStream);
+
+    if (noPfahead) {
+        DPRINTF(HWPrefetch, "no-pfahead: skip offloadToDownStream\n");
+        return;
+    }
 
     if (pfq.empty()) {
         DPRINTF(HWPrefetch, "No hardware prefetches available.\n");

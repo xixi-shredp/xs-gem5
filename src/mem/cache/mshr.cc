@@ -75,7 +75,7 @@ MSHR::TargetList::TargetList(const std::string &name)
         needsWritable(false), hasUpgrade(false),
         allocOnFill(false), hasFromCache(false),
         hasFromPref(false), hasFromCPU(false),
-        pfSource(PF_NONE), pfDepth(0),
+        pfSource(PF_NONE), pfDepth(0), pfMetadata(),
         blkAddr(0), blkSize(0),
         canMergeWrites(true), writesBitmap(0)
 {}
@@ -108,6 +108,7 @@ MSHR::TargetList::updateFlags(PacketPtr pkt, Target::Source source,
         } else if (!hasFromPref) {  // first pkt && is pref
             pfSource = pkt->req->getXsMetadata().prefetchSource;
             pfDepth = pkt->req->getXsMetadata().prefetchDepth;
+            pfMetadata = pkt->req->getXsMetadata();
             DPRINTF(Cache, "MSHR: set source as prefetcher %i\n", pfSource);
         }
 
@@ -338,6 +339,7 @@ MSHR::allocate(Addr blk_addr, unsigned blk_size, PacketPtr target,
     _isUncacheable = target->req->isUncacheable();
     inService = false;
     downstreamPending = false;
+    prefetchLateReported = false;
 
     targets.init(blkAddr, blkSize);
     deferredTargets.init(blkAddr, blkSize);
@@ -392,6 +394,7 @@ MSHR::deallocate()
     targets.resetFlags();
     assert(deferredTargets.isReset());
     inService = false;
+    prefetchLateReported = false;
 }
 
 /*

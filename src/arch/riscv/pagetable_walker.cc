@@ -103,8 +103,62 @@ Walker::WalkerStats::WalkerStats(statistics::Group *parent)
       ADD_STAT(ptwDemandRetrySelections, statistics::units::Count::get(),
                "demand miss-queue entries selected for retry"),
       ADD_STAT(ptwPrefetchRetrySelections, statistics::units::Count::get(),
-               "hardware data-prefetch miss-queue entries selected for retry")
+               "hardware data-prefetch miss-queue entries selected for retry"),
+      ADD_STAT(ptwPrefetchQueueEnqueuesBySource,
+               statistics::units::Count::get(),
+               "hardware data-prefetch PTW queue enqueues by source"),
+      ADD_STAT(ptwPrefetchQueueDropsBySource,
+               statistics::units::Count::get(),
+               "hardware data-prefetch PTW queue drops by source"),
+      ADD_STAT(ptwPrefetchLevelBlockedBySource,
+               statistics::units::Count::get(),
+               "hardware data-prefetch PTW level blocks by walk source"),
+      ADD_STAT(ptwPrefetchRetrySelectionsBySource,
+               statistics::units::Count::get(),
+               "hardware data-prefetch PTW retry selections by source"),
+      ADD_STAT(ptwPrefetchWalkCompletionsBySource,
+               statistics::units::Count::get(),
+               "completed hardware data-prefetch walks by originating source"),
+      ADD_STAT(ptwPrefetchWalkCyclesBySource,
+               statistics::units::Cycle::get(),
+               "total hardware data-prefetch walk cycles by originating source")
 {
+    const std::array<const char *, NUM_PF_SOURCES + 1> source_names = {{
+        "PF_NONE", "SStream", "SStride", "SPht", "HWP_BOP", "SPP",
+        "CMC", "IPCP", "IPCP_CS", "IPCP_CPLX", "Berti",
+        "StoreStream", "CDP", "SOpt", "DespacitoStream",
+        "AMDContiguousStream", "AMDRIPRegion", "AMDRegionType",
+        "AMDAOP", "AppleAMPM", "ARMHint",
+        "ARMOffsetBasedPointer", "DSPatch", "PatternMerging",
+        "Kairos", "Streamline", "Bingo", "unknown"
+    }};
+    static_assert(source_names.size() == NUM_PF_SOURCES + 1,
+                  "Prefetch source stat names must match enum size");
+    const std::array<statistics::Vector *, 6> source_stats = {{
+        &ptwPrefetchQueueEnqueuesBySource,
+        &ptwPrefetchQueueDropsBySource,
+        &ptwPrefetchLevelBlockedBySource,
+        &ptwPrefetchRetrySelectionsBySource,
+        &ptwPrefetchWalkCompletionsBySource,
+        &ptwPrefetchWalkCyclesBySource
+    }};
+    for (auto *stat : source_stats) {
+        stat->init(NUM_PF_SOURCES + 1).flags(statistics::total);
+        for (unsigned i = 0; i < source_names.size(); ++i)
+            stat->subname(i, source_names[i]);
+    }
+}
+
+unsigned
+Walker::prefetchSourceBucket(const RequestPtr &req)
+{
+    if (!req || !req->hasXsMetadata())
+        return NUM_PF_SOURCES;
+
+    const unsigned bucket = static_cast<unsigned>(
+        req->getXsMetadata().prefetchSource);
+    return bucket < NUM_PF_SOURCES ? bucket :
+        static_cast<unsigned>(NUM_PF_SOURCES);
 }
 
 bool
@@ -324,6 +378,8 @@ Walker::enqueuePtwMiss(ThreadContext *tc, BaseMMU::Translation *translation,
                 ptwMissQueueSize - ptwDemandReserve : 0;
         if (ptwMissQueue.size() >= prefetch_capacity) {
             stats.ptwPrefetchQueueDrops++;
+            stats.ptwPrefetchQueueDropsBySource[
+                prefetchSourceBucket(req)]++;
             return false;
         }
     }
@@ -343,6 +399,8 @@ Walker::enqueuePtwMiss(ThreadContext *tc, BaseMMU::Translation *translation,
     } else if (data_prefetch) {
         ptwMissQueue.push_back(entry);
         stats.ptwPrefetchQueueEnqueues++;
+        stats.ptwPrefetchQueueEnqueuesBySource[
+            prefetchSourceBucket(req)]++;
     } else {
         insertDemandPtwMiss(entry);
         stats.ptwDemandQueueEnqueues++;
@@ -375,10 +433,13 @@ Walker::retryPtwMissQueue()
         MissQueueEntry entry = ptwMissQueue.front();
         ptwMissQueue.pop_front();
         if (enableDataPrefetchPtwThrottle &&
-            tlb->isHardwareDataPrefetchRequest(entry.req))
+            tlb->isHardwareDataPrefetchRequest(entry.req)) {
             stats.ptwPrefetchRetrySelections++;
-        else
+            stats.ptwPrefetchRetrySelectionsBySource[
+                prefetchSourceBucket(entry.req)]++;
+        } else {
             stats.ptwDemandRetrySelections++;
+        }
         DPRINTF(PageTableWalker,
                 "Dequeue PTW miss vaddr %#lx queue size %u\n",
                 entry.req->getVaddr(), ptwMissQueue.size());
@@ -418,6 +479,8 @@ Walker::resetStats()
 {
     ClockedObject::resetStats();
     lastPtwMemCycleTick = curTick();
+    for (auto *state : currStates)
+        state->resetStatsWindow();
 }
 
 std::pair<bool, Fault>
@@ -627,6 +690,13 @@ Walker::WalkerState::initState(ThreadContext *_tc, const RequestPtr &_req, BaseM
                                bool _from_forward_pre_req, bool _from_back_pre_req)
 {
     assert(functional || _req != nullptr);
+    dataPrefetchWalkTracked = _isTiming &&
+        walker->tlb->isHardwareDataPrefetchRequest(_req);
+    dataPrefetchWalkCompletionRecorded = false;
+    dataPrefetchSourceBucket = dataPrefetchWalkTracked ?
+        Walker::prefetchSourceBucket(_req) :
+        static_cast<unsigned>(NUM_PF_SOURCES);
+    dataPrefetchWalkStartTick = curTick();
     if (_req && _req->get_two_stage_state()) {
         assert(state == Ready);
         started = false;
@@ -760,7 +830,8 @@ Walker::WalkerState::tryCoalesce(ThreadContext *_tc, BaseMMU::Translation *trans
             if (dataPrefetchPteBufferWalk &&
                 !walker->tlb->usesDataPrefetchPteBuffer(req)) {
                 dataPrefetchPteBufferWalk = false;
-                walker->tlb->recordDataPrefetchPteBufferDemandCoalesce();
+                walker->tlb->recordDataPrefetchPteBufferDemandCoalesce(
+                    mainReq);
             }
             if ((fromPre || fromBackPre) && (!from_forward_pre_req) && (!from_back_pre_req)) {
                 DPRINTF(PageTableWalker, "from_forward_pre_req be coalesced\n");
@@ -819,7 +890,8 @@ Walker::dol2TLBHit()
                         TlbEntry buffer_entry = *dol2TLBHitrequestors.entry;
                         buffer_entry.translateMode = direct;
                         tlb->insertDataPrefetchPteBuffer(
-                            buffer_entry, dol2TLBHitrequestors.satp);
+                            buffer_entry, dol2TLBHitrequestors.satp,
+                            dol2TLBHitrequestors.req);
                     } else if (tlb->isL1DirectCompressionEnabled()) {
                         TlbEntry l1_entry;
                         if (tlb->buildSingleL1CompressedEntry(
@@ -1935,10 +2007,28 @@ Walker::WalkerState::stepWalk(PacketPtr &write)
 void
 Walker::WalkerState::endWalk()
 {
+    if (dataPrefetchWalkTracked &&
+        !dataPrefetchWalkCompletionRecorded) {
+        walker->stats.ptwPrefetchWalkCompletionsBySource[
+            dataPrefetchSourceBucket]++;
+        walker->stats.ptwPrefetchWalkCyclesBySource[
+            dataPrefetchSourceBucket] +=
+                walker->ticksToCycles(curTick() - dataPrefetchWalkStartTick);
+        dataPrefetchWalkCompletionRecorded = true;
+    }
     nextState = Ready;
     delete read;
     read = NULL;
     walker->releasePtwLevel(this);
+}
+
+void
+Walker::WalkerState::resetStatsWindow()
+{
+    if (dataPrefetchWalkTracked &&
+        !dataPrefetchWalkCompletionRecorded) {
+        dataPrefetchWalkStartTick = curTick();
+    }
 }
 
 bool
@@ -1985,10 +2075,13 @@ Walker::WalkerState::waitForPtwLevel(int target_level, Addr next_read,
     if (!usePtwLevelLimit())
         return false;
 
-    if (isDemandWalk())
+    if (isDemandWalk()) {
         walker->stats.ptwDemandLevelBlocked++;
-    else
+    } else {
         walker->stats.ptwPrefetchLevelBlocked++;
+        walker->stats.ptwPrefetchLevelBlockedBySource[
+            dataPrefetchSourceBucket]++;
+    }
 
     waitingForPtwLevel = true;
     blockedPtwLevel = target_level;
@@ -2499,8 +2592,10 @@ Walker::WalkerState::recvPacket(PacketPtr pkt)
                     }
                     if (dataPrefetchPteRefillPending &&
                         !data_prefetch_refilled) {
-                        walker->tlb->insertDataPrefetchPteBuffer(entry, satp);
-                        walker->tlb->recordDataPrefetchPteBufferPrefetchOnlyWalk();
+                        walker->tlb->insertDataPrefetchPteBuffer(
+                            entry, satp, mainReq);
+                        walker->tlb->recordDataPrefetchPteBufferPrefetchOnlyWalk(
+                            mainReq);
                         data_prefetch_refilled = true;
                     }
                     // Let the CPU continue.
@@ -2573,8 +2668,10 @@ Walker::WalkerState::recvPacket(PacketPtr pkt)
 
                     if (dataPrefetchPteRefillPending &&
                         !data_prefetch_refilled) {
-                        walker->tlb->insertDataPrefetchPteBuffer(entry, satp);
-                        walker->tlb->recordDataPrefetchPteBufferPrefetchOnlyWalk();
+                        walker->tlb->insertDataPrefetchPteBuffer(
+                            entry, satp, mainReq);
+                        walker->tlb->recordDataPrefetchPteBufferPrefetchOnlyWalk(
+                            mainReq);
                         data_prefetch_refilled = true;
                     }
 

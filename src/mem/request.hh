@@ -85,6 +85,18 @@ enum PrefetchSourceType
     CDP,
     SOpt,
     DespacitoStream,
+    AMDContiguousStream,
+    AMDRIPRegion,
+    AMDRegionType,
+    AMDAOP,
+    AppleAMPM,
+    ARMHint,
+    ARMOffsetBasedPointer,
+    DSPatch,
+    PatternMerging,
+    Kairos,
+    Streamline,
+    Bingo,
     NUM_PF_SOURCES
 };
 
@@ -386,6 +398,10 @@ class Request
         uint32_t prefetchDistance;
         uint8_t preferredPrefetchLevel;
         uint8_t issuedPrefetchLevel;
+        bool crossPagePrefetch;
+        bool centralizedPrefetch;
+        uint16_t centralizedCoreId;
+        uint16_t centralizedTriggerPcHash;
 
         XsMetadata() :
             validXsMetadata(false),
@@ -394,7 +410,11 @@ class Request
             prefetchDepth(0),
             prefetchDistance(0),
             preferredPrefetchLevel(0),
-            issuedPrefetchLevel(0) {}
+            issuedPrefetchLevel(0),
+            crossPagePrefetch(false),
+            centralizedPrefetch(false),
+            centralizedCoreId(0),
+            centralizedTriggerPcHash(0) {}
 
         XsMetadata(o3::XsDynInstMetaPtr instMeta) :
             validXsMetadata(true),
@@ -403,7 +423,11 @@ class Request
             prefetchDepth(0),
             prefetchDistance(0),
             preferredPrefetchLevel(0),
-            issuedPrefetchLevel(0) {}
+            issuedPrefetchLevel(0),
+            crossPagePrefetch(false),
+            centralizedPrefetch(false),
+            centralizedCoreId(0),
+            centralizedTriggerPcHash(0) {}
 
         XsMetadata(PrefetchSourceType pfSource) :
             validXsMetadata(true),
@@ -412,7 +436,11 @@ class Request
             prefetchDepth(0),
             prefetchDistance(0),
             preferredPrefetchLevel(0),
-            issuedPrefetchLevel(0) {}
+            issuedPrefetchLevel(0),
+            crossPagePrefetch(false),
+            centralizedPrefetch(false),
+            centralizedCoreId(0),
+            centralizedTriggerPcHash(0) {}
 
         XsMetadata(PrefetchSourceType pfSource,int pfDepth) :
             validXsMetadata(true),
@@ -421,18 +449,28 @@ class Request
             prefetchDepth(pfDepth),
             prefetchDistance(0),
             preferredPrefetchLevel(0),
-            issuedPrefetchLevel(0) {}
+            issuedPrefetchLevel(0),
+            crossPagePrefetch(false),
+            centralizedPrefetch(false),
+            centralizedCoreId(0),
+            centralizedTriggerPcHash(0) {}
 
         XsMetadata(PrefetchSourceType pfSource, int pfDepth,
                    uint32_t distance, uint8_t preferredLevel,
-                   uint8_t issuedLevel) :
+                   uint8_t issuedLevel, bool crossPage = false,
+                   bool centralized = false, uint16_t coreId = 0,
+                   uint16_t triggerPcHash = 0) :
             validXsMetadata(true),
             instXsMetadata(nullptr),
             prefetchSource(pfSource),
             prefetchDepth(pfDepth),
             prefetchDistance(distance),
             preferredPrefetchLevel(preferredLevel),
-            issuedPrefetchLevel(issuedLevel) {}
+            issuedPrefetchLevel(issuedLevel),
+            crossPagePrefetch(crossPage),
+            centralizedPrefetch(centralized),
+            centralizedCoreId(coreId),
+            centralizedTriggerPcHash(triggerPcHash) {}
 
         void invalidate() {
             validXsMetadata = false;
@@ -442,6 +480,10 @@ class Request
             prefetchDistance = 0;
             preferredPrefetchLevel = 0;
             issuedPrefetchLevel = 0;
+            crossPagePrefetch = false;
+            centralizedPrefetch = false;
+            centralizedCoreId = 0;
+            centralizedTriggerPcHash = 0;
         }
     } XsMetadata;
 

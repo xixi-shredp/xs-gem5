@@ -232,6 +232,8 @@ Base::Base(const BasePrefetcherParams &p)
       prefetchOnAccess(p.prefetch_on_access),
       prefetchOnPfHit(p.prefetch_on_pf_hit),
       useVirtualAddresses(p.use_virtual_addresses),
+      noPfahead(p.no_pfahead),
+      noPfaheadReserved(p.no_pfahead_reserved),
       prefetchStats(this), issuedPrefetches(0),
       usefulPrefetches(0), streamlatenum(0),tlb(nullptr)
 {
@@ -280,6 +282,72 @@ Base::StatGroup::StatGroup(statistics::Group *parent)
         "number of prefetches hit in the Write Buffer"),
     ADD_STAT(late_srcs, statistics::units::Count::get(),
         "number of prefetches late"),
+    ADD_STAT(crossPagePfIssued, statistics::units::Count::get(),
+        "cross-page prefetches issued to this cache level"),
+    ADD_STAT(crossPagePfIssued_srcs, statistics::units::Count::get(),
+        "cross-page prefetches issued to this cache level by source"),
+    ADD_STAT(crossPagePfUseful, statistics::units::Count::get(),
+        "cross-page prefetches first used at this cache level"),
+    ADD_STAT(crossPagePfUseful_srcs, statistics::units::Count::get(),
+        "cross-page prefetches first used at this cache level by source"),
+    ADD_STAT(crossPagePfUnused, statistics::units::Count::get(),
+        "cross-page prefetched blocks evicted unused at this cache level"),
+    ADD_STAT(crossPagePfUnused_srcs, statistics::units::Count::get(),
+        "cross-page prefetched blocks evicted unused by source"),
+    ADD_STAT(crossPagePfLate, statistics::units::Count::get(),
+        "demands merged into cross-page prefetch-only MSHRs"),
+    ADD_STAT(crossPagePfLate_srcs, statistics::units::Count::get(),
+        "late cross-page prefetches by source"),
+    ADD_STAT(crossPagePfAccuracy, statistics::units::Count::get(),
+        "useful cross-page prefetches divided by issued cross-page prefetches"),
+    ADD_STAT(lifecycleAdmitted, statistics::units::Count::get(),
+        "target-level prefetches admitted into this cache's MSHRs"),
+    ADD_STAT(lifecycleAdmitted_srcs, statistics::units::Count::get(),
+        "target-level prefetches admitted by source"),
+    ADD_STAT(lifecycleFilled, statistics::units::Count::get(),
+        "target-level prefetch-only fills installed in this cache"),
+    ADD_STAT(lifecycleFilled_srcs, statistics::units::Count::get(),
+        "target-level prefetch-only fills by source"),
+    ADD_STAT(lifecycleDemandUseful, statistics::units::Count::get(),
+        "target-level prefetched blocks first consumed by demand"),
+    ADD_STAT(lifecycleDemandUseful_srcs, statistics::units::Count::get(),
+        "target-level prefetched blocks first consumed by demand, by source"),
+    ADD_STAT(lifecycleUpperPfConsumed, statistics::units::Count::get(),
+        "target-level prefetched blocks first consumed by an upper HWPF"),
+    ADD_STAT(lifecycleUpperPfConsumed_srcs, statistics::units::Count::get(),
+        "target-level prefetched blocks first consumed by an upper HWPF, by source"),
+    ADD_STAT(lifecycleUnused, statistics::units::Count::get(),
+        "target-level prefetched blocks invalidated before first consumption"),
+    ADD_STAT(lifecycleUnused_srcs, statistics::units::Count::get(),
+        "target-level prefetched blocks invalidated unused, by source"),
+    ADD_STAT(lifecycleTrueLateUnique, statistics::units::Count::get(),
+        "prefetch-only MSHRs receiving at least one demand merge"),
+    ADD_STAT(lifecycleTrueLateUnique_srcs, statistics::units::Count::get(),
+        "unique late target-level prefetches by source"),
+    ADD_STAT(lifecycleLateDemandMerges, statistics::units::Count::get(),
+        "all demand requests merged into target-level prefetch-only MSHRs"),
+    ADD_STAT(lifecycleLateDemandMerges_srcs, statistics::units::Count::get(),
+        "all demand merges into target-level prefetch-only MSHRs, by source"),
+    ADD_STAT(lifecycleResident, statistics::units::Count::get(),
+        "prefetch-only fills still resident and not consumed at stats dump"),
+    ADD_STAT(lifecycleResident_srcs, statistics::units::Count::get(),
+        "resident unconsumed prefetch-only fills by source"),
+    ADD_STAT(lifecycleFillVictims, statistics::units::Count::get(),
+        "valid victims displaced by allocations carrying target-level PF metadata"),
+    ADD_STAT(lifecycleFillVictims_srcs, statistics::units::Count::get(),
+        "valid PF-associated fill victims by prefetch source"),
+    ADD_STAT(lifecycleDirtyVictims, statistics::units::Count::get(),
+        "dirty victims displaced by allocations carrying target-level PF metadata"),
+    ADD_STAT(lifecycleDirtyVictims_srcs, statistics::units::Count::get(),
+        "dirty PF-associated fill victims by prefetch source"),
+    ADD_STAT(lifecycleDemandTouchedVictims, statistics::units::Count::get(),
+        "demand-touched victims displaced by PF-associated allocations"),
+    ADD_STAT(lifecycleDemandTouchedVictims_srcs, statistics::units::Count::get(),
+        "demand-touched PF-associated fill victims by prefetch source"),
+    ADD_STAT(lifecycleUntouchedVictims, statistics::units::Count::get(),
+        "never-demand-touched victims displaced by PF-associated allocations"),
+    ADD_STAT(lifecycleUntouchedVictims_srcs, statistics::units::Count::get(),
+        "never-demand-touched PF-associated fill victims by source"),
     ADD_STAT(pfUsefulButMiss, statistics::units::Count::get(),
         "number of hit on prefetch but cache block is not in an usable "
         "state"),
@@ -326,6 +394,21 @@ Base::StatGroup::StatGroup(statistics::Group *parent)
     late_srcs
         .init(NUM_PF_SOURCES)
         .flags(total);
+    crossPagePfIssued_srcs.init(NUM_PF_SOURCES).flags(total);
+    crossPagePfUseful_srcs.init(NUM_PF_SOURCES).flags(total);
+    crossPagePfUnused_srcs.init(NUM_PF_SOURCES).flags(total);
+    crossPagePfLate_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleAdmitted_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleFilled_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleDemandUseful_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleUpperPfConsumed_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleUnused_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleTrueLateUnique_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleLateDemandMerges_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleFillVictims_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleDirtyVictims_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleDemandTouchedVictims_srcs.init(NUM_PF_SOURCES).flags(total);
+    lifecycleUntouchedVictims_srcs.init(NUM_PF_SOURCES).flags(total);
 
 
     accuracy.flags(total);
@@ -335,6 +418,113 @@ Base::StatGroup::StatGroup(statistics::Group *parent)
     coverage = pfUseful / (pfUseful + demandMshrMisses);
 
     pfLate = pfHitInCache + pfHitInMSHR + pfHitInWB;
+    crossPagePfAccuracy = crossPagePfUseful / crossPagePfIssued;
+    lifecycleResident = lifecycleFilled - lifecycleDemandUseful -
+        lifecycleUpperPfConsumed - lifecycleUnused;
+    lifecycleResident_srcs = lifecycleFilled_srcs -
+        lifecycleDemandUseful_srcs - lifecycleUpperPfConsumed_srcs -
+        lifecycleUnused_srcs;
+}
+
+void
+Base::recordCrossPagePrefetchIssued(
+    const Request::XsMetadata &metadata)
+{
+    if (cache && metadata.crossPagePrefetch &&
+        metadata.issuedPrefetchLevel == cache->level()) {
+        prefetchStats.crossPagePfIssued++;
+        prefetchStats.crossPagePfIssued_srcs[metadata.prefetchSource]++;
+    }
+}
+
+void
+Base::prefetchUnused(
+    Addr paddr, const Request::XsMetadata &metadata)
+{
+    prefetchUnused(paddr, metadata.prefetchSource);
+    if (cache && metadata.issuedPrefetchLevel == cache->level()) {
+        prefetchStats.lifecycleUnused++;
+        prefetchStats.lifecycleUnused_srcs[metadata.prefetchSource]++;
+    }
+    if (cache && metadata.crossPagePrefetch &&
+        metadata.issuedPrefetchLevel == cache->level()) {
+        prefetchStats.crossPagePfUnused++;
+        prefetchStats.crossPagePfUnused_srcs[metadata.prefetchSource]++;
+    }
+}
+
+void
+Base::prefetchLate(
+    const Request::XsMetadata &metadata, bool firstDemandMerge)
+{
+    if (cache && metadata.issuedPrefetchLevel == cache->level()) {
+        prefetchStats.lifecycleLateDemandMerges++;
+        prefetchStats.lifecycleLateDemandMerges_srcs[
+            metadata.prefetchSource]++;
+        if (firstDemandMerge) {
+            prefetchStats.lifecycleTrueLateUnique++;
+            prefetchStats.lifecycleTrueLateUnique_srcs[
+                metadata.prefetchSource]++;
+            if (metadata.crossPagePrefetch) {
+                prefetchStats.crossPagePfLate++;
+                prefetchStats.crossPagePfLate_srcs[
+                    metadata.prefetchSource]++;
+            }
+        }
+    }
+}
+
+void
+Base::recordPrefetchAdmitted(const Request::XsMetadata &metadata)
+{
+    if (cache && metadata.issuedPrefetchLevel == cache->level()) {
+        prefetchStats.lifecycleAdmitted++;
+        prefetchStats.lifecycleAdmitted_srcs[metadata.prefetchSource]++;
+    }
+}
+
+void
+Base::recordPrefetchFill(const Request::XsMetadata &metadata)
+{
+    if (cache && metadata.issuedPrefetchLevel == cache->level()) {
+        prefetchStats.lifecycleFilled++;
+        prefetchStats.lifecycleFilled_srcs[metadata.prefetchSource]++;
+    }
+}
+
+void
+Base::recordUpperPrefetchConsumed(const Request::XsMetadata &metadata)
+{
+    if (cache && metadata.issuedPrefetchLevel == cache->level()) {
+        prefetchStats.lifecycleUpperPfConsumed++;
+        prefetchStats.lifecycleUpperPfConsumed_srcs[
+            metadata.prefetchSource]++;
+    }
+}
+
+void
+Base::recordPrefetchFillVictim(
+    const Request::XsMetadata &metadata, bool dirty, bool demandTouched)
+{
+    if (!cache || metadata.issuedPrefetchLevel != cache->level()) {
+        return;
+    }
+
+    prefetchStats.lifecycleFillVictims++;
+    prefetchStats.lifecycleFillVictims_srcs[metadata.prefetchSource]++;
+    if (dirty) {
+        prefetchStats.lifecycleDirtyVictims++;
+        prefetchStats.lifecycleDirtyVictims_srcs[metadata.prefetchSource]++;
+    }
+    if (demandTouched) {
+        prefetchStats.lifecycleDemandTouchedVictims++;
+        prefetchStats.lifecycleDemandTouchedVictims_srcs[
+            metadata.prefetchSource]++;
+    } else {
+        prefetchStats.lifecycleUntouchedVictims++;
+        prefetchStats.lifecycleUntouchedVictims_srcs[
+            metadata.prefetchSource]++;
+    }
 }
 
 bool
@@ -468,8 +658,20 @@ Base::probeNotify(const PacketPtr &pkt, bool miss)
     if (hasBeenPrefetched(pkt->getAddr(), pkt->isSecure())) {
         usefulPrefetches += 1;
         prefetchStats.pfUseful++;
-        PrefetchSourceType pf_source = cache->getHitBlkXsMetadata(pkt).prefetchSource;
+        const auto metadata = cache->getHitBlkXsMetadata(pkt);
+        PrefetchSourceType pf_source = metadata.prefetchSource;
         prefetchStats.pfUseful_srcs[pf_source]++;
+        recordPrefetchUseful(metadata, miss);
+        if (!miss && cache &&
+            metadata.issuedPrefetchLevel == cache->level()) {
+            prefetchStats.lifecycleDemandUseful++;
+            prefetchStats.lifecycleDemandUseful_srcs[pf_source]++;
+        }
+        if (cache && metadata.crossPagePrefetch &&
+            metadata.issuedPrefetchLevel == cache->level()) {
+            prefetchStats.crossPagePfUseful++;
+            prefetchStats.crossPagePfUseful_srcs[pf_source]++;
+        }
         if (miss)
             // This case happens when a demand hits on a prefetched line
             // that's not in the requested coherency state.

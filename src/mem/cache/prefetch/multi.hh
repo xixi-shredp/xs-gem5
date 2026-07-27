@@ -40,7 +40,9 @@
 
 #include <vector>
 
-#include "mem/cache/prefetch/base.hh"
+#include <boost/compute/detail/lru_cache.hpp>
+
+#include "mem/cache/prefetch/queued.hh"
 
 namespace gem5
 {
@@ -51,7 +53,7 @@ GEM5_DEPRECATED_NAMESPACE(Prefetcher, prefetch);
 namespace prefetch
 {
 
-class Multi : public Base
+class Multi : public Queued
 {
   public: // SimObject
     Multi(const MultiPrefetcherParams &p);
@@ -62,6 +64,12 @@ class Multi : public Base
     bool hasPendingPacket() override;
     PacketPtr getPacket() override;
     Tick nextPrefetchReadyTime() const override;
+    void calculatePrefetch(const PrefetchInfo &pfi,
+                           std::vector<AddrPriority> &addresses) override;
+    void calculatePrefetch(const PrefetchInfo &pfi,
+                           std::vector<AddrPriority> &addresses, bool late,
+                           PrefetchSourceType source,
+                           bool miss_repeat) override;
 
     /** @{ */
     /**
@@ -73,16 +81,15 @@ class Multi : public Base
     /** @} */
 
   public:
-    void rxHint(BaseMMU::Translation *dpp) override {
-        panic("MultiPrefetcher: rxHint not implemented");
-    }
-    void pfHitNotify(float accuracy, PrefetchSourceType pf_source, const PacketPtr &pkt) override {
-        panic("MultiPrefetcher: rxNotify not implemented");
-    }
+    void rxHint(BaseMMU::Translation *dpp) override {}
+    void pfHitNotify(float accuracy, PrefetchSourceType pf_source,
+                     const PacketPtr &pkt) override {}
 
   protected:
     /** List of sub-prefetchers ordered by priority. */
     std::vector<Base*> prefetchers;
+    boost::compute::detail::lru_cache<Addr, Addr> childFilter;
+    void bindChildFilter(Base *prefetcher);
     uint8_t lastChosenPf;
 };
 

@@ -40,6 +40,24 @@ SimObject('Prefetcher.py', sim_objects=[
     'WorkerPrefetcher', 'DespacitoStreamPrefetcher',
     'BOPPrefetcher', 'SBOOEPrefetcher', 'STeMSPrefetcher', 'PIFPrefetcher', 'IPCPrefetcher',
     'CompositeWithWorkerPrefetcher', 'L2CompositeWithWorkerPrefetcher', 'PrefetcherForwarder',
+    'IPOPMultiPrefetcher',
+    'BanditPrefetcher',
+    'SandboxMultiPrefetchers',
+    'ReSemblePrefetcher',
+    'AMDContiguousStreamPrefetcher',
+    'AMDRIPRegionPrefetcher',
+    'AMDRegionStreamPrefetchers',
+    'AMDRegionTypePrefetcher',
+    'AMDAOPPrefetcher',
+    'ARMOffsetBasedPointerPrefetcher',
+    'ARMHintPrefetcher',
+    'DSPatchPrefetcher',
+    'PatternMergingPrefetcher',
+    'KairosPrefetcher',
+    'StreamlinePrefetcher',
+    'AppleAMPMPrefetcher',
+    'BingoPrefetcher',
+    'L2WorkerSlotPrefetcher',
     'CentralizedPrefetcherEndpoint', 'CentralizedDataPrefetcher'])
 
 
@@ -64,6 +82,24 @@ DebugFlag('DespacitoStreamPrefetcher')
 Source('access_map_pattern_matching.cc')
 Source('base.cc')
 Source('centralized.cc')
+Source('l2_worker_slot.cc')
+Source('amd_aop.cc')
+Source('amd_region_type.cc')
+Source('amd_region_stream.cc')
+Source('amd_rip_region.cc')
+Source('amd_contiguous_stream.cc')
+Source('bingo.cc')
+Source('resemble.cc')
+Source('sandbox_multi.cc')
+Source('bandit.cc')
+Source('ipop_multi.cc')
+Source('streamline.cc')
+Source('kairos.cc')
+Source('pattern_merging.cc')
+Source('dspatch.cc')
+Source('arm_offset_based_pointer.cc')
+Source('arm_hint.cc')
+Source('apple_ampm.cc')
 Source('multi.cc')
 Source('bop.cc')
 Source('delta_correlating_prediction_tables.cc')

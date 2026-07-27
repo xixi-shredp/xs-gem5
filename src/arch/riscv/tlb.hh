@@ -112,6 +112,7 @@ class TLB : public BaseTLB
         DataPrefetchPteKey key;
         TlbEntry entry;
         std::list<size_t>::iterator lruIt;
+        unsigned sourceBucket = NUM_PF_SOURCES;
         bool valid = false;
     };
 
@@ -217,6 +218,16 @@ class TLB : public BaseTLB
         statistics::Scalar dataPrefetchPteBufferPrefetchOnlyWalks;
         statistics::Scalar dataPrefetchPteBufferDemandCoalesces;
         statistics::Scalar dataPrefetchPteBufferTwoStageBypasses;
+        statistics::Vector dataPrefetchPteBufferLookupsBySource;
+        statistics::Vector dataPrefetchPteBufferPrefetchHitsBySource;
+        statistics::Vector dataPrefetchPteBufferInsertsBySource;
+        statistics::Vector dataPrefetchPteBufferPromotionsBySource;
+        statistics::Vector dataPrefetchPteBufferUnusedEvictionsBySource;
+        statistics::Vector dataPrefetchPteBufferFlushesBySource;
+        statistics::Vector dataPrefetchPteBufferL1ConflictRemovalsBySource;
+        statistics::Vector dataPrefetchPteBufferPrefetchOnlyWalksBySource;
+        statistics::Vector dataPrefetchPteBufferDemandCoalescesBySource;
+        statistics::Vector dataPrefetchPteBufferTwoStageBypassesBySource;
 
         statistics::Vector l2tlbRemove;
         statistics::Vector l2tlbUsedRemove;
@@ -313,11 +324,16 @@ class TLB : public BaseTLB
     bool isHardwareDataPrefetchRequest(const RequestPtr &req) const;
     bool usesDataPrefetchPteBuffer(const RequestPtr &req) const;
     TlbEntry *lookupDataPrefetchPteBuffer(Addr vaddr, SATP satp,
-                                          bool promote);
-    void insertDataPrefetchPteBuffer(const TlbEntry &entry, SATP satp);
-    void recordDataPrefetchPteBufferPrefetchOnlyWalk();
-    void recordDataPrefetchPteBufferDemandCoalesce();
-    void recordDataPrefetchPteBufferTwoStageBypass();
+                                          bool promote,
+                                          const RequestPtr &requester);
+    void insertDataPrefetchPteBuffer(const TlbEntry &entry, SATP satp,
+                                     const RequestPtr &producer);
+    void recordDataPrefetchPteBufferPrefetchOnlyWalk(
+        const RequestPtr &producer);
+    void recordDataPrefetchPteBufferDemandCoalesce(
+        const RequestPtr &producer);
+    void recordDataPrefetchPteBufferTwoStageBypass(
+        const RequestPtr &producer);
 
     Fault L2TLBPagefault(Addr vaddr, BaseMMU::Mode mode, const RequestPtr &req, bool is_pre, bool is_back_pre);
 
@@ -409,6 +425,7 @@ class TLB : public BaseTLB
     DataPrefetchPteKey makeDataPrefetchPteKey(
         Addr vaddr, SATP satp, uint8_t translateMode,
         unsigned log_bytes) const;
+    static unsigned dataPrefetchSourceBucket(const RequestPtr &req);
     void touchDataPrefetchPteSlot(size_t idx);
     void removeDataPrefetchPteSlot(size_t idx, bool unused_eviction);
     void removeOverlappingDataPrefetchPteEntries(const TlbEntry &entry);

@@ -122,15 +122,19 @@ class DespacitoStreamPrefetcher : public Queued
 
     DespacitoStreamPrefetcher(const DespacitoStreamPrefetcherParams &p);
 
-    void calculatePrefetch(const PrefetchInfo &pfi, std::vector<AddrPriority> &addresses) override
+    void calculatePrefetch(const PrefetchInfo &pfi,
+                           std::vector<AddrPriority> &addresses) override
     {
-        panic("not implemented");
+        calculatePrefetch(pfi, addresses, false);
     };
 
-    void calculatePrefetch(const PrefetchInfo &pfi, std::vector<AddrPriority> &addresses, bool late,
-                           PrefetchSourceType pf_source, bool miss_repeat) override
+    void calculatePrefetch(const PrefetchInfo &pfi,
+                           std::vector<AddrPriority> &addresses, bool late,
+                           PrefetchSourceType pf_source,
+                           bool miss_repeat) override
     {
-        panic("not implemented");
+        calculatePrefetch(pfi, addresses,
+                          late && pf_source == PrefetchSourceType::DespacitoStream);
     };
 
     void calculatePrefetch(const PrefetchInfo &pfi, std::vector<AddrPriority> &addresses, bool late);
