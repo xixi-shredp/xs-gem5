@@ -1694,8 +1694,7 @@ BaseCPU::reportDiffMismatch(ThreadID tid, InstSeqNum seq)
     }
 }
 
-void
-BaseCPU::difftestStep(ThreadID tid, InstSeqNum seq)
+BaseCPU::difftestStep(ThreadID tid, InstSeqNum seq, bool force)
 {
     auto diffAllStates = this->diffAllStates[tid];
 
@@ -1714,7 +1713,8 @@ BaseCPU::difftestStep(ThreadID tid, InstSeqNum seq)
     bool other_should_diff = !diffInfo.inst->isAtomic() && !is_fence && !is_sc &&
                              (!diffInfo.inst->isMicroop() || diffInfo.inst->isLastMicroop());
 
-    if (fence_should_diff || amo_should_diff || is_sc || other_should_diff || lr_should_diff) {
+    if (force || fence_should_diff || amo_should_diff || is_sc ||
+        other_should_diff || lr_should_diff) {
         should_diff = true;
         if (!diffAllStates->hasCommit && diffInfo.pc->instAddr() == 0x80000000u) {
             diffAllStates->hasCommit = true;
