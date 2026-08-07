@@ -717,7 +717,12 @@ IssueQue::issueToFu()
 void
 IssueQue::retryMem(const DynInstPtr& inst)
 {
-    assert(!inst->isNonSpeculative());
+    // Most memory replays are speculative. A non-speculative memory
+    // instruction may nevertheless need to be retried after a delayed DTB
+    // translation completes: it was first issued only after commit made it
+    // eligible, and must retain that ordering when it returns to the replay
+    // queue. CBO.ZERO is one such instruction.
+    assert(!inst->isNonSpeculative() || inst->isAtCommit());
     iqstats->retryMem++;
     if (inst->isLoad()) {
         const auto replay_type = inst->getReplayType();
