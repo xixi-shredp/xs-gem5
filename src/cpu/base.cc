@@ -1695,6 +1695,65 @@ BaseCPU::reportDiffMismatch(ThreadID tid, InstSeqNum seq)
 }
 
 void
+BaseCPU::seedDifftestRegFile(ThreadID tid, Addr pc)
+{
+    auto &regfile = diffAllStates[tid]->gem5RegFile;
+    const auto read_csr = [this, tid](RiscvISA::MiscRegIndex reg) {
+        return readMiscRegNoEffect(reg, tid);
+    };
+
+    // The concrete CPU supplies GPR, FPR, and vector-register contents. Seed
+    // every scalar CSR carried by the NEMU ABI here, because the first whole
+    // struct DUT_TO_REF copy otherwise reuses reset values read from NEMU.
+    readGem5Regs(tid);
+    regfile.mode = read_csr(RiscvISA::MISCREG_PRV);
+    regfile.mstatus = read_csr(RiscvISA::MISCREG_STATUS);
+    regfile.sstatus = regfile.mstatus & RiscvISA::SSTATUS_MASK;
+    regfile.mepc = read_csr(RiscvISA::MISCREG_MEPC);
+    regfile.sepc = read_csr(RiscvISA::MISCREG_SEPC);
+    regfile.mtval = read_csr(RiscvISA::MISCREG_MTVAL);
+    regfile.stval = read_csr(RiscvISA::MISCREG_STVAL);
+    regfile.mtvec = read_csr(RiscvISA::MISCREG_MTVEC);
+    regfile.stvec = read_csr(RiscvISA::MISCREG_STVEC);
+    regfile.mcause = read_csr(RiscvISA::MISCREG_MCAUSE);
+    regfile.scause = read_csr(RiscvISA::MISCREG_SCAUSE);
+    regfile.satp = read_csr(RiscvISA::MISCREG_SATP);
+    regfile.mip = read_csr(RiscvISA::MISCREG_IP);
+    regfile.mie = read_csr(RiscvISA::MISCREG_IE);
+    regfile.mscratch = read_csr(RiscvISA::MISCREG_MSCRATCH);
+    regfile.sscratch = read_csr(RiscvISA::MISCREG_SSCRATCH);
+    regfile.mideleg = read_csr(RiscvISA::MISCREG_MIDELEG);
+    regfile.medeleg = read_csr(RiscvISA::MISCREG_MEDELEG);
+
+    regfile.v = read_csr(RiscvISA::MISCREG_VIRMODE);
+    regfile.mtval2 = read_csr(RiscvISA::MISCREG_MTVAL2);
+    regfile.mtinst = read_csr(RiscvISA::MISCREG_MTINST);
+    regfile.hstatus = read_csr(RiscvISA::MISCREG_HSTATUS);
+    regfile.hideleg = read_csr(RiscvISA::MISCREG_HIDELEG);
+    regfile.hedeleg = read_csr(RiscvISA::MISCREG_HEDELEG);
+    regfile.hcounteren = read_csr(RiscvISA::MISCREG_HCOUNTEREN);
+    regfile.htval = read_csr(RiscvISA::MISCREG_HTVAL);
+    regfile.htinst = read_csr(RiscvISA::MISCREG_HTINST);
+    regfile.hgatp = read_csr(RiscvISA::MISCREG_HGATP);
+    regfile.vsstatus = read_csr(RiscvISA::MISCREG_VSSTATUS);
+    regfile.vstvec = read_csr(RiscvISA::MISCREG_VSTVEC);
+    regfile.vsepc = read_csr(RiscvISA::MISCREG_VSEPC);
+    regfile.vscause = read_csr(RiscvISA::MISCREG_VSCAUSE);
+    regfile.vstval = read_csr(RiscvISA::MISCREG_VSTVAL);
+    regfile.vsatp = read_csr(RiscvISA::MISCREG_VSATP);
+    regfile.vsscratch = read_csr(RiscvISA::MISCREG_VSSCRATCH);
+
+    regfile.vstart = read_csr(RiscvISA::MISCREG_VSTART);
+    regfile.vxsat = read_csr(RiscvISA::MISCREG_VXSAT);
+    regfile.vxrm = read_csr(RiscvISA::MISCREG_VXRM);
+    regfile.vcsr = read_csr(RiscvISA::MISCREG_VCSR);
+    regfile.vl = read_csr(RiscvISA::MISCREG_VL);
+    regfile.vtype = read_csr(RiscvISA::MISCREG_VTYPE);
+    regfile.vlenb = read_csr(RiscvISA::MISCREG_VLENB);
+    regfile.pc = pc;
+}
+
+void
 BaseCPU::difftestStep(ThreadID tid, InstSeqNum seq)
 {
     auto diffAllStates = this->diffAllStates[tid];
@@ -1714,12 +1773,12 @@ BaseCPU::difftestStep(ThreadID tid, InstSeqNum seq)
     bool other_should_diff = !diffInfo.inst->isAtomic() && !is_fence && !is_sc &&
                              (!diffInfo.inst->isMicroop() || diffInfo.inst->isLastMicroop());
 
-    if (fence_should_diff || amo_should_diff || is_sc || other_should_diff || lr_should_diff) {
+    if (fence_should_diff || amo_should_diff || is_sc || other_should_diff ||
+        lr_should_diff) {
         should_diff = true;
         if (!diffAllStates->hasCommit && diffInfo.pc->instAddr() == 0x80000000u) {
             diffAllStates->hasCommit = true;
-            readGem5Regs(tid);
-            diffAllStates->gem5RegFile.pc = diffInfo.pc->instAddr();
+            seedDifftestRegFile(tid, diffInfo.pc->instAddr());
             if (noHypeMode) {
                 auto start = pmemStart + pmemSize * difftestHartId(tid);
                 diffAllStates->proxy->memcpy(0x80000000u, start, pmemSize, DUT_TO_REF);
