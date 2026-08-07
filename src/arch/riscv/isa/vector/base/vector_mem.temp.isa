@@ -882,6 +882,13 @@ Fault
     uint32_t mem_size = %(calc_memsize_code)s;
 
 #if %(is_vecWhole)s
+    // NEMU executes whole-register vector stores with MMU_DIRECT.  An
+    // address outside physical memory is therefore an ignored invalid
+    // physical access when the reference enables ignore_illegal_mem_access,
+    // rather than a translated virtual-memory store.
+    if (!xc->tcBase()->getSystemPtr()->isMemAddr(EA)) {
+        return NoFault;
+    }
 #else
     VM_REQUIRED();
 #endif
@@ -951,6 +958,12 @@ Fault
     uint32_t mem_size = %(calc_memsize_code)s;
 
 #if %(is_vecWhole)s
+    // Keep the timing path consistent with execute(): VsWhole uses NEMU's
+    // direct physical-address semantics and does not issue an access for an
+    // address outside physical memory.
+    if (!xc->tcBase()->getSystemPtr()->isMemAddr(EA)) {
+        return NoFault;
+    }
 #else
     VM_REQUIRED();
 #endif
