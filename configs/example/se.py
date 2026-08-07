@@ -275,8 +275,10 @@ for i in range(np):
 
     if args.bp_type:
         bpClass = ObjectList.bp_list.get(args.bp_type)
-        system.cpu[i].branchPred = bpClass()
-
+        if args.bp_type == 'DecoupledBPUWithBTB':
+            system.cpu[i].branchPred = bpClass(bpStat=args.bp_stat)
+        else:
+            system.cpu[i].branchPred = bpClass()
     if args.indirect_bp_type:
         indirectBPClass = \
             ObjectList.indirect_bp_list.get(args.indirect_bp_type)
@@ -291,7 +293,7 @@ def setKmhV3IdealParams(args, system):
     for cpu in system.cpu:
         # Recreate branch predictor with BTB
         bpClass = ObjectList.bp_list.get('DecoupledBPUWithBTB')
-        cpu.branchPred = bpClass()
+        cpu.branchPred = bpClass(bpStat=args.bp_stat)
 
         cpu.mmu.itb.size = 96
 

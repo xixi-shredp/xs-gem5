@@ -4,6 +4,8 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <map>
+#include <memory>
 #include <queue>
 #include <stack>
 #include <utility>
@@ -127,6 +129,78 @@ class DecoupledBPUWithBTB : public BPredUnit
     unsigned smtFTQThreshold;
 
     FetchTargetQueue ftq;
+
+    // Opt-in, exact sparse histograms for dynamic BPU profiling. These are
+    // separate from gem5 statistics because every observed bucket is kept.
+    struct BpStatSequence
+    {
+        bool seenAny = false;
+        bool seenTaken = false;
+        bool seenNotTaken = false;
+        uint64_t nonBranchesSinceAny = 0;
+        uint64_t nonBranchesSinceTaken = 0;
+        uint64_t nonBranchesSinceNotTaken = 0;
+        uint64_t notTakenSinceTaken = 0;
+        std::map<uint64_t, uint64_t> allBranchDistance;
+        std::map<uint64_t, uint64_t> takenBranchDistance;
+        std::map<uint64_t, uint64_t> notTakenBranchDistance;
+        std::map<uint64_t, uint64_t> notTakenBetweenTaken;
+
+        void recordNonBranch();
+        void recordBranch(bool taken);
+    };
+
+    struct BpStatBlock
+    {
+        uint64_t instructions = 0;
+        uint64_t branches = 0;
+        uint64_t takenBranches = 0;
+        uint64_t notTakenBranches = 0;
+        BpStatSequence sequence;
+    };
+
+    struct BpStatData
+    {
+        std::vector<BpStatSequence> global;
+        // One accumulator per in-flight FetchTarget. FetchTarget is the
+        // DecoupledBPU's actual prediction block: it covers at most
+        // predictWidth (64B by default) and can end early at a taken branch.
+        std::vector<std::map<FetchTargetId, BpStatBlock>>
+            predictBlocks;
+        std::map<uint64_t, uint64_t> predictBlockBranchCount;
+        std::map<uint64_t, uint64_t> predictBlockTakenBranchCount;
+        std::map<uint64_t, uint64_t> predictBlockNotTakenBranchCount;
+        BpStatSequence predictionBlockSequences;
+        // A FetchTarget is a prediction window.  Each window contains one or
+        // more 32B aligned FBlocks, which are the BTB's basic fetch unit.
+        // Keep the target ID in the key so different dynamic visits to the
+        // same static FBlock are never merged before their distributions are
+        // finalized.
+        std::vector<std::map<FetchTargetId,
+                             std::map<Addr, BpStatBlock>>> fetchBlocks;
+        std::map<uint64_t, uint64_t> fetchBlockBranchCount;
+        std::map<uint64_t, uint64_t> fetchBlockTakenBranchCount;
+        std::map<uint64_t, uint64_t> fetchBlockNotTakenBranchCount;
+        BpStatSequence fetchBlockSequences;
+        // FTQ entry occupancy sampled once per active BPU tick, per thread.
+        std::vector<std::map<uint64_t, uint64_t>> ftqOccupancy;
+
+        explicit BpStatData(unsigned threads)
+            : global(threads), predictBlocks(threads), fetchBlocks(threads),
+              ftqOccupancy(threads)
+        {}
+    };
+
+    const bool bpStatEnabled;
+    std::unique_ptr<BpStatData> bpStat;
+
+    static void mergeBpStatSequence(BpStatSequence &destination,
+                                    const BpStatSequence &source);
+    void recordBpStatCommittedInst(const DynInstPtr &inst);
+    void finalizeBpStatPredictionBlock(FetchTargetId target_id, ThreadID tid);
+    void flushBpStatBlocks();
+    void sampleBpStatFtqOccupancy();
+    void dumpBpStat();
 
     struct
     {
