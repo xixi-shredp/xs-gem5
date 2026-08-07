@@ -7,7 +7,7 @@ Both vector configuration templates calculate `new_vill` from LMUL, SEW, and res
 
 ## Code
 
-`src/arch/riscv/isa/vector/base/vector_conf.isa:110-125`: 
+`src/arch/riscv/isa/vector/base/vector_conf.isa:110-125`:
 ```cpp
         VTYPE new_vtype = requested_vtype;
         {
