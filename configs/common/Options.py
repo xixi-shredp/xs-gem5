@@ -283,6 +283,8 @@ def addCommonOptions(parser, configure_xiangshan=False):
                         help="enable bp database for specified subdatabase, "
                         "basic branch trace is enabled by default even without specifying, "
                         "available subdatabase: basic, tage, ras, loop")
+    parser.add_argument("--bp-stat", action="store_true", default=False,
+                        help="enable branch-predictor distribution statistics")
 
     parser.add_argument("--list-rp-types",
                         action=ListRP, nargs=0,

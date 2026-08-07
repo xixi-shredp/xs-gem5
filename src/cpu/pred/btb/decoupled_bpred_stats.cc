@@ -52,7 +52,240 @@ overrideReasonBucket(OverrideReason reason)
     return 0;
 }
 
+template <class Map>
+void
+mergeHistogram(Map &destination, const Map &source)
+{
+    for (const auto &[key, count] : source) {
+        destination[key] += count;
+    }
+}
+
+void
+writeHistogram(std::ostream &stream, const char *name,
+               const std::map<uint64_t, uint64_t> &histogram)
+{
+    stream << "[" << name << "]\n";
+    stream << "key count\n";
+    for (const auto &[key, count] : histogram) {
+        stream << key << " " << count << "\n";
+    }
+    stream << "\n";
+}
+
 } // namespace
+
+void
+DecoupledBPUWithBTB::mergeBpStatSequence(
+    BpStatSequence &destination, const BpStatSequence &source)
+{
+    mergeHistogram(destination.allBranchDistance, source.allBranchDistance);
+    mergeHistogram(destination.takenBranchDistance, source.takenBranchDistance);
+    mergeHistogram(destination.notTakenBranchDistance,
+                   source.notTakenBranchDistance);
+    mergeHistogram(destination.notTakenBetweenTaken,
+                   source.notTakenBetweenTaken);
+}
+
+void
+DecoupledBPUWithBTB::BpStatSequence::recordNonBranch()
+{
+    if (seenAny) {
+        ++nonBranchesSinceAny;
+    }
+    if (seenTaken) {
+        ++nonBranchesSinceTaken;
+    }
+    if (seenNotTaken) {
+        ++nonBranchesSinceNotTaken;
+    }
+}
+
+void
+DecoupledBPUWithBTB::BpStatSequence::recordBranch(bool taken)
+{
+    if (seenAny) {
+        ++allBranchDistance[nonBranchesSinceAny];
+    }
+    seenAny = true;
+    nonBranchesSinceAny = 0;
+
+    if (taken) {
+        if (seenTaken) {
+            ++takenBranchDistance[nonBranchesSinceTaken];
+            ++notTakenBetweenTaken[notTakenSinceTaken];
+        }
+        seenTaken = true;
+        nonBranchesSinceTaken = 0;
+        notTakenSinceTaken = 0;
+    } else {
+        if (seenNotTaken) {
+            ++notTakenBranchDistance[nonBranchesSinceNotTaken];
+        }
+        seenNotTaken = true;
+        nonBranchesSinceNotTaken = 0;
+        if (seenTaken) {
+            ++notTakenSinceTaken;
+        }
+    }
+}
+
+void
+DecoupledBPUWithBTB::finalizeBpStatPredictionBlock(
+    FetchTargetId target_id, ThreadID tid)
+{
+    auto &prediction_blocks = bpStat->predictBlocks[tid];
+    if (const auto it = prediction_blocks.find(target_id);
+        it != prediction_blocks.end()) {
+        const auto &block = it->second;
+        ++bpStat->predictBlockBranchCount[block.branches];
+        ++bpStat->predictBlockTakenBranchCount[block.takenBranches];
+        ++bpStat->predictBlockNotTakenBranchCount[block.notTakenBranches];
+        mergeBpStatSequence(bpStat->predictionBlockSequences, block.sequence);
+        prediction_blocks.erase(it);
+    }
+
+    auto &fetch_blocks = bpStat->fetchBlocks[tid];
+    if (const auto targets_it = fetch_blocks.find(target_id);
+        targets_it != fetch_blocks.end()) {
+        for (const auto &entry : targets_it->second) {
+            const auto &block = entry.second;
+            ++bpStat->fetchBlockBranchCount[block.branches];
+            ++bpStat->fetchBlockTakenBranchCount[block.takenBranches];
+            ++bpStat->fetchBlockNotTakenBranchCount[block.notTakenBranches];
+            mergeBpStatSequence(bpStat->fetchBlockSequences, block.sequence);
+        }
+        fetch_blocks.erase(targets_it);
+    }
+}
+
+void
+DecoupledBPUWithBTB::flushBpStatBlocks()
+{
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
+        auto &prediction_blocks = bpStat->predictBlocks[tid];
+        while (!prediction_blocks.empty()) {
+            finalizeBpStatPredictionBlock(prediction_blocks.begin()->first, tid);
+        }
+
+        auto &fetch_blocks = bpStat->fetchBlocks[tid];
+        while (!fetch_blocks.empty()) {
+            const auto target_id = fetch_blocks.begin()->first;
+            finalizeBpStatPredictionBlock(target_id, tid);
+        }
+    }
+}
+
+void
+DecoupledBPUWithBTB::recordBpStatCommittedInst(const DynInstPtr &inst)
+{
+    const ThreadID tid = inst->threadNumber;
+    const FetchTargetId target_id = inst->ftqId;
+    auto &prediction_block = bpStat->predictBlocks[tid][target_id];
+    const Addr fetch_block_addr =
+        inst->pcState().instAddr() & ~mask(floorLog2(predictWidth / 2) - 1);
+    auto &fetch_block = bpStat->fetchBlocks[tid][target_id][fetch_block_addr];
+
+    const bool is_branch = !inst->isNonSpeculative() && inst->isControl();
+    if (is_branch) {
+        const auto &rv_pc = inst->pcState().as<RiscvISA::PCState>();
+        const bool taken = rv_pc.branching() || inst->isUncondCtrl();
+        bpStat->global[tid].recordBranch(taken);
+        prediction_block.sequence.recordBranch(taken);
+        fetch_block.sequence.recordBranch(taken);
+        ++prediction_block.branches;
+        ++fetch_block.branches;
+        if (taken) {
+            ++prediction_block.takenBranches;
+            ++fetch_block.takenBranches;
+        } else {
+            ++prediction_block.notTakenBranches;
+            ++fetch_block.notTakenBranches;
+        }
+    } else {
+        bpStat->global[tid].recordNonBranch();
+        prediction_block.sequence.recordNonBranch();
+        fetch_block.sequence.recordNonBranch();
+    }
+    ++prediction_block.instructions;
+    ++fetch_block.instructions;
+}
+
+void
+DecoupledBPUWithBTB::sampleBpStatFtqOccupancy()
+{
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
+        ++bpStat->ftqOccupancy[tid][ftq.size(tid)];
+    }
+}
+
+void
+DecoupledBPUWithBTB::dumpBpStat()
+{
+    flushBpStatBlocks();
+
+    BpStatSequence global;
+    for (const auto &sequence : bpStat->global) {
+        mergeBpStatSequence(global, sequence);
+    }
+
+    auto handle = simout.create("bp-stat.txt", false, true);
+    auto &stream = *handle->stream();
+    stream << "# bp-stat: committed dynamic instruction distributions\n"
+           << "# predict_block: one committed DecoupledBPU FetchTarget "
+              "prediction window\n"
+           << "# fetch_block: one committed 32B-aligned BTB FBlock within "
+              "a prediction window\n"
+           << "# branch_distance: committed non-branch instructions between "
+              "adjacent branches in the selected class\n"
+           << "# not_taken_between_taken: not-taken branches strictly between "
+              "adjacent taken branches\n\n";
+    writeHistogram(stream, "predict_block_branch_count",
+                   bpStat->predictBlockBranchCount);
+    writeHistogram(stream, "predict_block_taken_branch_count",
+                   bpStat->predictBlockTakenBranchCount);
+    writeHistogram(stream, "predict_block_not_taken_branch_count",
+                   bpStat->predictBlockNotTakenBranchCount);
+    writeHistogram(stream, "fetch_block_branch_count",
+                   bpStat->fetchBlockBranchCount);
+    writeHistogram(stream, "fetch_block_taken_branch_count",
+                   bpStat->fetchBlockTakenBranchCount);
+    writeHistogram(stream, "fetch_block_not_taken_branch_count",
+                   bpStat->fetchBlockNotTakenBranchCount);
+    writeHistogram(stream, "global_all_branch_distance",
+                   global.allBranchDistance);
+    writeHistogram(stream, "global_taken_branch_distance",
+                   global.takenBranchDistance);
+    writeHistogram(stream, "global_not_taken_branch_distance",
+                   global.notTakenBranchDistance);
+    writeHistogram(stream, "global_not_taken_between_taken",
+                   global.notTakenBetweenTaken);
+
+    writeHistogram(stream, "predict_block_all_branch_distance",
+                   bpStat->predictionBlockSequences.allBranchDistance);
+    writeHistogram(stream, "predict_block_taken_branch_distance",
+                   bpStat->predictionBlockSequences.takenBranchDistance);
+    writeHistogram(stream, "predict_block_not_taken_branch_distance",
+                   bpStat->predictionBlockSequences.notTakenBranchDistance);
+    writeHistogram(stream, "predict_block_not_taken_between_taken",
+                   bpStat->predictionBlockSequences.notTakenBetweenTaken);
+    writeHistogram(stream, "fetch_block_all_branch_distance",
+                   bpStat->fetchBlockSequences.allBranchDistance);
+    writeHistogram(stream, "fetch_block_taken_branch_distance",
+                   bpStat->fetchBlockSequences.takenBranchDistance);
+    writeHistogram(stream, "fetch_block_not_taken_branch_distance",
+                   bpStat->fetchBlockSequences.notTakenBranchDistance);
+    writeHistogram(stream, "fetch_block_not_taken_between_taken",
+                   bpStat->fetchBlockSequences.notTakenBetweenTaken);
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
+        writeHistogram(stream,
+                       ("ftq_occupancy_entries_tid" +
+                        std::to_string(tid)).c_str(),
+                       bpStat->ftqOccupancy[tid]);
+    }
+
+    simout.close(handle);
+}
 
 void
 DecoupledBPUWithBTB::initDB()
@@ -961,6 +1194,10 @@ DecoupledBPUWithBTB::commitPredWrongSource(const FetchTarget &entry)
 void
 DecoupledBPUWithBTB::notifyInstCommit(const DynInstPtr &inst)
 {
+    if (bpStatEnabled) {
+        recordBpStatCommittedInst(inst);
+    }
+
     // Update committed instruction count for target
     ftq.get(inst->ftqId, inst->threadNumber).commitInstNum++;
 

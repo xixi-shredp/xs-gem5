@@ -1215,4 +1215,5 @@ class DecoupledBPUWithBTB(BranchPredictor):
     ras = Param.BTBRAS(BTBRAS(), "RAS")
 
     bpDBSwitches = VectorParam.String([], "Enable which traces in the form of database")
+    bpStat = Param.Bool(False, "Enable branch-predictor distribution statistics")
     resolveBlockThreshold = Param.Unsigned(8, "Consecutive resolve dequeue failures before blocking prediction once")
