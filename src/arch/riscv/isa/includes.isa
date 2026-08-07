@@ -49,6 +49,7 @@ output header {{
 #include "arch/generic/memhelpers.hh"
 #include "arch/riscv/decoder.hh"
 #include "arch/riscv/insts/amo.hh"
+#include "arch/riscv/insts/cbo.hh"
 #include "arch/riscv/insts/compressed.hh"
 #include "arch/riscv/insts/matrix.hh"
 #include "arch/riscv/insts/mem.hh"
