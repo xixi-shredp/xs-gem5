@@ -718,6 +718,8 @@ class BaseCPU : public ClockedObject
         panic("difftest:readGem5Regs() is not implemented\n");
     }
 
+    void seedDifftestRegFile(ThreadID tid, Addr pc);
+
     void csrDiffMessage(uint64_t gem5_val, uint64_t ref_val, int error_num, uint64_t &error_reg, InstSeqNum seq,
                         std::string error_csr_name,int &diff_at);
     std::pair<int, bool> diffWithNEMU(ThreadID tid, InstSeqNum seq);
