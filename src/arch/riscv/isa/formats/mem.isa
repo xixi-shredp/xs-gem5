@@ -232,6 +232,10 @@ def format Store(memacc_code, ea_code={{EA = Rs1 + offset;}},
         inst_flags, 'Store', exec_template_base='Store')
 }};
 
+def format CboZeroOp() {{
+    decode_block = 'return new CboZero(machInst);\n'
+}};
+
 def format LoadH(memacc_code, ea_code = {{EA = Rs1;}},
         offset_code={{offset = 0}},
         mem_flags=[], inst_flags=[]) {{
