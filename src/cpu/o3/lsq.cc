@@ -3302,12 +3302,14 @@ LSQ::SingleDataRequest::recvTimingResp(PacketPtr pkt)
     bool cacheHit = LSQRequest::_inst->getCpuPtr()->ticksToCycles(curTick() - pkt->sendTick) <= 1;
     // Dump inst num, request addr, and packet addr
     if (debug::LSQ) {
-        char buffer[8];
-        std::memcpy(buffer, pkt->getPtr<char>(), pkt->getSize());
+        uint64_t first_word = 0;
+        const size_t copy_size = std::min<size_t>(pkt->getSize(),
+                                                  sizeof(first_word));
+        std::memcpy(&first_word, pkt->getPtr<uint8_t>(), copy_size);
         DPRINTF(LSQ, "Single Req::recvTimingResp: inst: %llu, pkt: %#lx, isLoad: %d, "
-                    "isLLSC: %d, isUncache: %d, isCachehit: %d, data: %d\n",
+                    "isLLSC: %d, isUncache: %d, isCachehit: %d, data: %#lx\n",
                     pkt->req->getReqInstSeqNum(), pkt->getAddr(), isLoad(), mainReq()->isLLSC(),
-                    mainReq()->isUncacheable(), cacheHit, *((uint64_t*)buffer));
+                    mainReq()->isUncacheable(), cacheHit, first_word);
     }
 
     if (isLoad()) {
