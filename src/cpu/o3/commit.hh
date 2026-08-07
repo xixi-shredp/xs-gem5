@@ -565,7 +565,8 @@ class Commit
     void updateComInstStats(const DynInstPtr &inst);
 
     // Difftest
-    void diffInst(ThreadID tid, const DynInstPtr &inst);
+    void diffInst(ThreadID tid, const DynInstPtr &inst,
+                  bool force_diff = false, bool record_store = true);
 
     // HTM
     int htmStarts[MaxThreads];

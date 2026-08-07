@@ -50,6 +50,7 @@
 #include "arch/riscv/decoder.hh"
 #include "arch/riscv/faults.hh"
 #include "arch/riscv/insts/static_inst.hh"
+#include "arch/riscv/insts/vector.hh"
 #include "arch/riscv/pcstate.hh"
 #include "arch/riscv/regs/misc.hh"
 #include "base/compiler.hh"
@@ -1711,7 +1712,8 @@ Commit::commitInsts()
 
 
 void
-Commit::diffInst(ThreadID tid, const DynInstPtr &inst) {
+Commit::diffInst(ThreadID tid, const DynInstPtr &inst, bool force_diff,
+                 bool record_store) {
     cpu->diffInfo.lastCommittedMsg.push(inst);
     if (cpu->diffInfo.lastCommittedMsg.size() > 20) {
         cpu->diffInfo.lastCommittedMsg.pop();
@@ -1733,8 +1735,10 @@ Commit::diffInst(ThreadID tid, const DynInstPtr &inst) {
     cpu->diffInfo.effSize = inst->effSize;
     cpu->diffInfo.goldenValue = inst->getGolden();
     cpu->diffInfo.amoOldGoldenValue = inst->getAmoOldGoldenValue();
-    cpu->recordCommittedStore(tid, inst);
-    cpu->difftestStep(tid, inst->seqNum);
+    if (record_store) {
+        cpu->recordCommittedStore(tid, inst);
+    }
+    cpu->difftestStep(tid, inst->seqNum, force_diff);
 }
 
 
@@ -1872,6 +1876,16 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
         // prevents external agents from changing any specific state
         // that the trap need.
         cpu->mmu->setOldPriv(cpu->getContext(tid));
+        const auto *vse = dynamic_cast<const RiscvISA::VseMicroInst *>(
+            head_inst->staticInst.get());
+        const bool vse_store_page_fault = vse &&
+            inst_fault->exception() == RiscvISA::ExceptionCode::STORE_PAGE;
+        if (vse_store_page_fault) {
+            // RVV requires vstart to identify the first element that
+            // faulted. A VSE macro is split into register-sized micro-ops,
+            // so restore the architectural element index before the trap.
+            cpu->setMiscReg(RiscvISA::MISCREG_VSTART, vse->vmi.rs, tid);
+        }
         cpu->trap(inst_fault, tid,
                   head_inst->notAnInst() ? nullStaticInstPtr :
                       head_inst->staticInst);
@@ -1924,11 +1938,21 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
                     RiscvISA::MiscRegIndex::MISCREG_MCAUSE, tid);
             }
             auto exception_no = inst_fault->exception();
+            const bool natural_vse_page_fault = vse_store_page_fault &&
+                exception_no == RiscvISA::ExceptionCode::STORE_PAGE;
             if (faultNum.find(exception_no) != faultNum.end()) {
-                DPRINTF(Commit, "Force to raise No.%lu exception at page fault\n", exception_no);
-                cpu->setExceptionGuideExecInfo(
-                    exception_no, cpu->readMiscReg(RiscvISA::MiscRegIndex::MISCREG_MTVAL, tid),
-                    cpu->readMiscReg(RiscvISA::MiscRegIndex::MISCREG_STVAL, tid), false, 0, tid);
+                if (natural_vse_page_fault) {
+                    // NEMU's guided store-page-fault path forces the current
+                    // vector element and has static retry history.  Execute
+                    // this faulting macro naturally instead, then compare the
+                    // resulting post-trap architectural state immediately.
+                    diffInst(tid, head_inst, true, false);
+                } else {
+                    DPRINTF(Commit, "Force to raise No.%lu exception at page fault\n", exception_no);
+                    cpu->setExceptionGuideExecInfo(
+                        exception_no, cpu->readMiscReg(RiscvISA::MiscRegIndex::MISCREG_MTVAL, tid),
+                        cpu->readMiscReg(RiscvISA::MiscRegIndex::MISCREG_STVAL, tid), false, 0, tid);
+                }
             }
             if (cause == RiscvISA::ExceptionCode::ECALL_USER ||
                 cause == RiscvISA::ExceptionCode::ECALL_SUPER ||
