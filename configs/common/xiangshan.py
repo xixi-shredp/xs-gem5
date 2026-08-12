@@ -882,6 +882,36 @@ def xiangshan_system_init():
         help="Use BTBTAGEUpperBound in kmhv3 instead of the default BTBTAGE",
     )
     parser.add_argument(
+        "--inf-btb",
+        action="store_true",
+        default=False,
+        help="Use capacity upper-bound BTB settings for limit studies",
+    )
+    parser.add_argument(
+        "--inf-dcache",
+        action="store_true",
+        default=False,
+        help="Use capacity upper-bound L1 DCache settings for limit studies",
+    )
+    parser.add_argument(
+        "--inf-dtlb",
+        action="store_true",
+        default=False,
+        help="Use capacity upper-bound DTLB settings for limit studies",
+    )
+    parser.add_argument(
+        "--inf-ittage",
+        action="store_true",
+        default=False,
+        help="Use unbounded per-table ITTAGE settings for limit studies",
+    )
+    parser.add_argument(
+        "--limit-study-all",
+        action="store_true",
+        default=False,
+        help="Enable all limit-study capacity upper-bound structures",
+    )
+    parser.add_argument(
         "--disable-l1-direct-compression",
         action="store_false",
         dest="enable_l1_direct_compression",

@@ -125,6 +125,13 @@ class CompressedTags(SectorTags):
     # the cache size by the compression ratio
     size = Parent.size * Self.max_compression_ratio
 
+class InfiniteTags(BaseTags):
+    type = 'InfiniteTags'
+    cxx_header = "mem/cache/tags/infinite_tags.hh"
+    cxx_class = 'gem5::InfiniteTags'
+
+    indexing_policy = NULL
+
 class FALRU(BaseTags):
     type = 'FALRU'
     cxx_header = "mem/cache/tags/fa_lru.hh"

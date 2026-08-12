@@ -166,6 +166,9 @@ class BaseCache(ClockedObject):
     pipe_latency = Param.Cycles(0, "pipeline latency")
 
     force_hit = Param.Bool(False, "Force some PC to hit in L1")
+    ideal_dcache = Param.Bool(
+        False,
+        "Satisfy ordinary L1 DCache misses with functional memory at hit latency")
     way_entries = Param.MemorySize(
         "64",
         "num of active generation table entries"

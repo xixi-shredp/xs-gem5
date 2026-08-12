@@ -29,13 +29,14 @@
 Import('*')
 
 SimObject('Tags.py', sim_objects=[
-    'BaseTags', 'BaseSetAssoc', 'VIPTSetAssoc', 'SectorTags', 'CompressedTags', 'FALRU'])
+    'BaseTags', 'BaseSetAssoc', 'VIPTSetAssoc', 'SectorTags', 'CompressedTags', 'FALRU', 'InfiniteTags'])
 
 Source('base.cc')
 Source('base_set_assoc.cc')
 Source('compressed_tags.cc')
 Source('dueling.cc')
 Source('fa_lru.cc')
+Source('infinite_tags.cc')
 Source('sector_blk.cc')
 Source('sector_tags.cc')
 Source('super_blk.cc')

@@ -51,6 +51,7 @@
 #include <cassert>
 #include <cstdint>
 #include <queue>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -578,6 +579,21 @@ class BaseCache : public ClockedObject, public CacheAccessor
      */
     virtual bool access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                         PacketList &writebacks);
+
+    /**
+     * Check whether this request can be satisfied by the ideal L1 DCache path.
+     */
+    bool isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const;
+
+    /**
+     * Satisfy an ordinary L1 DCache miss by functionally accessing the
+     * downstream memory hierarchy and returning with DCache hit latency.
+     */
+    bool trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
+                               Cycles tag_latency, Cycles &lat,
+                               PacketList &writebacks);
+    Cycles calculateIdealDCacheHitLatency(PacketPtr pkt,
+                                          Cycles tag_latency) const;
 
     /**
      * @brief Checks MSHR arbiter and allocates a slot for the current cycle.
@@ -1660,6 +1676,7 @@ class BaseCache : public ClockedObject, public CacheAccessor
     std::set<Addr> forceHitPCs{};
 
     const bool forceHit;
+    const bool idealDCache;
     const bool simulateDcacheRefill;
     o3::LSQ *dcacheMainPipeLSQ = nullptr;
 

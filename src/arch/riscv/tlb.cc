@@ -109,6 +109,7 @@ firstValidIdx(uint8_t valid_idx)
 TLB::TLB(const Params &p) :
     BaseTLB(p), is_dtlb(p.is_dtlb),is_L1tlb(p.is_L1tlb),isStage2(p.is_stage2),
     isTheSharedL2(p.is_the_sharedL2),
+    infiniteCapacity(p.infinite_capacity),
     enableL1DirectCompression(p.enable_l1_direct_compression),
     size(p.size),sizeBack(32),
     l2TlbL3Size(p.l2tlb_l3_size),
@@ -744,11 +745,16 @@ TLB::insert(Addr vpn, const TlbEntry &entry,bool squashed_update,uint8_t transla
         return newEntry;
     }
 
-    if (freeList.empty())
-        evictLRU();
+    if (infiniteCapacity && is_L1tlb) {
+        infiniteTlb.emplace_back();
+        newEntry = &infiniteTlb.back();
+    } else {
+        if (freeList.empty())
+            evictLRU();
 
-    newEntry = freeList.front();
-    freeList.pop_front();
+        newEntry = freeList.front();
+        freeList.pop_front();
+    }
 
     Addr key = buildKey(vpn, entry.asid, translateMode);
     if (translateMode == gstage)
@@ -759,6 +765,8 @@ TLB::insert(Addr vpn, const TlbEntry &entry,bool squashed_update,uint8_t transla
     newEntry->vaddr = vpn;
     newEntry->trieHandle = trie.insert(
         key, TlbEntryTrie::MaxBits - entry.logBytes + PGSHFT, newEntry);
+    if (infiniteCapacity && is_L1tlb)
+        activateInfinite(newEntry);
     DPRINTF(TLBVerbosel2, "trie insert key %#x logbytes %#x paddr %#x\n", key,
             entry.logBytes, newEntry->paddr);
     // stats all insert number
@@ -987,34 +995,78 @@ TLB::demapPage(Addr vpn, uint64_t asid)
         DPRINTF(TLB, "flush(vpn=%#x, asid=%#x)\n", vpn, asid);
         DPRINTF(TLB, "l1tlb flush(vpn=%#x, asid=%#x)\n", vpn, asid);
         if (vpn != 0 && asid != 0) {
-            for (i = 0; i < size; i++) {
-                if (!tlb[i].trieHandle)
-                    continue;
-                Addr mask = ~(tlb[i].size() - 1);
-                if ((vpn & mask) == (tlb[i].vaddr & mask) &&
-                    tlb[i].asid == asid) {
-                    remove(i);
-                    continue;
+            if (infiniteCapacity) {
+                for (size_t pos = 0; pos < activeInfiniteTlb.size();) {
+                    TlbEntry *entry = activeInfiniteTlb[pos];
+                    Addr mask = ~(entry->size() - 1);
+                    if ((vpn & mask) == (entry->vaddr & mask) &&
+                        entry->asid == asid) {
+                        removeInfinite(entry);
+                        continue;
+                    }
+                    if (entry->trieHandle) {
+                        mask = ~(entry->size() - 1);
+                        if ((vpn & mask) == (entry->gpaddr & mask) &&
+                            entry->vmid == asid) {
+                            removeInfinite(entry);
+                            continue;
+                        }
+                    }
+                    pos++;
                 }
-                if (tlb[i].trieHandle) {
-                    mask = ~(tlb[i].size() - 1);
-                    if ((vpn & mask) == (tlb[i].gpaddr & mask) &&
-                        tlb[i].vmid == asid)
+            } else {
+                for (i = 0; i < size; i++) {
+                    if (!tlb[i].trieHandle)
+                        continue;
+                    Addr mask = ~(tlb[i].size() - 1);
+                    if ((vpn & mask) == (tlb[i].vaddr & mask) &&
+                        tlb[i].asid == asid) {
                         remove(i);
+                        continue;
+                    }
+                    if (tlb[i].trieHandle) {
+                        mask = ~(tlb[i].size() - 1);
+                        if ((vpn & mask) == (tlb[i].gpaddr & mask) &&
+                            tlb[i].vmid == asid)
+                            remove(i);
+                    }
                 }
             }
             l2tlb->demapPageL2(vpn, asid);
         } else {
-            for (i = 0; i < size; i++) {
-                if (tlb[i].trieHandle) {
-                    Addr mask = ~(tlb[i].size() - 1);
-                    if ((vpn == 0 || (vpn & mask) == (tlb[i].vaddr & mask)) && (asid == 0 || tlb[i].asid == asid))
-                        remove(i);
+            if (infiniteCapacity) {
+                for (size_t pos = 0; pos < activeInfiniteTlb.size();) {
+                    TlbEntry *entry = activeInfiniteTlb[pos];
+                    bool removed = false;
+                    Addr mask = ~(entry->size() - 1);
+                    if ((vpn == 0 || (vpn & mask) == (entry->vaddr & mask)) &&
+                        (asid == 0 || entry->asid == asid)) {
+                        removeInfinite(entry);
+                        removed = true;
+                    }
+                    if (!removed && entry->trieHandle) {
+                        mask = ~(entry->size() - 1);
+                        if ((vpn == 0 || (vpn & mask) == (entry->gpaddr & mask)) &&
+                            (asid == 0 || entry->vmid == asid)) {
+                            removeInfinite(entry);
+                            removed = true;
+                        }
+                    }
+                    if (!removed)
+                        pos++;
                 }
-                if (tlb[i].trieHandle) {
-                    Addr mask = ~(tlb[i].size() - 1);
-                    if ((vpn == 0 || (vpn & mask) == (tlb[i].gpaddr & mask)) && (asid == 0 || tlb[i].vmid == asid))
-                        remove(i);
+            } else {
+                for (i = 0; i < size; i++) {
+                    if (tlb[i].trieHandle) {
+                        Addr mask = ~(tlb[i].size() - 1);
+                        if ((vpn == 0 || (vpn & mask) == (tlb[i].vaddr & mask)) && (asid == 0 || tlb[i].asid == asid))
+                            remove(i);
+                    }
+                    if (tlb[i].trieHandle) {
+                        Addr mask = ~(tlb[i].size() - 1);
+                        if ((vpn == 0 || (vpn & mask) == (tlb[i].gpaddr & mask)) && (asid == 0 || tlb[i].vmid == asid))
+                            remove(i);
+                    }
                 }
             }
             l2tlb->demapPageL2(vpn, asid);
@@ -1128,9 +1180,14 @@ TLB::flushAll()
 {
     size_t i;
     if (is_L1tlb) {
-        for (i = 0; i < size; i++) {
-            if (tlb[i].trieHandle)
-                remove(i);
+        if (infiniteCapacity) {
+            while (!activeInfiniteTlb.empty())
+                removeInfinite(activeInfiniteTlb.back());
+        } else {
+            for (i = 0; i < size; i++) {
+                if (tlb[i].trieHandle)
+                    remove(i);
+            }
         }
     }
     if (isStage2 || isTheSharedL2) {
@@ -1145,6 +1202,14 @@ TLB::flushAll()
 }
 
 void
+TLB::activateInfinite(TlbEntry *entry)
+{
+    assert(entry);
+    activeInfiniteTlbPos[entry] = activeInfiniteTlb.size();
+    activeInfiniteTlb.push_back(entry);
+}
+
+void
 TLB::remove(size_t idx)
 {
     assert(tlb[idx].trieHandle);
@@ -1156,6 +1221,31 @@ TLB::remove(size_t idx)
     trie.remove(tlb[idx].trieHandle);
     tlb[idx].trieHandle = nullptr;
     freeList.push_back(&tlb[idx]);
+    stats.l1tlbRemove++;
+}
+
+void
+TLB::removeInfinite(TlbEntry *entry)
+{
+    assert(entry);
+    assert(entry->trieHandle);
+    if (entry->used) {
+        stats.l1tlbUsedRemove++;
+    } else {
+        stats.l1tlbUnusedRemove++;
+    }
+    trie.remove(entry->trieHandle);
+    entry->trieHandle = nullptr;
+
+    auto pos_it = activeInfiniteTlbPos.find(entry);
+    assert(pos_it != activeInfiniteTlbPos.end());
+    const size_t pos = pos_it->second;
+    TlbEntry *last = activeInfiniteTlb.back();
+    activeInfiniteTlb[pos] = last;
+    activeInfiniteTlbPos[last] = pos;
+    activeInfiniteTlb.pop_back();
+    activeInfiniteTlbPos.erase(pos_it);
+
     stats.l1tlbRemove++;
 }
 
@@ -3000,14 +3090,24 @@ TLB::serialize(CheckpointOut &cp) const
 {
     // Only store the entries in use.
     printf("serialize\n");
-    uint32_t _size = size - freeList.size();
+    uint32_t _size = 0;
+    if (infiniteCapacity) {
+        _size = activeInfiniteTlb.size();
+    } else {
+        _size = size - freeList.size();
+    }
     SERIALIZE_SCALAR(_size);
     SERIALIZE_SCALAR(lruSeq);
 
     uint32_t _count = 0;
-    for (uint32_t x = 0; x < size; x++) {
-        if (tlb[x].trieHandle != nullptr)
-            tlb[x].serializeSection(cp, csprintf("Entry%d", _count++));
+    if (infiniteCapacity) {
+        for (const auto *entry : activeInfiniteTlb)
+            entry->serializeSection(cp, csprintf("Entry%d", _count++));
+    } else {
+        for (uint32_t x = 0; x < size; x++) {
+            if (tlb[x].trieHandle != nullptr)
+                tlb[x].serializeSection(cp, csprintf("Entry%d", _count++));
+        }
     }
 }
 
@@ -3018,15 +3118,21 @@ TLB::unserialize(CheckpointIn &cp)
     printf("unserialize\n");
     uint32_t _size;
     UNSERIALIZE_SCALAR(_size);
-    if (_size > size) {
+    if (!infiniteCapacity && _size > size) {
         fatal("TLB size less than the one in checkpoint!");
     }
 
     UNSERIALIZE_SCALAR(lruSeq);
 
     for (uint32_t x = 0; x < _size; x++) {
-        TlbEntry *newEntry = freeList.front();
-        freeList.pop_front();
+        TlbEntry *newEntry = nullptr;
+        if (infiniteCapacity) {
+            infiniteTlb.emplace_back();
+            newEntry = &infiniteTlb.back();
+        } else {
+            newEntry = freeList.front();
+            freeList.pop_front();
+        }
 
         newEntry->unserializeSection(cp, csprintf("Entry%d", x));
         Addr key_vaddr = newEntry->vaddr;
@@ -3041,6 +3147,8 @@ TLB::unserialize(CheckpointIn &cp)
         }
         Addr key = buildKey(key_vaddr, newEntry->asid, 0);
         newEntry->trieHandle = trie.insert(key, trie_width, newEntry);
+        if (infiniteCapacity)
+            activateInfinite(newEntry);
     }
 }
 

@@ -563,6 +563,18 @@ for variant_path in variant_paths:
                          env['ENV']['PKG_CONFIG_PATH'] else '')
                     break
 
+    # Optional user-space dependency prefix (for example a Conda environment).
+    # This keeps non-sudo builds reproducible without relying on host search paths.
+    dep_prefix = os.environ.get("GEM5_DEP_PREFIX")
+    if dep_prefix:
+        env.Prepend(CPPPATH=[os.path.join(dep_prefix, "include")])
+        env.Prepend(LIBPATH=[os.path.join(dep_prefix, "lib")])
+
+    # Recent Boost headers intentionally probe undefined calling-convention
+    # macros.  Keep the project's warnings enabled without making those
+    # third-party probes fatal.
+    env.Append(CCFLAGS=["-Wno-error=undef"])
+
     # Add sanitizers flags
     sanitizers=[]
     if GetOption('with_ubsan'):

@@ -310,6 +310,9 @@ def config_cache(options, system):
                 icache.response_latency = 0
                 dcache.response_latency = 0
 
+            if getattr(options, 'ideal_dcache', False):
+                dcache.ideal_dcache = True
+
             dcache.do_fast_writeline = not options.kmh_align
             dcache.pipe_latency = 3 if options.kmh_align else 0
             l2_prefetcher = system.l2_caches[i].prefetcher if options.classic_l2 else system.l2_wrappers[i].prefetcher

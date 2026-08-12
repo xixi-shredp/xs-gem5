@@ -578,8 +578,12 @@ CoherentXBar::recvTimingSnoopReq(PacketPtr pkt, PortID mem_side_port_id)
     snoops++;
     snoopTraffic += pkt_size;
 
-    // we should only see express snoops from caches
-    assert(pkt->isExpressSnoop());
+    // A cache emits an express snoop upstream, but a coherent xbar can also
+    // receive a regular probe from an upstream xbar in a hierarchical cache
+    // topology (for example one private L2 wrapper per hart behind tol3bus).
+    // Both forms use the same response-routing state machine below.
+    // Do not require ExpressSnoop here: it would reject a valid inter-hart
+    // probe before it can reach the private L2 slices.
 
     // set the packet header and payload delay, for now use forward latency
     // @todo Assess the choice of latency further

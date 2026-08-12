@@ -991,6 +991,7 @@ class MBTB(TimedBaseBTBPredictor):
     blockSize = 32  # max 64 byte block, 32 byte aligned
     # MBTB is always half-aligned - no parameter needed
     victimCacheSize = Param.Unsigned(0, "Number of entries in the victim cache")
+    infiniteCapacity = Param.Bool(False, "Use exact-map MBTB storage without capacity replacement")
 
 class AheadBTB(TimedBaseBTBPredictor):
     type = 'AheadBTB'
@@ -1109,6 +1110,7 @@ class BTBITTAGE(TimedBaseBTBPredictor):
     cxx_header = "cpu/pred/btb/btb_ittage.hh"
 
     numPredictors = Param.Unsigned(5, "Number of TAGE predictors")
+    infiniteCapacity = Param.Bool(False, "Use unbounded per-table ITTAGE entry storage")
     tableSizes = VectorParam.Unsigned([256]*2 + [512]*3, "the ITTAGE T0~Tn length")
     TTagBitSizes = VectorParam.Unsigned([9]*5, "the T0~Tn entry's tag bit size")
     TTagPcShifts = VectorParam.Unsigned([1] * 5, "when the T0~Tn entry's tag generating, PC right shift")
