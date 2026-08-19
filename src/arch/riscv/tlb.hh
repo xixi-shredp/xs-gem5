@@ -34,7 +34,9 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <list>
+#include <unordered_map>
 #include <vector>
 
 #include "arch/generic/tlb.hh"
@@ -68,6 +70,7 @@ class TLB : public BaseTLB
     bool is_L1tlb;
     bool isStage2;
     bool isTheSharedL2;
+    bool infiniteCapacity;
     bool enableL1DirectCompression;
     size_t size;
     size_t sizeBack;
@@ -84,6 +87,9 @@ class TLB : public BaseTLB
   protected:
     uint64_t regulationNum;
     std::vector<TlbEntry> tlb;  // our TLB
+    std::deque<TlbEntry> infiniteTlb;
+    std::vector<TlbEntry *> activeInfiniteTlb;
+    std::unordered_map<TlbEntry *, size_t> activeInfiniteTlbPos;
     TlbEntryTrie trie;          // for quick access
     EntryList freeList;         // free entries
     uint64_t lruSeq;
@@ -362,7 +368,9 @@ class TLB : public BaseTLB
 
     void l2TLBEvictLRU(int l2TLBlevel, Addr vaddr);
 
+    void activateInfinite(TlbEntry *entry);
     void remove(size_t idx);
+    void removeInfinite(TlbEntry *entry);
     void removeForwardPre(size_t idx);
     void removeBackPre(size_t idx);
     void l2tlbRemoveIn(EntryList *List, TlbEntryTrie *Trie_l2,std::vector<TlbEntry>&tlb,size_t idx, int choose);

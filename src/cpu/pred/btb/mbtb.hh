@@ -41,6 +41,7 @@
 #define __CPU_PRED_BTB_MBTB_HH__
 
 #include <queue>
+#include <unordered_map>
 
 #include "base/types.hh"
 #include "cpu/pred/btb/common.hh"
@@ -280,6 +281,8 @@ class MBTB : public TimedBaseBTBPredictor
      */
     void updateBTBEntry(const BTBEntry& entry, const FetchTarget &stream);
 
+    void updateInfiniteBTBEntry(const BTBEntry& entry, const FetchTarget &stream);
+
     // Helper: build updated entry (ctr/alwaysTaken/indirect target/tag)
     BTBEntry buildUpdatedEntry(const BTBEntry& req_entry,
                                const BTBEntry* existing_entry,
@@ -344,6 +347,8 @@ class MBTB : public TimedBaseBTBPredictor
      * @return Vector of matching BTB entries
      */
     std::vector<TickedBTBEntry> lookupSingleBlock(Addr block_pc, uint8_t asidHash);
+    std::vector<TickedBTBEntry> lookupInfiniteSingleBlock(Addr block_pc, uint8_t asidHash);
+    Addr infiniteBlockKey(Addr block_pc, uint8_t asidHash) const;
 
     /** Victim cache operations */
     std::vector<TickedBTBEntry> lookupVictimCache(Addr block_pc, uint8_t asidHash);
@@ -372,6 +377,9 @@ class MBTB : public TimedBaseBTBPredictor
      */
     std::vector<TickedBTBEntry> victimCache;
     unsigned victimCacheSize;
+
+    bool infiniteCapacity;
+    std::unordered_map<Addr, std::unordered_map<Addr, TickedBTBEntry>> infiniteEntries;
 
     /** BTB configuration parameters */
     unsigned numEntries;    // Total number of entries

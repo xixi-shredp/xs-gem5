@@ -68,6 +68,7 @@ namespace test {
 MBTB::MBTB(unsigned numEntries, unsigned tagBits, unsigned numWays, unsigned numDelay)
     : TimedBaseBTBPredictor(),
       victimCacheSize(8),
+      infiniteCapacity(false),
       numEntries(numEntries),
       numWays(numWays),
       tagBits(tagBits)
@@ -79,6 +80,7 @@ MBTB::MBTB(unsigned numEntries, unsigned tagBits, unsigned numWays, unsigned num
 MBTB::MBTB(const Params &p)
     : TimedBaseBTBPredictor(p),
     victimCacheSize(p.victimCacheSize),
+    infiniteCapacity(p.infiniteCapacity),
     numEntries(p.numEntries),
     numWays(p.numWays),
     tagBits(p.tagBits),
@@ -327,6 +329,10 @@ MBTB::getPredictionMeta(ThreadID tid)
 std::vector<MBTB::TickedBTBEntry>
 MBTB::lookupSingleBlock(Addr block_pc, uint8_t asidHash)
 {
+    if (infiniteCapacity) {
+        return lookupInfiniteSingleBlock(block_pc, asidHash);
+    }
+
     std::vector<TickedBTBEntry> res;
     if (block_pc & 0x1) {
         return res; // ignore false hit when lowest bit is 1
@@ -491,6 +497,10 @@ void
 MBTB::updateBTBEntry(const BTBEntry& entry, const FetchTarget &stream)
 {
     btbStats.updateTotal++;
+    if (infiniteCapacity) {
+        updateInfiniteBTBEntry(entry, stream);
+        return;
+    }
     // Select SRAM based on entry PC's 32B-aligned address
     Addr alignedPC = entry.pc & ~(blockSize - 1);
     int sram_id = getSRAMId(alignedPC);
@@ -542,6 +552,61 @@ MBTB::updateBTBEntry(const BTBEntry& entry, const FetchTarget &stream)
         // Not found anywhere, replace oldest in SRAM set
         replaceOldestInSRAMSet(sram_id, btb_idx, target_mru[btb_idx], ticked_entry);
     }
+}
+
+Addr
+MBTB::infiniteBlockKey(Addr block_pc, uint8_t asidHash) const
+{
+    Addr aligned_pc = block_pc & ~(blockSize - 1);
+    return (static_cast<Addr>(asidHash) << 56) ^ (aligned_pc >> floorLog2(blockSize));
+}
+
+std::vector<MBTB::TickedBTBEntry>
+MBTB::lookupInfiniteSingleBlock(Addr block_pc, uint8_t asidHash)
+{
+    std::vector<TickedBTBEntry> res;
+    if (block_pc & 0x1) {
+        return res;
+    }
+
+    auto it = infiniteEntries.find(infiniteBlockKey(block_pc, asidHash));
+    if (it == infiniteEntries.end()) {
+        return res;
+    }
+
+    for (auto &pc_entry : it->second) {
+        auto &entry = pc_entry.second;
+        if (!entry.valid) {
+            continue;
+        }
+        entry.tick = curTick();
+        res.push_back(entry);
+    }
+    return res;
+}
+
+void
+MBTB::updateInfiniteBTBEntry(const BTBEntry& entry, const FetchTarget &stream)
+{
+    Addr aligned_pc = entry.pc & ~(blockSize - 1);
+    auto &entries = infiniteEntries[infiniteBlockKey(aligned_pc, stream.asidHash)];
+    auto it = entries.find(entry.pc);
+
+    const BTBEntry *existing_ptr = it == entries.end() ? nullptr : static_cast<const BTBEntry*>(&it->second);
+    auto entry_to_write = buildUpdatedEntry(entry, existing_ptr, stream);
+    auto ticked_entry = TickedBTBEntry(entry_to_write, curTick());
+
+    if (it == entries.end()) {
+        entries.emplace(entry.pc, ticked_entry);
+        btbStats.updateExisting++;
+        return;
+    }
+
+    if (it->second.target != ticked_entry.target) {
+        btbStats.updateFixTarget++;
+    }
+    it->second = ticked_entry;
+    btbStats.updateExisting++;
 }
 
 BTBEntry

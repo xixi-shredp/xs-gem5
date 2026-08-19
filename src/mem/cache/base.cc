@@ -186,6 +186,7 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       stats(*this),
       cacheLevel(p.cache_level),
       forceHit(p.force_hit),
+      idealDCache(p.ideal_dcache),
       simulateDcacheRefill(p.simulate_dcache_refill),
       doFastWriteline(p.do_fast_writeline),
       Prefetch_CanOffload(p.prefetch_can_offload)
@@ -1905,6 +1906,113 @@ BaseCache::calculateAccessLatency(const CacheBlk* blk, const uint32_t delay,
     return lat;
 }
 
+Cycles
+BaseCache::calculateIdealDCacheHitLatency(PacketPtr pkt,
+                                          Cycles tag_latency) const
+{
+    if (pkt->isRead() || pkt->isWrite()) {
+        if (sequentialAccess) {
+            return ticksToCycles(pkt->headerDelay) + tag_latency + dataLatency;
+        }
+        return ticksToCycles(pkt->headerDelay) +
+            std::max(tag_latency, dataLatency);
+    }
+
+    return calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
+}
+
+bool
+BaseCache::isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const
+{
+    if (!idealDCache || cacheLevel != 1 || isReadOnly) {
+        return false;
+    }
+
+    if (!pkt->isRequest() || !pkt->needsResponse() || pkt->fromCache()) {
+        return false;
+    }
+
+    if (pkt->req->isInstFetch() || pkt->req->isUncacheable() ||
+        pkt->req->isCacheMaintenance() || pkt->req->isPrefetch() ||
+        pkt->req->isStrictlyOrdered() || pkt->req->isMemMgmt()) {
+        return false;
+    }
+
+    if (pkt->isEviction() || pkt->isLLSC() || pkt->isLockedRMW() ||
+        pkt->req->isReadModifyWrite() || pkt->cmd == MemCmd::SwapReq ||
+        pkt->isAtomicOp()) {
+        return false;
+    }
+
+    const bool ordinary_read = pkt->cmd == MemCmd::ReadReq;
+    const bool ordinary_write = pkt->cmd == MemCmd::WriteReq ||
+        pkt->cmd == MemCmd::WriteLineReq;
+    const bool in_single_block =
+        pkt->getOffset(blkSize) + pkt->getSize() <= blkSize;
+
+    // If a block exists but cannot satisfy the request, preserve the normal
+    // coherence/upgrade path instead of silently bypassing stale local state.
+    return (ordinary_read || ordinary_write) && in_single_block && blk == nullptr;
+}
+
+bool
+BaseCache::trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
+                                 Cycles tag_latency, Cycles &lat,
+                                 PacketList &writebacks)
+{
+    if (!isIdealDCacheCandidate(pkt, blk)) {
+        return false;
+    }
+
+    const Addr blk_addr = pkt->getBlockAddr(blkSize);
+    const bool mshr_hit =
+        mshrQueue.findMatch(blk_addr, pkt->isSecure()) != nullptr;
+    const bool wb_hit =
+        writeBuffer.findMatch(blk_addr, pkt->isSecure()) != nullptr;
+
+    if (mshr_hit || wb_hit) {
+        DPRINTF(Cache,
+                "%s: ideal DCache backs off for %s, mshr_hit: %d, wb_hit: %d\n",
+                __func__, pkt->print(), mshr_hit, wb_hit);
+        return false;
+    }
+
+    Packet functional_pkt(pkt, false, pkt->isRead());
+    functional_pkt.senderState = nullptr;
+    functional_pkt.headerDelay = 0;
+    functional_pkt.payloadDelay = 0;
+
+    if (pkt->isWrite()) {
+        functional_pkt.setPtr(pkt->getConstPtr<uint8_t>(), pkt->getSize());
+    }
+
+    DPRINTF(Cache, "%s: ideal DCache functional access for %s\n",
+            __func__, pkt->print());
+    memSidePort.sendFunctional(&functional_pkt);
+
+    if (!functional_pkt.isResponse() || functional_pkt.isError()) {
+        DPRINTF(Cache,
+                "%s: ideal DCache functional access failed for %s\n",
+                __func__, pkt->print());
+        return false;
+    }
+
+    if (pkt->isRead()) {
+        if (!functional_pkt.hasData()) {
+            DPRINTF(Cache,
+                    "%s: ideal DCache read returned no data for %s\n",
+                    __func__, pkt->print());
+            return false;
+        }
+        pkt->setData(functional_pkt.getConstPtr<uint8_t>());
+    }
+
+    lat = calculateIdealDCacheHitLatency(pkt, tag_latency);
+    incHitCount(pkt);
+
+    return true;
+}
+
 void
 BaseCache::calculateSliceBusy(PacketPtr pkt, bool isOnlyTag)
 {
@@ -2206,6 +2314,9 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         } else {
             DPRINTF(Cache, "%s: mshr hit for force hit PC %#lx, forced to miss\n", __func__, pkt->req->getPC());
         }
+    } else if (trySatisfyIdealDCache(pkt, blk, tag_latency, lat,
+                                      writebacks)) {
+        return true;
     }
 
     if (blk && (pkt->needsWritable() && !blk->isSet(CacheBlk::WritableBit))) {

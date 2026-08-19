@@ -2,8 +2,10 @@
 #define __CPU_PRED_BTB_ITTAGE_HH__
 
 #include <deque>
+#include <cstddef>
 #include <map>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -131,6 +133,34 @@ class BTBITTAGE : public TimedBaseBTBPredictor
     // use blockPC
     Addr getTageIndex(Addr pc, int table, uint8_t asidHash = 0);
 
+    struct InfiniteTableKey
+    {
+        Addr pc;
+        Addr index;
+        Addr tag;
+
+        bool operator==(const InfiniteTableKey &other) const
+        {
+            return pc == other.pc && index == other.index && tag == other.tag;
+        }
+    };
+
+    struct InfiniteTableKeyHash
+    {
+        std::size_t operator()(const InfiniteTableKey &key) const
+        {
+            std::size_t seed = std::hash<Addr>{}(key.pc);
+            seed ^= std::hash<Addr>{}(key.index) + 0x9e3779b9 +
+                    (seed << 6) + (seed >> 2);
+            seed ^= std::hash<Addr>{}(key.tag) + 0x9e3779b9 +
+                    (seed << 6) + (seed >> 2);
+            return seed;
+        }
+    };
+
+    TageEntry lookupTageEntry(unsigned table, Addr index, Addr tag, Addr pc) const;
+    TageEntry &getTageEntry(unsigned table, Addr index, Addr tag, Addr pc);
+
     // use blockPC (uint64_t version for performance)
     Addr getTageIndex(Addr pc, int table, uint64_t foldedHist, uint8_t asidHash = 0);
 
@@ -150,6 +180,7 @@ class BTBITTAGE : public TimedBaseBTBPredictor
                       ThreadID tid);
 
     const unsigned numPredictors;
+    const bool infiniteCapacity;
 
     std::vector<unsigned> tableSizes;
     std::vector<unsigned> tableIndexBits;
@@ -173,6 +204,7 @@ class BTBITTAGE : public TimedBaseBTBPredictor
     unsigned maxHistLen;
 
     std::vector<std::vector<TageEntry>> tageTable;
+    std::vector<std::unordered_map<InfiniteTableKey, TageEntry, InfiniteTableKeyHash>> infiniteTageTable;
 
     std::vector<TageEntry> lookupEntries;
     std::vector<Addr> lookupIndices, lookupTags;

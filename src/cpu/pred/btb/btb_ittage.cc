@@ -23,6 +23,7 @@ namespace btb_pred{
 BTBITTAGE::BTBITTAGE(const Params& p):
 TimedBaseBTBPredictor(p),
 numPredictors(p.numPredictors),
+infiniteCapacity(p.infiniteCapacity),
 tableSizes(p.tableSizes),
 tableTagBits(p.TTagBitSizes),
 tablePcShifts(p.TTagPcShifts),
@@ -33,6 +34,7 @@ ittageStats(this, p.numPredictors)
 {
     DPRINTF(ITTAGE, "BTBITTAGE constructor numBr=%d\n", numBr);
     tageTable.resize(numPredictors);
+    infiniteTageTable.resize(numPredictors);
     tableIndexBits.resize(numPredictors);
     tableIndexMasks.resize(numPredictors);
     tableTagBits.resize(numPredictors);
@@ -42,7 +44,9 @@ ittageStats(this, p.numPredictors)
     for (unsigned int i = 0; i < p.numPredictors; ++i) {
         //initialize ittage predictor
         assert(tableSizes.size() >= numPredictors);
-        tageTable[i].resize(tableSizes[i]);
+        if (!infiniteCapacity) {
+            tageTable[i].resize(tableSizes[i]);
+        }
 
         tableIndexBits[i] = ceilLog2(tableSizes[i]);
         tableIndexMasks[i].resize(tableIndexBits[i], true);
@@ -69,6 +73,30 @@ ittageStats(this, p.numPredictors)
     //     useAlt[i].resize(1, 0);
     // }
     usefulResetCnt = 0;
+}
+
+BTBITTAGE::TageEntry
+BTBITTAGE::lookupTageEntry(unsigned table, Addr index, Addr tag, Addr pc) const
+{
+    if (!infiniteCapacity) {
+        assert(index < tageTable[table].size());
+        return tageTable[table][index];
+    }
+
+    const auto &tableMap = infiniteTageTable[table];
+    auto it = tableMap.find({pc, index, tag});
+    return it == tableMap.end() ? TageEntry() : it->second;
+}
+
+BTBITTAGE::TageEntry &
+BTBITTAGE::getTageEntry(unsigned table, Addr index, Addr tag, Addr pc)
+{
+    if (!infiniteCapacity) {
+        assert(index < tageTable[table].size());
+        return tageTable[table][index];
+    }
+
+    return infiniteTageTable[table][{pc, index, tag}];
 }
 
 ThreadID
@@ -116,7 +144,9 @@ BTBITTAGE::lookupHelper(Addr startAddr, const std::vector<BTBEntry> &btbEntries,
             TageTableInfo main_info, alt_info;
 
             for (int i = numPredictors - 1; i >= 0; --i) {
-                auto &way = lookupEntries[i];
+                auto way = infiniteCapacity
+                    ? lookupTageEntry(i, lookupIndices[i], lookupTags[i], btb_entry.pc)
+                    : lookupEntries[i];
                 // TODO: count alias hit (offset match but pc differs)
                 bool match = way.valid && lookupTags[i] == way.tag && btb_entry.pc == way.pc;
                 DPRINTF(ITTAGE, "hit %d, table %d, index %d, lookup tag %d, tag %d, useful %d, btb_pc %#lx, entry_pc %#lx\n",
@@ -217,7 +247,7 @@ BTBITTAGE::putPCHistory(Addr stream_start, const bitset &history, std::vector<Fu
         Addr index = getTageIndex(stream_start, i, state.indexFoldedHist[i].get(), asidHash);
         Addr tag = getTageTag(stream_start, i, state.tagFoldedHist[i].get(),
                               state.altTagFoldedHist[i].get(), asidHash);
-        auto &entry = tageTable[i][index];
+        auto entry = lookupTageEntry(i, index, tag, stream_start);
         lookupEntries.push_back(entry);
         lookupIndices.push_back(index);
         lookupTags.push_back(tag);
@@ -309,7 +339,7 @@ BTBITTAGE::update(const FetchTarget &stream)
         if (main_found) {
             DPRINTF(ITTAGE, "prediction provided by table %d, idx %d, updating corresponding entry\n",
                 main_info.table, main_info.index);
-            auto &way = tageTable[main_info.table][main_info.index];
+            auto &way = getTageEntry(main_info.table, main_info.index, main_info.tag, btb_entry.pc);
             updateCounter(exe_target == main_target, 2, way.counter); // need modify
             if (way.counter == 0) {
                 way.target = exe_target;
@@ -327,7 +357,7 @@ BTBITTAGE::update(const FetchTarget &stream)
             ittageStats.updateTableHits.sample(main_info.table, 1);
 
             if (used_alt && mispred) {
-                auto &alt_way = tageTable[pred.altInfo.table][pred.altInfo.index];
+                auto &alt_way = getTageEntry(pred.altInfo.table, pred.altInfo.index, pred.altInfo.tag, btb_entry.pc);
                 updateCounter(false, 2, alt_way.counter);
                 if (alt_way.counter == 0) {
                     alt_way.target = exe_target;
@@ -350,9 +380,10 @@ BTBITTAGE::update(const FetchTarget &stream)
             useful_mask >>= main_info.table + 1;
             useful_mask.resize(alloc_table_num);
         }
-        int num_tables_can_allocate = (~useful_mask).count();
+        int num_tables_can_allocate = infiniteCapacity ?
+            alloc_table_num : (~useful_mask).count();
         bool canAllocate = num_tables_can_allocate > 0;
-        if (needToAllocate) {
+        if (needToAllocate && !infiniteCapacity) {
             if (canAllocate) {
                 usefulResetCnt -= 1;
                 if (usefulResetCnt <= 0) {
@@ -380,11 +411,16 @@ BTBITTAGE::update(const FetchTarget &stream)
 
         if (needToAllocate) {
             // allocate new entry
-            unsigned maskMaxNum = std::pow(2, alloc_table_num);
+            if (alloc_table_num <= 0) {
+                ittageStats.updateAllocFailure++;
+                continue;
+            }
+            unsigned maskMaxNum = 1U << alloc_table_num;
             unsigned mask = allocLFSR.get() % maskMaxNum;
             bitset allocateLFSR(alloc_table_num, mask);
 
-            auto flipped_usefulMask = useful_mask.flip();
+            bitset flipped_usefulMask = infiniteCapacity ?
+                bitset(alloc_table_num, true) : useful_mask.flip();
             bitset masked = allocateLFSR & flipped_usefulMask;
             bitset allocate = masked.any() ? masked : flipped_usefulMask;
             if (debugFlag) {
@@ -408,8 +444,7 @@ BTBITTAGE::update(const FetchTarget &stream)
                     Addr newIndex = getTageIndex(startAddr, ti, updateIndexFoldedHist[ti].get(), stream.asidHash);
                     Addr newTag = getTageTag(startAddr, ti, updateTagFoldedHist[ti].get(),
                                              updateAltTagFoldedHist[ti].get(), stream.asidHash);
-                    assert(newIndex < tageTable[ti].size());
-                    auto &newEntry = tageTable[ti][newIndex];
+                    auto &newEntry = getTageEntry(ti, newIndex, newTag, btb_entry.pc);
 
                     if (allocate[ti - startTable]) {
                         DPRINTF(ITTAGE, "found allocatable entry, table %d, index %d, tag %d, counter %d\n",

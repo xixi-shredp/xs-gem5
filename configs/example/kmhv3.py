@@ -30,6 +30,87 @@ def setPtwLevelLimitParams(args, tlb):
     tlb.walker.ptw_level3_limit = args.ptw_level3_limit
     tlb.walker.ptw_miss_queue_size = args.ptw_miss_queue_size
 
+def limitStudyEnabled(args, name):
+    return bool(getattr(args, name, False) or getattr(args, 'limit_study_all', False))
+
+
+def paramListLen(value):
+    try:
+        return len(value)
+    except TypeError:
+        return int(value)
+
+
+def setInfITTAGEParams(ittage):
+    ittage.infiniteCapacity = True
+
+
+def setInfBTBParams(branch_pred):
+    branch_pred.ubtb.numEntries = 8192
+    branch_pred.ubtb.tagBits = 48
+
+    branch_pred.abtb.numEntries = 65536
+    branch_pred.abtb.numWays = 16
+    branch_pred.abtb.tagBits = 48
+
+    branch_pred.microtage.baseTableSize = 8192
+    branch_pred.microtage.tableSizes = [32768] * paramListLen(branch_pred.microtage.tableSizes)
+    branch_pred.microtage.numWays = 4
+    branch_pred.microtage.TTagBitSizes = [24] * paramListLen(branch_pred.microtage.TTagBitSizes)
+
+    branch_pred.mbtb.infiniteCapacity = True
+    branch_pred.mbtb.tagBits = 48
+
+    branch_pred.tage.tableSizes = [65536] * paramListLen(branch_pred.tage.tableSizes)
+    branch_pred.tage.numWays = [8] * paramListLen(branch_pred.tage.numWays)
+    branch_pred.tage.TTagBitSizes = [24] * paramListLen(branch_pred.tage.TTagBitSizes)
+    branch_pred.tage.useAltOnNaSize = 8192
+
+    branch_pred.ittage.tableSizes = [32768] * paramListLen(branch_pred.ittage.tableSizes)
+    branch_pred.ittage.TTagBitSizes = [24] * paramListLen(branch_pred.ittage.TTagBitSizes)
+
+    branch_pred.ras.numEntries = 4096
+
+
+def setIdealDCacheParams(dcache):
+    dcache.ideal_dcache = True
+    dcache.prefetcher = NULL
+    dcache.prefetch_can_offload = False
+
+
+def setInfDCacheParams(dcache, cacheline_size):
+    dcache.tags = InfiniteTags(indexing_policy=VIPTSetAssociative(
+        size=dcache.size, entry_size=cacheline_size, assoc=dcache.assoc))
+    dcache.wpu = NULL
+    dcache.tag_load_read_ports = 64
+    dcache.mshrs = 128
+    dcache.demand_mshr_reserve = 16
+    dcache.tgts_per_mshr = 64
+    dcache.mshr_alloc_per_cycle = -1
+    dcache.write_buffers = 128
+    dcache.prefetch_can_offload = True
+
+
+def setInfDCacheSnoopFilterParams(system):
+    # Keep coherence metadata from becoming the effective DCache limit.
+    capacity = "64GB"
+
+    for bus in getattr(system, "tol2bus_list", []):
+        if hasattr(bus, "snoop_filter"):
+            bus.snoop_filter.max_capacity = capacity
+
+    for bus_name in ("tol3bus", "membus"):
+        bus = getattr(system, bus_name, None)
+        if bus is not None and hasattr(bus, "snoop_filter"):
+            bus.snoop_filter.max_capacity = capacity
+
+
+def setInfTLBParams(dtb):
+    dtb.infinite_capacity = True
+    dtb.enable_l1_direct_compression = False
+    dtb.forward_pre_size = 4096
+    dtb.walker.ptw_miss_queue_size = 256
+
 def setKmhV3Params(args, system):
     for cpu in system.cpu:
 
@@ -38,6 +119,8 @@ def setKmhV3Params(args, system):
         cpu.mmu.dtb.enable_l1_direct_compression = args.enable_l1_direct_compression
         setPtwLevelLimitParams(args, cpu.mmu.itb)
         setPtwLevelLimitParams(args, cpu.mmu.dtb)
+        if limitStudyEnabled(args, 'inf_dtlb'):
+            setInfTLBParams(cpu.mmu.dtb)
         cpu.fetchWidth = 32
         cpu.iewToFetchDelay = 4 # for resolved update, should train branch after squash
         cpu.commitToFetchDelay = 4
@@ -116,6 +199,12 @@ def setKmhV3Params(args, system):
                 cpu.branchPred.tage = BTBTAGEUpperBound(
                     usePathHashHistory=True)
 
+            if limitStudyEnabled(args, 'inf_btb'):
+                setInfBTBParams(cpu.branchPred)
+
+            if limitStudyEnabled(args, 'inf_ittage'):
+                setInfITTAGEParams(cpu.branchPred.ittage)
+
             cpu.branchPred.mbtb.resolvedUpdate = True
             cpu.branchPred.tage.resolvedUpdate = True
             cpu.branchPred.ittage.resolvedUpdate = True
@@ -146,6 +235,10 @@ def setKmhV3Params(args, system):
             cpu.dcache.do_fast_writeline = False
             cpu.dcache.simulate_dcache_refill = True
             cpu.dcache.prefetch_can_offload = False
+            if limitStudyEnabled(args, 'inf_dcache'):
+                setInfDCacheParams(cpu.dcache, args.cacheline_size)
+            if getattr(args, 'ideal_dcache', False):
+                setIdealDCacheParams(cpu.dcache)
             set_lsq_bank_conflict_cache_params(cpu, system)
 
     # l2 caches
@@ -190,6 +283,9 @@ def setKmhV3Params(args, system):
         system.l3.do_fast_writeline = False
         system.l3.prefetch_can_offload = False
         system.l3.num_slices = 4
+
+    if limitStudyEnabled(args, 'inf_dcache'):
+        setInfDCacheSnoopFilterParams(system)
 
 if __name__ == '__m5_main__':
     FutureClass = None

@@ -382,12 +382,15 @@ void ISA::clear()
     resetMatrixState();
 
     miscRegFile[MISCREG_PRV] = PRV_M;
-    miscRegFile[MISCREG_ISA] = 0x80000000003411af;
+    miscRegFile[MISCREG_ISA] = 0x800000000034112d;
     miscRegFile[MISCREG_IMPID] = 0;
     miscRegFile[MISCREG_MIDELEG] = ((1 << 12) | (1 << 10) | (1 << 6) | (1 << 2));
     if (FullSystem) {
         // Xiangshan assume machine boots with FS off
-        miscRegFile[MISCREG_STATUS] = (2ULL << UXL_OFFSET) | (2ULL << SXL_OFFSET);
+        // Match NEMU's reset status while a GCPT restorer executes.
+        // The restorer subsequently replaces this with checkpoint state.
+        miscRegFile[MISCREG_STATUS] = (2ULL << UXL_OFFSET) | (2ULL << SXL_OFFSET) |
+                                      (1ULL << VS_OFFSET);
     } else {
         // SE assumes process starts with FS on
         miscRegFile[MISCREG_STATUS] = (2ULL << UXL_OFFSET) | (2ULL << SXL_OFFSET) |
