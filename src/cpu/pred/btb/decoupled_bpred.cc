@@ -66,6 +66,9 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
       ftqPolicy(p.smtFTQPolicy),
       smtFTQThreshold(p.smtFTQThreshold),
       ftq(p.numThreads, p.ftq_size),
+      bpStatEnabled(p.bpStat),
+      bpStat(bpStatEnabled ? std::make_unique<BpStatData>(p.numThreads) :
+                           nullptr),
       resolveBlockThreshold(p.resolveBlockThreshold),
       dbpBtbStats(this, p.numStages, p.fsq_size, maxInstsNum)
 {
@@ -143,6 +146,9 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
 
     registerExitCallback([this]() {
         this->dumpStats();
+        if (bpStatEnabled) {
+            this->dumpBpStat();
+        }
     });
 }
 
@@ -289,6 +295,9 @@ DecoupledBPUWithBTB::tick()
     }
     if (!anyActiveThread) {
         return;
+    }
+    if (bpStatEnabled) {
+        sampleBpStatFtqOccupancy();
     }
 
     // On squash, reset state if there was a valid prediction.
@@ -749,6 +758,10 @@ DecoupledBPUWithBTB::commit(unsigned target_id, ThreadID tid)
                 "pred target: %#lx\n",
                 target.startPC, target.exeBranchInfo.pc, target.exeBranchInfo.target, target.predBranchInfo.pc,
                 target.predBranchInfo.target);
+
+        if (bpStatEnabled) {
+            finalizeBpStatPredictionBlock(ftq.frontId(tid), tid);
+        }
 
         // Update statistics
         updateStatistics(target);
