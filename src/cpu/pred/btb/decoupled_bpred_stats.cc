@@ -21,6 +21,7 @@ namespace
 
 constexpr int NumS1SourceBuckets = 3;
 constexpr int NumOverrideReasonBuckets = 4;
+constexpr unsigned FetchBlockBytes = 32;
 
 constexpr const char *S1SourceLabels[NumS1SourceBuckets] = {
     "fallthrough",
@@ -183,7 +184,7 @@ DecoupledBPUWithBTB::recordBpStatCommittedInst(const DynInstPtr &inst)
     const FetchTargetId target_id = inst->ftqId;
     auto &prediction_block = bpStat->predictBlocks[tid][target_id];
     const Addr fetch_block_addr =
-        inst->pcState().instAddr() & ~mask(floorLog2(predictWidth / 2) - 1);
+        inst->pcState().instAddr() & ~mask(floorLog2(FetchBlockBytes));
     auto &fetch_block = bpStat->fetchBlocks[tid][target_id][fetch_block_addr];
 
     const bool is_branch = !inst->isNonSpeculative() && inst->isControl();

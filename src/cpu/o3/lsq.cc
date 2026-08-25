@@ -63,6 +63,7 @@
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/iew.hh"
+#include "cpu/o3/issue_queue.hh"
 #include "cpu/o3/limits.hh"
 #include "debug/Drain.hh"
 #include "debug/Fetch.hh"
@@ -382,7 +383,7 @@ LSQ::StoreBuffer::release(StoreBufferEntry *entry)
     }
 }
 
-LSQ::LSQStats::LSQStats(statistics::Group *parent)
+LSQ::LSQStats::LSQStats(statistics::Group *parent, unsigned num_threads)
     : statistics::Group(parent),
       ADD_STAT(lqAvgEntryNum, statistics::units::Count::get(),
                "Average number of entries in load queue"),
@@ -391,13 +392,16 @@ LSQ::LSQStats::LSQStats(statistics::Group *parent)
       ADD_STAT(sbufferAvgEntryNum, statistics::units::Count::get(),
                "Average number of valid entries in store buffer"),
       ADD_STAT(lqFullCycles, statistics::units::Cycle::get(),
-               "Cycles that LQ cannot accept a full enqueue bundle"),
+               "Per-thread cycles that LQ cannot accept a full enqueue "
+               "bundle"),
       ADD_STAT(sqFullCycles, statistics::units::Cycle::get(),
-               "Cycles that SQ cannot accept a full enqueue bundle"),
+               "Per-thread cycles that SQ cannot accept a full enqueue "
+               "bundle"),
       ADD_STAT(lsqFullCycles, statistics::units::Cycle::get(),
-               "Cycles that LSQ cannot accept a full enqueue bundle"),
+               "Per-thread cycles that LSQ cannot accept a full enqueue "
+               "bundle"),
       ADD_STAT(sbufferFullCycles, statistics::units::Cycle::get(),
-               "Number of cycles that store buffer is physically full"),
+               "Per-thread cycles that store buffer cannot accept an entry"),
       ADD_STAT(sbufferEvictDuetoFlush, statistics::units::Count::get(), ""),
       ADD_STAT(sbufferEvictDuetoFull, statistics::units::Count::get(), ""),
       ADD_STAT(sbufferEvictDuetoSQFull, statistics::units::Count::get(), ""),
@@ -447,6 +451,17 @@ LSQ::LSQStats::LSQStats(statistics::Group *parent)
                statistics::units::Count::get(),
                "Number of store buffer requests that miss and exit fake dcache mainpipe at S2")
 {
+    lqFullCycles.init(num_threads);
+    sqFullCycles.init(num_threads);
+    lsqFullCycles.init(num_threads);
+    sbufferFullCycles.init(num_threads);
+    for (ThreadID tid = 0; tid < num_threads; ++tid) {
+        const std::string thread_name = csprintf("thread%d", tid);
+        lqFullCycles.subname(tid, thread_name);
+        sqFullCycles.subname(tid, thread_name);
+        lsqFullCycles.subname(tid, thread_name);
+        sbufferFullCycles.subname(tid, thread_name);
+    }
 }
 
 LSQ::LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params)
@@ -483,7 +498,7 @@ LSQ::LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params)
       lsqMode(params.smtLSQMode),
       lsqPolicy(params.smtLSQPolicy),
       smtLSQThreshold(params.smtLSQThreshold),
-      stats(nullptr),
+      stats(nullptr, params.numThreads),
       LQEntries(params.LQEntries),
       physicalSQEntries(params.SQEntries),
       storeQueueMultiple(params.StoreQueueMultiple),
@@ -587,7 +602,8 @@ LSQ::LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params)
         thread.emplace_back(LQEntries, SQEntries, physicalSQEntries,
             params.LdPipeStages, params.StPipeStages, params.RARQEntries, params.RAWQEntries,
             params.RARDequeuePerCycle, params.RAWDequeuePerCycle, params.LoadCompletionWidth,
-            params.StoreCompletionWidth);
+            params.StoreCompletionWidth, params.scheduler->getLoadPipeCount(),
+            params.scheduler->getStorePipeCount());
         thread[tid].init(cpu, iew_ptr, params, this, tid);
         thread[tid].setDcachePort(&dcachePort);
         _storeBufferFlushing[tid] = false;
@@ -687,18 +703,23 @@ LSQ::tick()
     std::list<ThreadID>::iterator end = activeThreads->end();
     unsigned lq_entry_num = 0;
     unsigned sq_entry_num = 0;
-    bool lq_full = false;
-    bool sq_full = false;
-
     while (threads != end) {
         ThreadID tid = *threads++;
         lq_entry_num += thread[tid].numLoads();
         sq_entry_num += thread[tid].numStores();
-        // TODO: this per-thread OR is an approximation for SMT/shared-LSQ
-        // configurations. With multiple active threads it may not match the
-        // aggregate free-entry condition seen by rename/dispatch.
-        lq_full = lq_full || thread[tid].numFreeLoadEntries() < enqueueWidth;
-        sq_full = sq_full || thread[tid].numFreeStoreEntries() < enqueueWidth;
+        const bool thread_lq_full =
+            logicalFreeLoadEntries(tid) < enqueueWidth;
+        const bool thread_sq_full =
+            logicalFreeStoreEntries(tid) < enqueueWidth;
+        if (thread_lq_full) {
+            ++stats.lqFullCycles[tid];
+        }
+        if (thread_sq_full) {
+            ++stats.sqFullCycles[tid];
+        }
+        if (thread_lq_full || thread_sq_full) {
+            ++stats.lsqFullCycles[tid];
+        }
         thread[tid].tick();
     }
 
@@ -710,18 +731,10 @@ LSQ::tick()
 
     // Sample current store buffer occupancy once per cycle.
     stats.sbufferAvgEntryNum = storeBuffer.size();
-    if (storeBuffer.full()) {
-        ++stats.sbufferFullCycles;
-    }
-
-    if (lq_full) {
-        ++stats.lqFullCycles;
-    }
-    if (sq_full) {
-        ++stats.sqFullCycles;
-    }
-    if (lq_full || sq_full) {
-        ++stats.lsqFullCycles;
+    for (ThreadID tid : *activeThreads) {
+        if (storeBuffer.full(tid) || storeBuffer.full()) {
+            ++stats.sbufferFullCycles[tid];
+        }
     }
 
 }
@@ -1155,27 +1168,55 @@ LSQ::getDcacheDivBankSetKey(Addr vaddr) const
 }
 
 bool
-LSQ::loadBankConflictedCheck(Addr vaddr)
+LSQ::loadBankConflictedCheck(Addr vaddr, unsigned size)
 {
-    bool now_bank_conflict = false;
-    const unsigned bankIndex = bankNum(vaddr);
-    const unsigned div = getDcacheDiv(vaddr);
-    const uint64_t key = getDcacheDivBankSetKey(vaddr);
+    if (!enableBankConflictCheck || size == 0) {
+        return false;
+    }
 
-    if (enableBankConflictCheck) {
-        if (recentlyloadAddr.contains(key)) {
-            recentlyloadAddr.get(key);
-            return false;
-        }
-        if (bankOccupied[div][bankIndex]) {
-            now_bank_conflict = true;
+    struct TouchedBank
+    {
+        unsigned bankIndex;
+        unsigned div;
+        uint64_t key;
+        bool recentlyAccessed;
+    };
 
-        } else {
-            bankOccupied[div][bankIndex] = true;
-            recentlyloadAddr.insert(key, {});
+    // Collect all banks will be touched by the load request.
+    // Eg. Bank size = 2B, load size = 8B, address = 0x0, will touch bank 0,1,2,3.
+    std::vector<TouchedBank> touched_banks;
+    for (unsigned offset = 0; offset < size;) {
+        const Addr bank_vaddr = vaddr + offset;
+        touched_banks.push_back({
+            bankNum(bank_vaddr),
+            getDcacheDiv(bank_vaddr),
+            getDcacheDivBankSetKey(bank_vaddr),
+            false
+        });
+        // Take care of misaligned situation.
+        Addr offsetInc = dcacheBankBytes - (bank_vaddr & (dcacheBankBytes - 1));
+        offset += offsetInc;
+    }
+
+    // Probe every target bank before claiming any of them. A failed
+    // multi-bank load will not update bankOccupied and recentlyloadAddr.
+    for (auto &bank : touched_banks) {
+        bank.recentlyAccessed = recentlyloadAddr.contains(bank.key);
+        if (!bank.recentlyAccessed &&
+            bankOccupied[bank.div][bank.bankIndex]) {
+            return true;
         }
     }
-    return now_bank_conflict;
+
+    // Occupy the banks and insert new keys to recentlyloadAddr.
+    for (const auto &bank : touched_banks) {
+        bankOccupied[bank.div][bank.bankIndex] = true;
+        if (!bank.recentlyAccessed) {
+            recentlyloadAddr.insert(bank.key, {});
+        }
+    }
+
+    return false;
 }
 
 void
@@ -2810,7 +2851,7 @@ LSQ::SingleDataRequest::SingleDataRequest(
                 std::move(amo_op)) {
     port->numSingleRequest++;
     singleList.push_back(this);
-    assert(port->numSingleRequest <= 400);
+    assert(port->numSingleRequest <= 500);
 }
 
 LSQ::SingleDataRequest::~SingleDataRequest(){
@@ -3302,14 +3343,27 @@ LSQ::SingleDataRequest::recvTimingResp(PacketPtr pkt)
     bool cacheHit = LSQRequest::_inst->getCpuPtr()->ticksToCycles(curTick() - pkt->sendTick) <= 1;
     // Dump inst num, request addr, and packet addr
     if (debug::LSQ) {
-        uint64_t first_word = 0;
-        const size_t copy_size = std::min<size_t>(pkt->getSize(),
-                                                  sizeof(first_word));
-        std::memcpy(&first_word, pkt->getPtr<uint8_t>(), copy_size);
-        DPRINTF(LSQ, "Single Req::recvTimingResp: inst: %llu, pkt: %#lx, isLoad: %d, "
-                    "isLLSC: %d, isUncache: %d, isCachehit: %d, data: %#lx\n",
-                    pkt->req->getReqInstSeqNum(), pkt->getAddr(), isLoad(), mainReq()->isLLSC(),
-                    mainReq()->isUncacheable(), cacheHit, first_word);
+        uint64_t firstWord = 0;
+        const size_t copySize =
+            std::min<size_t>(pkt->getSize(), sizeof(firstWord));
+
+        std::memcpy(
+            &firstWord,
+            pkt->getPtr<uint8_t>(),
+            copySize);
+
+        DPRINTF(LSQ,
+                "Single Req::recvTimingResp: inst: %llu, pkt: %#lx, "
+                "size: %u, isLoad: %d, isLLSC: %d, isUncache: %d, "
+                "isCachehit: %d, firstData: %#llx\n",
+                pkt->req->getReqInstSeqNum(),
+                pkt->getAddr(),
+                pkt->getSize(),
+                isLoad(),
+                mainReq()->isLLSC(),
+                mainReq()->isUncacheable(),
+                cacheHit,
+                static_cast<unsigned long long>(firstWord));
     }
 
     if (isLoad()) {
@@ -3606,11 +3660,35 @@ LSQ::SplitDataRequest::sendPacketToCache()
     bool mshr_alias_fail = false;
     bool hit_in_write_buffer = false;
     while (numReceivedPackets + _numOutstandingPackets < _packets.size()) {
-        bool success = lsqUnit()->trySendPacket(isLoad(), _packets.at(numReceivedPackets + _numOutstandingPackets),
-                                                bank_conflict, tag_read_fail, mshr_used,
-                                                mshr_alias_fail, hit_in_write_buffer);
+        const size_t pkt_idx =
+            numReceivedPackets + _numOutstandingPackets;
+        PacketPtr pkt = _packets.at(pkt_idx);
+
+        bool success = lsqUnit()->trySendPacket(
+            isLoad(), pkt,
+            bank_conflict, tag_read_fail, mshr_used,
+            mshr_alias_fail, hit_in_write_buffer);
+
+        DPRINTF(LSQ,
+                "Split send observe [sn:%llu] idx:%llu addr:%#lx "
+                "success:%d bankConflict:%d tagReadFail:%d "
+                "mshrUsed:%d mshrAliasFail:%d writeBuffer:%d "
+                "received:%llu outstanding:%llu total:%llu\n",
+                _inst->seqNum,
+                static_cast<unsigned long long>(pkt_idx),
+                pkt->getAddr(),
+                success,
+                bank_conflict,
+                tag_read_fail,
+                mshr_used,
+                mshr_alias_fail,
+                hit_in_write_buffer,
+                static_cast<unsigned long long>(numReceivedPackets),
+                static_cast<unsigned long long>(_numOutstandingPackets),
+                static_cast<unsigned long long>(_packets.size()));
+
         if (success) {
-            _packets[numReceivedPackets + _numOutstandingPackets]->setLSQPtr(lsqUnit()->getLsq());
+            pkt->setLSQPtr(lsqUnit()->getLsq());
             _numOutstandingPackets++;
         } else {
             break;

@@ -54,7 +54,7 @@ All line numbers below refer to the unmodified `xs-dev` base `80035e4f5d`.
 | `src/cpu/pred/BranchPredictor.py:1217-1218` | Defines `bpDBSwitches` followed by `resolveBlockThreshold`. | Insert the Bool SimObject parameter between them. |
 | `decoupled_bpred.cc:62-70` | Constructor initializes FTQ and existing stats. | Initialize `bpStatEnabled(p.bpStat)` and an optional `BpStatData` immediately after FTQ setup. |
 | `decoupled_bpred.cc:144-146` | Exit callback only calls `dumpStats()`. | Conditionally call `dumpBpStat()` after `dumpStats()`. |
-| `decoupled_bpred.cc:278-337` | `tick()` completes prediction and has no FTQ sampling. | Call `sampleBpStatFtqOccupancy()` once per tick before the final DPRINTF. |
+| `decoupled_bpred.cc:278-337` | `tick()` completes prediction and has no FTQ sampling. | Call `sampleBpStatFtqOccupancy()` once per active tick, after the active-thread check and before the squash early return. |
 | `decoupled_bpred.cc:735-760` | `commit()` updates components then calls `ftq.commitTarget(tid)`. | Finalize predict/fetch state for `ftq.frontId(tid)` between those operations. |
 | `decoupled_bpred_stats.cc:962-972` | `notifyInstCommit()` only updates the committed count. | Record the instruction before the existing FTQ commit-count update; use `inst->ftqId` plus the 32B-aligned instruction PC for the dynamic fetch-block key. |
 | `decoupled_bpred.hh:129-131` | `FetchTargetQueue ftq` is followed by existing predictor state. | Add the profiling structs, optional state, and helper declarations at this point. |

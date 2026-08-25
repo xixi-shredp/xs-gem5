@@ -67,7 +67,8 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
       smtFTQThreshold(p.smtFTQThreshold),
       ftq(p.numThreads, p.ftq_size),
       bpStatEnabled(p.bpStat),
-      bpStat(bpStatEnabled ? std::make_unique<BpStatData>(p.numThreads) : nullptr),
+      bpStat(bpStatEnabled ? std::make_unique<BpStatData>(p.numThreads) :
+                           nullptr),
       resolveBlockThreshold(p.resolveBlockThreshold),
       dbpBtbStats(this, p.numStages, p.fsq_size, maxInstsNum)
 {
@@ -295,6 +296,9 @@ DecoupledBPUWithBTB::tick()
     if (!anyActiveThread) {
         return;
     }
+    if (bpStatEnabled) {
+        sampleBpStatFtqOccupancy();
+    }
 
     // On squash, reset state if there was a valid prediction.
     bool squashOccurred = false;
@@ -337,10 +341,6 @@ DecoupledBPUWithBTB::tick()
             dbpBtbStats.overrideBubbleNum++;
             DPRINTF(Override, "Consuming override bubble, %d remaining\n", numOverrideBubbles);
         }
-    }
-
-    if (bpStatEnabled) {
-        sampleBpStatFtqOccupancy();
     }
 
     DPRINTF(Override, "Prediction cycle complete\n");

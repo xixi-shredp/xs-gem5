@@ -95,16 +95,21 @@ def template VConfExecute {{
     {
         auto tc = xc->tcBase();
 
+        // All vector configuration instructions are illegal when the
+        // vector context is disabled. This check must happen before
+        // writing vstart, vtype or vl, because those writes may mark
+        // the vector context Dirty.
         STATUS status = xc->readMiscReg(MISCREG_STATUS);
         if (status.vs == 0) {
             return std::make_shared<IllegalInstFault>(
-                    "Vector configuration with VS off", machInst);
+                "Vector state is off", machInst);
         }
+
         if (xc->readMiscReg(MISCREG_VIRMODE) == 1) {
             VSSTATUS vsstatus = xc->readMiscReg(MISCREG_VSSTATUS);
             if (vsstatus.vs == 0) {
                 return std::make_shared<IllegalInstFault>(
-                        "Vector configuration with virtual VS off", machInst);
+                    "Vector state is off in virtual mode", machInst);
             }
         }
 
@@ -126,7 +131,6 @@ def template VConfExecute {{
             float vflmul = getVflmul(new_vtype.vlmul);
             uint32_t sew = getSew(new_vtype.vsew);
             uint32_t new_vill =
-                bits(requested_vtype, 63, 63) ||
                 !(vflmul >= 0.125 && vflmul <= 8) ||
                 sew > std::min(vflmul, 1.0f) * ELEN ||
                 (requested_vtype >> 8) != 0;

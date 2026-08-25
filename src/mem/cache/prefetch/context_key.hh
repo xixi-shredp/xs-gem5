@@ -1,15 +1,18 @@
 /*
- * Copyright (c) 2014, 2019 ARM Limited
- * All rights reserved
+ * Copyright (c) 2026 XiangShan
+ * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
  * not be construed as granting a license to any other intellectual
  * property including but not limited to intellectual property relating
  * to a hardware implementation of the functionality of the software
- * licensed hereunder.  You may use the software subject to the license
+ * licensed hereunder. You may use the software subject to the license
  * terms below provided that you ensure that this notice is replicated
  * unmodified and in its entirety in all distributions of the software,
  * modified or unmodified, in source code or in binary form.
+ *
+ * Copyright (c) 2026 The Regents of The University of Michigan
+ * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -35,78 +38,41 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "mem/cache/prefetch/multi.hh"
+#ifndef __MEM_CACHE_PREFETCH_CONTEXT_KEY_HH__
+#define __MEM_CACHE_PREFETCH_CONTEXT_KEY_HH__
 
-#include "params/MultiPrefetcher.hh"
+#include <cstdint>
+
+#include "base/types.hh"
 
 namespace gem5
 {
-
-GEM5_DEPRECATED_NAMESPACE(Prefetcher, prefetch);
 namespace prefetch
 {
 
-Multi::Multi(const MultiPrefetcherParams &p)
-  : Base(p),
-    prefetchers(p.prefetchers.begin(), p.prefetchers.end()),
-    lastChosenPf(0)
+/**
+ * Qualify a virtual-address-derived prefetch key with its thread context.
+ *
+ * Context zero deliberately preserves the old key so single-thread runs keep
+ * their existing table indexing. Other contexts use a SplitMix64 finalizer
+ * before being XORed into the original key. This does not partition capacity:
+ * all contexts still contend for the same entries and replacement policy.
+ */
+inline constexpr Addr
+contextKey(Addr key, ContextID context_id)
 {
-}
-
-void
-Multi::setParentInfo(System *sys, ProbeManager *pm, CacheAccessor* _cache, unsigned blk_size)
-{
-    for (auto pf : prefetchers)
-        pf->setParentInfo(sys, pm, _cache, blk_size);
-}
-
-Tick
-Multi::nextPrefetchReadyTime() const
-{
-    Tick next_ready = MaxTick;
-
-    for (auto pf : prefetchers)
-        next_ready = std::min(next_ready, pf->nextPrefetchReadyTime());
-
-    return next_ready;
-}
-
-bool
-Multi::hasPendingPacket()
-{
-    uint8_t pf_turn = (lastChosenPf + 1) % prefetchers.size();
-    return (prefetchers[pf_turn]->nextPrefetchReadyTime() <= curTick());
-}
-
-PacketPtr
-Multi::getPacket()
-{
-    lastChosenPf = (lastChosenPf + 1) % prefetchers.size();
-    uint8_t pf_turn = lastChosenPf;
-
-    for (int pf = 0 ;  pf < prefetchers.size(); pf++) {
-        if (prefetchers[pf_turn]->nextPrefetchReadyTime() <= curTick()) {
-            PacketPtr pkt = prefetchers[pf_turn]->getPacket();
-            panic_if(!pkt, "Prefetcher is ready but didn't return a packet.");
-            if (issueStatsAreAtForwarder()) {
-                recordPrefetchDequeued(pkt);
-            } else {
-                recordIssuedPrefetch(pkt);
-            }
-            return pkt;
-        }
-        pf_turn = (pf_turn + 1) % prefetchers.size();
+    if (context_id == InvalidContextID || context_id == 0) {
+        return key;
     }
 
-    return nullptr;
-}
-void
-Multi::addTLB(BaseTLB *_t, bool functional)
-{
-    Base::addTLB(_t, functional);
-    for (auto pf : prefetchers)
-        pf->addTLB(_t, functional);
+    uint64_t mixed = static_cast<uint64_t>(context_id) + 0x9e3779b97f4a7c15ULL;
+    mixed = (mixed ^ (mixed >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    mixed = (mixed ^ (mixed >> 27)) * 0x94d049bb133111ebULL;
+    mixed ^= mixed >> 31;
+    return key ^ mixed;
 }
 
-} // namespace prefetch
-} // namespace gem5
+}  // namespace prefetch
+}  // namespace gem5
+
+#endif  // __MEM_CACHE_PREFETCH_CONTEXT_KEY_HH__

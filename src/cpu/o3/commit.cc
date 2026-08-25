@@ -182,6 +182,7 @@ Commit::Commit(CPU *_cpu, branch_prediction::BPredUnit *_bp, const BaseO3CPUPara
         borrowingDonorCycles[tid] = 0;
         trapSquash[tid] = false;
         tcSquash[tid] = false;
+        curSquashCause[tid] = SquashCause::None;
         squashAfterInst[tid] = nullptr;
         pc[tid].reset(params.isa[0]->newPCState());
         youngestSeqNum[tid] = 0;
@@ -574,6 +575,7 @@ Commit::clearStates(ThreadID tid)
     committedStores[tid] = false;
     trapSquash[tid] = false;
     tcSquash[tid] = false;
+    curSquashCause[tid] = SquashCause::None;
     pc[tid].reset(cpu->tcBase(tid)->getIsaPtr()->newPCState());
     lastCommitedSeqNum[tid] = 0;
     squashAfterInst[tid] = NULL;
@@ -641,6 +643,7 @@ Commit::takeOverFrom()
         borrowingDonorCycles[tid] = 0;
         trapSquash[tid] = false;
         tcSquash[tid] = false;
+        curSquashCause[tid] = SquashCause::None;
         squashAfterInst[tid] = NULL;
     }
     rob->takeOverFrom();
@@ -735,6 +738,11 @@ Commit::generateTrapEvent(ThreadID tid, Fault inst_fault)
 {
     DPRINTF(Commit, "Generating trap event for [tid:%i]\n", tid);
 
+    // TrapPending already blocks dispatch; latch Trap here so both the
+    // instruction-fault and interrupt paths attribute those slots correctly
+    // before squashFromTrap() runs.
+    curSquashCause[tid] = SquashCause::Trap;
+
     EventFunctionWrapper *trap = new EventFunctionWrapper(
         [this, tid]{ processTrapEvent(tid); },
         "Trap", true, Event::CPU_Tick_Pri);
@@ -798,6 +806,8 @@ Commit::squashAll(ThreadID tid)
     // the ROB is in the process of squashing.
     toIEW->commitInfo[tid].robSquashing = true;
 
+    toIEW->commitInfo[tid].squashCause = curSquashCause[tid];
+
     toIEW->commitInfo[tid].mispredictInst = NULL;
     toIEW->commitInfo[tid].squashInst = NULL;
 
@@ -820,6 +830,7 @@ Commit::squashFromTrap(ThreadID tid)
             (unsigned long long)curTick(),
             (unsigned long)committedPC[tid],
             *pc[tid]);
+    curSquashCause[tid] = SquashCause::Trap;
     squashAll(tid);
 
     toIEW->commitInfo[tid].isTrapSquash = true;
@@ -846,6 +857,7 @@ Commit::squashFromTC(ThreadID tid)
             tid,
             (unsigned long long)curTick(),
             *pc[tid]);
+    curSquashCause[tid] = SquashCause::ThreadContext;
     squashAll(tid);
 
     DPRINTF(Commit, "Squashing from TC, restarting at PC %s\n", *pc[tid]);
@@ -878,6 +890,7 @@ Commit::squashFromSquashAfter(ThreadID tid)
                 *pc[tid]);
     }
 
+    curSquashCause[tid] = SquashCause::SquashAfter;
     squashAll(tid);
     // Make sure to inform the fetch stage of which instruction caused
     // the squash. It'll try to re-fetch an instruction executing in
@@ -898,6 +911,7 @@ Commit::squashAfter(ThreadID tid, const DynInstPtr &head_inst)
 
     assert(!squashAfterInst[tid] || squashAfterInst[tid] == head_inst);
     commitStatus[tid] = SquashAfterPending;
+    curSquashCause[tid] = SquashCause::SquashAfter;
     squashAfterInst[tid] = head_inst;
 }
 
@@ -947,6 +961,7 @@ Commit::tick()
                 rob->doSquash(tid);
                 changedROBNumEntries[tid] = true;
                 toIEW->commitInfo[tid].robSquashing = true;
+                toIEW->commitInfo[tid].squashCause = curSquashCause[tid];
                 wroteToTimeBuffer = true;
             }
         }
@@ -1143,16 +1158,19 @@ Commit::commit()
                     fromIEW->mispredictInst[tid]->pcState().instAddr(),
                     fromIEW->squashedSeqNum[tid]);
                 stats.squashDueToBranch[tid]++;
+                curSquashCause[tid] = SquashCause::BranchMispredict;
             } else if (fromIEW->valuePredictionError[tid]) {
                 DPRINTF(Commit,
                     "[tid:%i] Squashing due to value prediction error [sn:%llu]\n",
                     tid, fromIEW->squashedSeqNum[tid]);
                 stats.squashDueToValuePrediction[tid]++;
+                curSquashCause[tid] = SquashCause::ValuePrediction;
             } else {
                 DPRINTF(Commit,
                     "[tid:%i] Squashing due to order violation [sn:%llu]\n",
                     tid, fromIEW->squashedSeqNum[tid]);
                 stats.squashDueToOrderViolation[tid]++;
+                curSquashCause[tid] = SquashCause::MemOrderViolation;
             }
 
             DPRINTF(Commit, "[tid:%i] Redirecting to PC %#x\n",
@@ -1186,6 +1204,8 @@ Commit::commit()
             // Send back the rob squashing signal so other stages know that
             // the ROB is in the process of squashing.
             toIEW->commitInfo[tid].robSquashing = true;
+
+            toIEW->commitInfo[tid].squashCause = curSquashCause[tid];
 
             toIEW->commitInfo[tid].mispredictInst =
                 fromIEW->mispredictInst[tid];
@@ -1433,6 +1453,20 @@ Commit::commitInsts()
                         if (traceMaybeExitOnLastTraceInst(head_inst)) {
                             return;
                         }
+
+                      // Vector loads write architectural vector registers.
+                      // Mark mstatus.VS dirty when the instruction commits.
+                      if (head_inst->isVector() && head_inst->isLoad()) {
+                          RiscvISA::STATUS status =
+                              cpu->readMiscRegNoEffect(
+                                  RiscvISA::MiscRegIndex::MISCREG_STATUS,
+                                  tid);
+                          status.sd = 1;
+                          status.vs = 3;
+                          cpu->setMiscRegNoEffect(
+                              RiscvISA::MiscRegIndex::MISCREG_STATUS,
+                              (RegVal)status, tid);
+                      }
 
                     if (head_inst->isUpdateVsstatusSd()) {
                         auto v = cpu->readMiscRegNoEffect(
@@ -1713,7 +1747,8 @@ Commit::commitInsts()
 
 void
 Commit::diffInst(ThreadID tid, const DynInstPtr &inst, bool force_diff,
-                 bool record_store) {
+                 bool record_store)
+{
     cpu->diffInfo.lastCommittedMsg.push(inst);
     if (cpu->diffInfo.lastCommittedMsg.size() > 20) {
         cpu->diffInfo.lastCommittedMsg.pop();
@@ -2148,7 +2183,7 @@ Commit::moveInstsToBuffer()
         bool active = !block && !fixedbuffer[i].empty();
         StallReason block_reason = StallReason::NoStall;
         if (robblock) {
-            block_reason = StallReason::CommitSquash;
+            block_reason = squashCauseToStallReason(curSquashCause[i]);
         } else if (block) {
             block_reason = robInfoFromIEW->iewInfo[i].robHeadStallReason;
             stats.ROBFull[i]++;

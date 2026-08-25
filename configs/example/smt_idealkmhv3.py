@@ -22,6 +22,7 @@ def setSharedLSQParams(args, system):
         # branchPred.ftq_size is interpreted as a shared SMT-wide FTQ pool.
         # Keep FTQ partitioned by default so one thread cannot monopolize the
         # shared target queue and starve the other thread's frontend.
+        cpu.StoreQueueMultiple = 1 # Do not support Virtual-SQ in SMT
         cpu.smtLSQMode = 'Shared'
         cpu.smtLSQPolicy = 'Dynamic'
         cpu.smtROBPolicy = 'DynamicBorrowing'
@@ -37,6 +38,8 @@ if __name__ == '__m5_main__':
     assert not args.external_memory_system
 
     args.smt = True
+    if args.enable_dynamic_pf is None:
+        args.enable_dynamic_pf = True
     args.bp_type = 'DecoupledBPUWithBTB'
     args.l2_size = '2MB'
     args.l3_size = '32MB'

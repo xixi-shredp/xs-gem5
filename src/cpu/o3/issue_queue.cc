@@ -198,26 +198,17 @@ IssueQue::IssueQue(const IssueQueParams& params)
       scheduleToExecDelay(params.scheduleToExecDelay),
       iqname(params.name),
       vectorSplitUnits(params.vectorSplitUnits),
-      nextVectorSplitUnit(0),
+      nextVectorLoadSplitUnit(0),
+      nextVectorStoreSplitUnit(0),
       inflightIssues(scheduleToExecDelay, 0),
-      vectorSplitStates(params.vectorSplitUnits),
+      vectorLoadSplitStates(params.vectorSplitUnits),
+      vectorStoreSplitStates(params.vectorSplitUnits),
       vectorReadyQEvent([this]() { processVectorReadyQ(); },
                         csprintf("%s.vectorReadyQEvent", params.name)),
       selector(params.sel)
 {
     panic_if(vectorSplitUnits == 0,
              "%s: vectorSplitUnits must be greater than 0\n", iqname);
-
-    // TODO: keep this in sync with the current load IQ naming convention.
-    // This should become an explicit IssueQue parameter when the config grows
-    // more load pipes or renames the queues.
-    if (iqname == "ld0" || iqname == "load0") {
-        loadPipeId = 0;
-    } else if (iqname == "ld1" || iqname == "load1") {
-        loadPipeId = 1;
-    } else if (iqname == "ld2" || iqname == "load2") {
-        loadPipeId = 2;
-    }
 
     toIssue = inflightIssues.getWire(0);
     toFu = inflightIssues.getWire(-scheduleToExecDelay);
@@ -392,6 +383,43 @@ IssueQue::isVectorMemInst(const DynInstPtr& inst) const
     return inst && inst->isVector() && inst->isMemRef() && !inst->isSquashed();
 }
 
+IssueQue::VectorSplitKind
+IssueQue::vectorSplitKind(const DynInstPtr& inst) const
+{
+    panic_if(!inst || !inst->isVector() || !inst->isMemRef() ||
+                 (!inst->isLoad() && !inst->isStore()),
+             "Unsupported vector split instruction [sn:%llu]\n",
+             inst ? inst->seqNum : 0);
+    return inst->isLoad() ? VectorSplitKind::Load : VectorSplitKind::Store;
+}
+
+const char*
+IssueQue::vectorSplitKindName(VectorSplitKind kind) const
+{
+    return kind == VectorSplitKind::Load ? "VLSplit" : "VSSplit";
+}
+
+std::vector<IssueQue::VectorSplitUnitState>&
+IssueQue::vectorSplitStatesFor(VectorSplitKind kind)
+{
+    return kind == VectorSplitKind::Load ? vectorLoadSplitStates :
+                                           vectorStoreSplitStates;
+}
+
+const std::vector<IssueQue::VectorSplitUnitState>&
+IssueQue::vectorSplitStatesFor(VectorSplitKind kind) const
+{
+    return kind == VectorSplitKind::Load ? vectorLoadSplitStates :
+                                           vectorStoreSplitStates;
+}
+
+unsigned&
+IssueQue::nextVectorSplitUnitFor(VectorSplitKind kind)
+{
+    return kind == VectorSplitKind::Load ? nextVectorLoadSplitUnit :
+                                           nextVectorStoreSplitUnit;
+}
+
 bool
 IssueQue::isBlockingVectorSplitInst(const DynInstPtr& inst) const
 {
@@ -399,9 +427,9 @@ IssueQue::isBlockingVectorSplitInst(const DynInstPtr& inst) const
 }
 
 bool
-IssueQue::hasAvailableVectorSplitUnit() const
+IssueQue::hasAvailableVectorSplitUnit(VectorSplitKind kind) const
 {
-    for (const auto& unit : vectorSplitStates) {
+    for (const auto& unit : vectorSplitStatesFor(kind)) {
         if (!unit.blocked()) {
             return true;
         }
@@ -411,17 +439,18 @@ IssueQue::hasAvailableVectorSplitUnit() const
 }
 
 int
-IssueQue::selectVectorSplitUnit()
+IssueQue::selectVectorSplitUnit(VectorSplitKind kind)
 {
-    if (vectorSplitStates.empty()) {
+    auto& states = vectorSplitStatesFor(kind);
+    if (states.empty()) {
         return -1;
     }
 
-    for (unsigned offset = 0; offset < vectorSplitStates.size(); ++offset) {
-        const unsigned idx = (nextVectorSplitUnit + offset) %
-                             vectorSplitStates.size();
-        if (!vectorSplitStates[idx].blocked()) {
-            nextVectorSplitUnit = (idx + 1) % vectorSplitStates.size();
+    auto& next_unit = nextVectorSplitUnitFor(kind);
+    for (unsigned offset = 0; offset < states.size(); ++offset) {
+        const unsigned idx = (next_unit + offset) % states.size();
+        if (!states[idx].blocked()) {
+            next_unit = (idx + 1) % states.size();
             return idx;
         }
     }
@@ -430,11 +459,11 @@ IssueQue::selectVectorSplitUnit()
 }
 
 Tick
-IssueQue::nextVectorSplitReleaseTick() const
+IssueQue::nextVectorSplitReleaseTick(VectorSplitKind kind) const
 {
     Tick next_tick = MaxTick;
 
-    for (const auto& unit : vectorSplitStates) {
+    for (const auto& unit : vectorSplitStatesFor(kind)) {
         if (!unit.splitQ.empty() && !unit.splitQReleaseTicks.empty()) {
             next_tick = std::min(next_tick, unit.splitQReleaseTicks.front());
         }
@@ -443,10 +472,20 @@ IssueQue::nextVectorSplitReleaseTick() const
     return next_tick;
 }
 
+Tick
+IssueQue::nextVectorSplitReleaseTick() const
+{
+    return std::min(nextVectorSplitReleaseTick(VectorSplitKind::Load),
+                    nextVectorSplitReleaseTick(VectorSplitKind::Store));
+}
+
 void
 IssueQue::eraseVectorSplitBlocker(InstSeqNum seq_num)
 {
-    for (auto& unit : vectorSplitStates) {
+    for (auto& unit : vectorLoadSplitStates) {
+        unit.blockingSeqs.erase(seq_num);
+    }
+    for (auto& unit : vectorStoreSplitStates) {
         unit.blockingSeqs.erase(seq_num);
     }
 }
@@ -459,7 +498,11 @@ IssueQue::scheduleVectorReadyQEvent()
     }
 
     Tick next_tick = MaxTick;
-    if (!vectorReadyQ.empty() && hasAvailableVectorSplitUnit()) {
+    const bool load_can_start = !vectorLoadReadyQ.empty() &&
+        hasAvailableVectorSplitUnit(VectorSplitKind::Load);
+    const bool store_can_start = !vectorStoreReadyQ.empty() &&
+        hasAvailableVectorSplitUnit(VectorSplitKind::Store);
+    if (load_can_start || store_can_start) {
         next_tick = curTick();
     } else {
         next_tick = nextVectorSplitReleaseTick();
@@ -487,8 +530,13 @@ IssueQue::enqueueVectorMemDelay(const DynInstPtr& inst, bool replay)
         return;
     }
 
-    vectorReadyQ.push(inst);
-    vectorReadyQReplay.push(replay);
+    if (vectorSplitKind(inst) == VectorSplitKind::Load) {
+        vectorLoadReadyQ.push(inst);
+        vectorLoadReadyQReplay.push(replay);
+    } else {
+        vectorStoreReadyQ.push(inst);
+        vectorStoreReadyQReplay.push(replay);
+    }
     DPRINTF(Schedule,
             "[sn:%llu] add to vectorReadyQ, replay:%d\n",
             inst->seqNum, replay);
@@ -497,17 +545,21 @@ IssueQue::enqueueVectorMemDelay(const DynInstPtr& inst, bool replay)
 }
 
 void
-IssueQue::tryStartVectorMemSplit()
+IssueQue::tryStartVectorMemSplit(VectorSplitKind kind)
 {
-    assert(vectorReadyQ.size() == vectorReadyQReplay.size());
+    auto& ready_q = kind == VectorSplitKind::Load ? vectorLoadReadyQ :
+                                                    vectorStoreReadyQ;
+    auto& replay_q = kind == VectorSplitKind::Load ? vectorLoadReadyQReplay :
+                                                     vectorStoreReadyQReplay;
+    assert(ready_q.size() == replay_q.size());
 
-    while (!vectorReadyQ.empty() && !vectorReadyQReplay.empty()) {
-        auto inst = vectorReadyQ.front();
-        const bool replay = vectorReadyQReplay.front();
+    while (!ready_q.empty() && !replay_q.empty()) {
+        auto inst = ready_q.front();
+        const bool replay = replay_q.front();
 
         if (!inst || inst->isSquashed() || (!replay && inst->canceled())) {
-            vectorReadyQ.pop();
-            vectorReadyQReplay.pop();
+            ready_q.pop();
+            replay_q.pop();
             if (inst) {
                 vectorReadyQSeqs.erase(inst->seqNum);
                 eraseVectorSplitBlocker(inst->seqNum);
@@ -515,17 +567,17 @@ IssueQue::tryStartVectorMemSplit()
             continue;
         }
 
-        const int split_unit = selectVectorSplitUnit();
+        const int split_unit = selectVectorSplitUnit(kind);
         if (split_unit < 0) {
             return;
         }
 
-        vectorReadyQ.pop();
-        vectorReadyQReplay.pop();
+        ready_q.pop();
+        replay_q.pop();
 
         assert(cpu);
         const Tick releaseTick = cpu->clockEdge(Cycles(3));
-        auto& unit = vectorSplitStates[split_unit];
+        auto& unit = vectorSplitStatesFor(kind)[split_unit];
         unit.splitQ.push(inst);
         unit.splitQReleaseTicks.push(releaseTick);
         unit.splitQReplay.push(replay);
@@ -534,11 +586,19 @@ IssueQue::tryStartVectorMemSplit()
         }
 
         DPRINTF(Schedule,
-                "[sn:%llu] enter vector split unit %d, replay:%d, release at "
-                "%llu, blocking:%d\n",
-                inst->seqNum, split_unit, replay, releaseTick,
+                "[%s:%d] [sn:%llu] enter vector split, replay:%d, release "
+                "at %llu, blocking:%d\n",
+                vectorSplitKindName(kind), split_unit, inst->seqNum,
+                replay, releaseTick,
                 isBlockingVectorSplitInst(inst));
     }
+}
+
+void
+IssueQue::tryStartVectorMemSplit()
+{
+    tryStartVectorMemSplit(VectorSplitKind::Load);
+    tryStartVectorMemSplit(VectorSplitKind::Store);
 }
 
 void
@@ -578,11 +638,10 @@ IssueQue::releaseVectorDelayedReadyQ()
 }
 
 void
-IssueQue::processVectorReadyQ()
+IssueQue::releaseVectorSplitUnits(VectorSplitKind kind)
 {
-    tryStartVectorMemSplit();
-
-    for (auto& unit : vectorSplitStates) {
+    auto& states = vectorSplitStatesFor(kind);
+    for (auto& unit : states) {
         assert(unit.splitQ.size() == unit.splitQReleaseTicks.size());
         assert(unit.splitQ.size() == unit.splitQReplay.size());
         while (!unit.splitQ.empty() && !unit.splitQReleaseTicks.empty() &&
@@ -605,10 +664,22 @@ IssueQue::processVectorReadyQ()
             vectorDelayedReadyQ.push(inst);
             vectorDelayedReadyQReplay.push(replay);
             DPRINTF(Schedule,
-                    "[sn:%llu] moved to vectorDelayedReadyQ, replay:%d\n",
-                    inst->seqNum, replay);
+                    "[%s:%d] [sn:%llu] moved to vectorDelayedReadyQ, "
+                    "replay:%d\n",
+                    vectorSplitKindName(kind),
+                    static_cast<int>(&unit - states.data()), inst->seqNum,
+                    replay);
         }
     }
+}
+
+void
+IssueQue::processVectorReadyQ()
+{
+    tryStartVectorMemSplit();
+
+    releaseVectorSplitUnits(VectorSplitKind::Load);
+    releaseVectorSplitUnits(VectorSplitKind::Store);
 
     releaseVectorDelayedReadyQ();
     tryStartVectorMemSplit();
@@ -773,8 +844,12 @@ IssueQue::idle()
         }
     }
     idle |= replayQ.size() > 0;
-    idle |= vectorReadyQ.size() > 0;
-    for (const auto& unit : vectorSplitStates) {
+    idle |= vectorLoadReadyQ.size() > 0;
+    idle |= vectorStoreReadyQ.size() > 0;
+    for (const auto& unit : vectorLoadSplitStates) {
+        idle |= unit.splitQ.size() > 0;
+    }
+    for (const auto& unit : vectorStoreSplitStates) {
         idle |= unit.splitQ.size() > 0;
     }
     idle |= vectorDelayedReadyQ.size() > 0;
@@ -1259,10 +1334,47 @@ Scheduler::Scheduler(const SchedulerParams& params)
     std::vector<int> wrRfportChecker(MAXVAL_TYPEPORTID, 0);
     int maxRdTypePortId = 0;
     int maxWrTypePortId = 0;
+    int nextLoadPipeId = 0;
     for (int i = 0; i < issueQues.size(); i++) {
         issueQues[i]->setIQID(i);
         issueQues[i]->scheduler = this;
         combinedFus += issueQues[i]->outports;
+
+        unsigned iq_load_ports = 0;
+        unsigned iq_store_ports = 0;
+        for (const auto& opbits : issueQues[i]->portFuDescs) {
+            bool is_load = false;
+            bool is_store = opbits.test(StoreDataOp);
+            for (int op = static_cast<int>(MemReadOp);
+                 op <= static_cast<int>(VectorWholeRegisterLoadOp); ++op) {
+                if (opbits.test(op)) {
+                    is_load = true;
+                    break;
+                }
+            }
+            for (int op = static_cast<int>(MemWriteOp);
+                 op <= static_cast<int>(VectorWholeRegisterStoreOp); ++op) {
+                if (opbits.test(op)) {
+                    is_store = true;
+                    break;
+                }
+            }
+            if (is_load) {
+                ++iq_load_ports;
+            }
+            if (is_store) {
+                ++iq_store_ports;
+            }
+        }
+        panic_if(iq_load_ports != static_cast<unsigned>(issueQues[i]->numLoadPipe),
+                 "%s: derived load ports (%u) != IssueQue load pipes (%d)\n",
+                 issueQues[i]->getName(), iq_load_ports,
+                 issueQues[i]->numLoadPipe);
+        if (iq_load_ports > 0) {
+            issueQues[i]->loadPipeId = nextLoadPipeId++;
+        }
+        loadPipeCount += iq_load_ports;
+        storePipeCount += iq_store_ports;
         panic_if(issueQues[i]->fuDescs.size() == 0, "Empty config IssueQue: " + issueQues[i]->getName());
         for (auto fu : issueQues[i]->fuDescs) {
             for (auto op : fu->opDescList) {
@@ -1295,6 +1407,8 @@ Scheduler::Scheduler(const SchedulerParams& params)
             }
         }
     }
+    DPRINTF(Schedule, "Derived LSQ pipes from scheduler: load=%u store=%u\n",
+            loadPipeCount, storePipeCount);
     maxRdTypePortId += 1;
     maxWrTypePortId += 1;
     assert(maxRdTypePortId <= MAXVAL_TYPEPORTID);

@@ -45,6 +45,7 @@
 
 #include "cpu/o3/iew.hh"
 
+#include <algorithm>
 #include <cassert>
 #include <queue>
 
@@ -159,11 +160,11 @@ IEW::regProbePoints()
 IEW::IEWStats::IEWStats(CPU *cpu)
     : statistics::Group(cpu, "iew"),
     ADD_STAT(idleCycles, statistics::units::Cycle::get(),
-             "Number of cycles IEW is idle"),
+             "Number of cycles IEW is idle per thread"),
     ADD_STAT(squashCycles, statistics::units::Cycle::get(),
-             "Number of cycles IEW is squashing"),
+             "Number of cycles IEW is squashing per thread"),
     ADD_STAT(blockCycles, statistics::units::Cycle::get(),
-             "Number of cycles IEW is blocking"),
+             "Number of cycles IEW is blocking per thread"),
     ADD_STAT(unblockCycles, statistics::units::Cycle::get(),
              "Number of cycles IEW is unblocking"),
     ADD_STAT(dispatchedInsts, statistics::units::Count::get(),
@@ -219,6 +220,18 @@ IEW::IEWStats::IEWStats(CPU *cpu)
     ADD_STAT(dispatchStallReason, statistics::units::Count::get(),
              "Number of dispatch stall reasons each tick (Total)")
 {
+    idleCycles
+        .init(cpu->numThreads)
+        .flags(statistics::total);
+
+    squashCycles
+        .init(cpu->numThreads)
+        .flags(statistics::total);
+
+    blockCycles
+        .init(cpu->numThreads)
+        .flags(statistics::total);
+
     instsToCommit
         .init(cpu->numThreads)
         .flags(statistics::total);
@@ -318,6 +331,10 @@ IEW::IEWStats::IEWStats(CPU *cpu)
         {StallReason::Atomic,"Atomic"},
         {StallReason::ResumeUnblock, "ResumeUnblock"},
         {StallReason::CommitSquash, "CommitSquash"},
+        {StallReason::ControlRecovery, "ControlRecovery"},
+        {StallReason::MemVioRecovery, "MemVioRecovery"},
+        {StallReason::VPRecovery, "VPRecovery"},
+        {StallReason::TrapRecovery, "TrapRecovery"},
         {StallReason::ROBFull, "ROBFull"},
         {StallReason::RegFull, "RegFull"},
         {StallReason::OtherStall, "OtherStall"},
@@ -537,6 +554,8 @@ IEW::takeOverFrom()
 void
 IEW::squash(ThreadID tid)
 {
+    recordThreadSquash(tid);
+
     DPRINTF(IEW, "[tid:%i] Squashing all instructions.\n", tid);
 
     for (auto& dp : dispQue) {
@@ -568,6 +587,8 @@ IEW::squash(ThreadID tid)
 void
 IEW::squashDueToBranch(const DynInstPtr& inst, ThreadID tid)
 {
+    recordThreadSquash(tid);
+
     DPRINTF(IEW, "[tid:%i] [sn:%llu] Squashing from a specific instruction,"
             " PC: %s "
             "\n", tid, inst->seqNum, inst->pcState() );
@@ -602,6 +623,8 @@ IEW::squashDueToBranch(const DynInstPtr& inst, ThreadID tid)
 void
 IEW::squashDueToMemOrder(const DynInstPtr& inst, ThreadID tid)
 {
+    recordThreadSquash(tid);
+
     DPRINTF(IEW, "[tid:%i] Memory violation, squashing violator and younger "
             "insts, PC: %s [sn:%llu].\n", tid, inst->pcState(), inst->seqNum);
     // Need to include inst->seqNum in the following comparison to cover the
@@ -639,6 +662,8 @@ IEW::squashDueToMemOrder(const DynInstPtr& inst, ThreadID tid)
 void
 IEW::squashDueToValuePrediction(const DynInstPtr &inst, ThreadID tid)
 {
+    recordThreadSquash(tid);
+
     DPRINTF(IEW, "[tid:%i] value prediction error, squashing violator and younger "
             "insts, PC: %s [sn:%llu].\n",
             tid, inst->pcState(), inst->seqNum);
@@ -846,16 +871,19 @@ IEW::checkSquash()
             fetchRedirect[i] = false;
             iewStats.stallEvents[ROBWalk]++;
             iewStats.smtStallEvents[ROBWalk].sample(i);
-            setAllStalls(StallReason::CommitSquash);
+            setAllStalls(
+                squashCauseToStallReason(fromCommit->commitInfo[i].squashCause));
         }
 
         if (fromCommit->commitInfo[i].robSquashing) {
+            recordThreadSquash(i);
             DPRINTF(IEW, "[tid:%i] ROB is still squashing.\n", i);
 
             wroteToTimeBuffer = true;
             iewStats.stallEvents[ROBWalk]++;
             iewStats.smtStallEvents[ROBWalk].sample(i);
-            setAllStalls(StallReason::CommitSquash);
+            setAllStalls(
+                squashCauseToStallReason(fromCommit->commitInfo[i].squashCause));
         }
     }
 }
@@ -926,7 +954,7 @@ IEW::canInsertLDSTQue(ThreadID tid)
 void
 IEW::setDispatchAgeCtr(const DynInstPtr& inst, int dispatch_pos)
 {
-    constexpr uint64_t dispatchAgeScale = 8;
+    const uint64_t dispatchAgeScale = std::max<uint64_t>(8, renameWidth);
 
     assert(dispatch_pos >= 0);
     assert(dispatch_pos < static_cast<int>(dispatchAgeScale));
@@ -935,6 +963,50 @@ IEW::setDispatchAgeCtr(const DynInstPtr& inst, int dispatch_pos)
     DPRINTF(IEW, "[tid:%i] [sn:%llu] ageCtr=%llu at dispatch pos %d.\n",
             inst->threadNumber, inst->seqNum,
             static_cast<unsigned long long>(inst->ageCtr), dispatch_pos);
+}
+
+bool
+IEW::threadHasStageWork(ThreadID tid)
+{
+    if (!fixedbuffer[tid].empty() || scheduler->getIQInsts(tid) != 0 ||
+        ldstQueue.getCount(tid) != 0) {
+        return true;
+    }
+
+    for (const auto &queue : dispQue) {
+        for (const auto &inst : queue) {
+            if (inst->threadNumber == tid) {
+                return true;
+            }
+        }
+    }
+
+    for (int i = 0; i < fromIssue->size; ++i) {
+        if (fromIssue->insts[i] && fromIssue->insts[i]->threadNumber == tid) {
+            return true;
+        }
+    }
+
+    for (int i = 0; i < MaxWidth; ++i) {
+        if (toCommit->insts[i] && toCommit->insts[i]->threadNumber == tid) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+IEW::recordThreadWork(ThreadID tid)
+{
+    cycleThreadWork[tid] = true;
+}
+
+void
+IEW::recordThreadSquash(ThreadID tid)
+{
+    cycleThreadSquash[tid] = true;
+    recordThreadWork(tid);
 }
 
 void
@@ -1846,6 +1918,8 @@ IEW::tick()
 
     wroteToTimeBuffer = false;
     updatedQueues = false;
+    cycleThreadWork.fill(false);
+    cycleThreadSquash.fill(false);
     for (ThreadID tid = 0; tid < numThreads; ++tid) {
         toFetch->iewInfo[tid].redirectPending = false;
         toFetch->iewInfo[tid].resolvedCFIs.clear();
@@ -1856,6 +1930,11 @@ IEW::tick()
 
     // dispatch
     moveInstsToBuffer();
+
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
+        cycleThreadWork[tid] = threadHasStageWork(tid);
+    }
+
     checkSquash();
     dispatchInsts();
 
@@ -1899,6 +1978,7 @@ IEW::tick()
         if (fromCommit->commitInfo[tid].doneMemSeqNum != 0 &&
             !fromCommit->commitInfo[tid].squash &&
             !fromCommit->commitInfo[tid].robSquashing) {
+            recordThreadWork(tid);
 
             // Marks some of the entries in the store queue as canWB and
             // they will be moved to the store buffer when appropriate.
@@ -1910,6 +1990,7 @@ IEW::tick()
         if (fromCommit->commitInfo[tid].doneSeqNum != 0 &&
             !fromCommit->commitInfo[tid].squash &&
             !fromCommit->commitInfo[tid].robSquashing) {
+            recordThreadWork(tid);
 
             ldstQueue.commitLoads(fromCommit->commitInfo[tid].doneSeqNum,tid);
             updateLSQNextCycle = true;
@@ -1918,6 +1999,7 @@ IEW::tick()
         }
 
         if (fromCommit->commitInfo[tid].nonSpecSeqNum != 0) {
+            recordThreadWork(tid);
 
             //DPRINTF(IEW,"NonspecInst from thread %i",tid);
             if (fromCommit->commitInfo[tid].strictlyOrdered) {
@@ -1932,6 +2014,20 @@ IEW::tick()
 
         if (broadcast_free_entries) {
             wroteToTimeBuffer = true;
+        }
+    }
+
+    // Classify every thread once per cycle, using work and squash observed
+    // across the entire tick rather than only the pre-execute snapshot.
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
+        cycleThreadWork[tid] = cycleThreadWork[tid] || threadHasStageWork(tid);
+
+        if (cycleThreadSquash[tid]) {
+            ++iewStats.squashCycles[tid];
+        } else if (stallSig->blockRename[tid]) {
+            ++iewStats.blockCycles[tid];
+        } else if (!cycleThreadWork[tid]) {
+            ++iewStats.idleCycles[tid];
         }
     }
 
@@ -2234,8 +2330,6 @@ IEW::checkDispatchStall(ThreadID tid, int dq_stall, const DynInstPtr &dispatch_i
             }
         }
     }
-
-    return StallReason::OtherStall;
 }
 
 StallReason

@@ -1181,7 +1181,7 @@ class LSQ
         return (a >> dcacheBankOffsetBits) & (numBank - 1);
     }
 
-    bool loadBankConflictedCheck(Addr vaddr);
+    bool loadBankConflictedCheck(Addr vaddr, unsigned size);
 
     void setDcacheWriteStall(bool t) { dcacheWriteStall = t; }
     bool getDcacheWriteStall() { return dcacheWriteStall; }
@@ -1495,17 +1495,17 @@ class LSQ
 
     struct LSQStats : public statistics::Group
     {
-        LSQStats(statistics::Group *parent);
+        LSQStats(statistics::Group *parent, unsigned num_threads);
 
         /** Per-cycle occupancy samples for the aggregated LSQ structures. */
         statistics::Average lqAvgEntryNum;
         statistics::Average sqAvgEntryNum;
         statistics::Average sbufferAvgEntryNum;
-        /** Per-cycle full signals based on whether a full enqueue bundle fits. */
-        statistics::Scalar lqFullCycles;
-        statistics::Scalar sqFullCycles;
-        statistics::Scalar lsqFullCycles;
-        statistics::Scalar sbufferFullCycles;
+        /** Per-thread full signals based on whether an enqueue bundle fits. */
+        statistics::Vector lqFullCycles;
+        statistics::Vector sqFullCycles;
+        statistics::Vector lsqFullCycles;
+        statistics::Vector sbufferFullCycles;
         statistics::Scalar sbufferEvictDuetoFlush;
         statistics::Scalar sbufferEvictDuetoFull;
         statistics::Scalar sbufferEvictDuetoSQFull;
