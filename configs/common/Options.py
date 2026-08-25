@@ -169,11 +169,16 @@ def addNoISAOptions(parser, configure_xiangshan=False):
     parser.add_argument("--cacheline_size", type=int, default=64)
     parser.add_argument("--ideal-cache", action="store_true")
     parser.add_argument("--ideal-dcache", action="store_true",
-                        help="Satisfy ordinary L1 DCache misses with "
-                             "functional memory using DCache hit latency")
+                        help="Complete cacheable single-line L1D data "
+                             "operations through the native hit path "
+                             "(single-core classic caches only)")
+    parser.add_argument("--ideal-dcache-hit-latency", type=int, default=1,
+                        help="Ideal L1D hit latency in cycles (default: 1)")
 
     parser.add_argument("--no-pf", default=False,
                         action="store_true", help="L1 icache hardware prefetcher")
+    parser.add_argument("--no-l1d-pf", default=False, action="store_true",
+                        help="Disable only the L1 data-cache prefetcher")
     parser.add_argument("--l1i-hwp-type", default=None,
                         choices=ObjectList.hwp_list.get_names(), help="L1 icache hardware prefetcher")
     parser.add_argument("--l1d-hwp-type", default='XSCompositePrefetcher',

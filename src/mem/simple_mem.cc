@@ -43,6 +43,7 @@
 #include "base/random.hh"
 #include "base/trace.hh"
 #include "debug/Drain.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
@@ -95,14 +96,18 @@ SimpleMemory::recvFunctional(PacketPtr pkt)
 {
     pkt->pushLabel(name());
 
+    const bool isolate_oracle_write =
+        pkt->isWrite() && system()->idealDCacheOracleOwns(pkt, this);
     functionalAccess(pkt);
 
-    bool done = false;
-    auto p = packetQueue.begin();
-    // potentially update the packets in our packet queue as well
-    while (!done && p != packetQueue.end()) {
-        done = pkt->trySatisfyFunctional(p->pkt);
-        ++p;
+    if (!isolate_oracle_write) {
+        bool done = false;
+        auto p = packetQueue.begin();
+        // potentially update the packets in our packet queue as well
+        while (!done && p != packetQueue.end()) {
+            done = pkt->trySatisfyFunctional(p->pkt);
+            ++p;
+        }
     }
 
     pkt->popLabel();

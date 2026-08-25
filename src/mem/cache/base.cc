@@ -46,6 +46,7 @@
 #include "mem/cache/base.hh"
 
 #include <algorithm>
+#include <cstring>
 #include <cstdio>
 
 #include "base/compiler.hh"
@@ -65,6 +66,7 @@
 #include "debug/CacheRepl.hh"
 #include "debug/CacheVerbose.hh"
 #include "debug/HWPrefetch.hh"
+#include "debug/IdealDCache.hh"
 #include "debug/MSHR.hh"
 #include "debug/TagReadFail.hh"
 #include "mem/cache/compressors/base.hh"
@@ -187,6 +189,7 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       cacheLevel(p.cache_level),
       forceHit(p.force_hit),
       idealDCache(p.ideal_dcache),
+      idealDCacheHitLatency(p.ideal_dcache_hit_latency),
       simulateDcacheRefill(p.simulate_dcache_refill),
       doFastWriteline(p.do_fast_writeline),
       Prefetch_CanOffload(p.prefetch_can_offload)
@@ -213,6 +216,21 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
     fatal_if(compressor && !dynamic_cast<CompressedTags*>(tags),
         "The tags of compressed cache %s must derive from CompressedTags",
         name());
+    if (compressor)
+        system->registerCompressedCache();
+    fatal_if(idealDCache && (cacheLevel != 1 || isReadOnly),
+        "The ideal DCache %s must be a writable L1 cache", name());
+    fatal_if(idealDCache && !system->isTimingMode(),
+        "The ideal DCache %s requires timing memory mode", name());
+    fatal_if(idealDCache && idealDCacheHitLatency < 1,
+        "The ideal DCache %s requires a positive hit latency", name());
+    fatal_if(idealDCache && (prefetcher || wpu),
+        "The ideal DCache %s requires prefetcher and WPU to be disabled",
+        name());
+    if (idealDCache) {
+        idealDCacheScratchBlock = new TempCacheBlk(blkSize);
+        system->registerIdealDCache();
+    }
     warn_if(!compressor && dynamic_cast<CompressedTags*>(tags),
         "Compressed cache %s does not have a compression algorithm", name());
     if (compressor)
@@ -255,6 +273,7 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
 
 BaseCache::~BaseCache()
 {
+    delete idealDCacheScratchBlock;
     delete tempBlock;
 }
 
@@ -298,11 +317,13 @@ BaseCache::CacheResponsePort::processSendRetry()
 Addr
 BaseCache::regenerateBlkAddr(CacheBlk* blk)
 {
-    if (blk != tempBlock) {
-        return tags->regenerateBlkAddr(blk);
-    } else {
+    if (blk == tempBlock) {
         return tempBlock->getAddr();
     }
+    if (blk == idealDCacheScratchBlock) {
+        return idealDCacheScratchBlock->getAddr();
+    }
+    return tags->regenerateBlkAddr(blk);
 }
 
 void
@@ -654,7 +675,11 @@ BaseCache::calReqInterval(PacketPtr pkt)
 {
     RequestorID reqId = pkt->requestorId();
     size_t sliceId = (getActualSliceNum() == 1) ? 0 : getSliceIdx(pkt->getAddr());
-    auto& prev = prevReqCycles[sliceId][reqId];
+    auto &slice_prev = prevReqCycles[sliceId];
+    if (reqId >= slice_prev.size()) {
+        slice_prev.resize(reqId + 1, Cycles{0});
+    }
+    auto &prev = slice_prev[reqId];
     if (prev == 0) {
         // first request
         prev = curCycle();
@@ -667,6 +692,9 @@ BaseCache::calReqInterval(PacketPtr pkt)
 void
 BaseCache::recvTimingReq(PacketPtr pkt)
 {
+    const bool ideal_dcache_candidate =
+        accountIdealDCacheTimingAttempt(pkt);
+
     registerDcacheMainPipeLSQ(pkt->getLSQPtr());
 
     calReqInterval(pkt);
@@ -713,7 +741,9 @@ BaseCache::recvTimingReq(PacketPtr pkt)
     Cycles lat;
     CacheBlk *blk = nullptr;
     bool satisfied = false;
-    {
+    if (ideal_dcache_candidate) {
+        satisfied = accessIdealDCache(pkt, blk, lat);
+    } else {
         PacketList writebacks;
         // Note that lat is passed by reference here. The function
         // access() will set the lat value.
@@ -723,6 +753,18 @@ BaseCache::recvTimingReq(PacketPtr pkt)
         // to the write buffer to ensure they logically precede anything
         // happening below
         doWritebacks(writebacks, clockEdge(lat + forwardLatency));
+    }
+
+    if (ideal_dcache_candidate && !satisfied) {
+        stats.idealDCacheUnexpectedEscapes++;
+        DPRINTF(IdealDCache,
+                "unexpected miss escape: id=%llu cmd=%s addr=%#x\n",
+                static_cast<unsigned long long>(pkt->id), pkt->cmdString(),
+                pkt->getAddr());
+        fatal_if(true, "%s: ideal DCache candidate unexpectedly escaped the "
+                 "native hit path: packet_id=%llu cmd=%s addr=%#x", name(),
+                 static_cast<unsigned long long>(pkt->id), pkt->cmdString(),
+                 pkt->getAddr());
     }
 
     if (!satisfied && forceHit && !pkt->req->isInstFetch() && pkt->isRead() && pkt->req->hasPC() &&
@@ -812,7 +854,20 @@ BaseCache::recvTimingReq(PacketPtr pkt)
             invalidateBlock(blk);
         }
 
+        if (ideal_dcache_candidate) {
+            stats.idealDCacheNativeHitHandlerEntries++;
+            DPRINTF(IdealDCache,
+                    "native hit-handler entry: id=%llu cmd=%s addr=%#x\n",
+                    static_cast<unsigned long long>(pkt->id),
+                    pkt->cmdString(), pkt->getAddr());
+        }
         handleTimingReqHit(pkt, blk, request_time, first_acc_after_pf);
+        if (ideal_dcache_candidate) {
+            fatal_if(blk != idealDCacheScratchBlock,
+                     "%s: ideal DCache candidate escaped its scratch block",
+                     name());
+            idealDCacheScratchBlock->invalidate();
+        }
     } else {
         if (cacheLevel != 1) {
             calculateSliceBusy(pkt);
@@ -1317,6 +1372,49 @@ BaseCache::recvAtomic(PacketPtr pkt)
 void
 BaseCache::functionalAccess(PacketPtr pkt, bool from_cpu_side)
 {
+    const bool ideal_dcache_owned = system->idealDCacheOracleOwns(pkt);
+    if (ideal_dcache_owned) {
+        const bool internal = pkt->req->isIdealDCacheInternal();
+        const bool state_carrier =
+            pkt->cmd == MemCmd::WritebackDirty ||
+            pkt->cmd == MemCmd::WritebackClean ||
+            pkt->cmd == MemCmd::WriteClean;
+
+        if (state_carrier) {
+            system->normalizeIdealDCachePacket(pkt);
+        }
+
+        // Internal backing synchronization and coherence state carriers are
+        // not logical writes. They must never rewrite resident/transient
+        // cache state or delayed responses during a functional traversal.
+        if (internal || state_carrier) {
+            if (from_cpu_side) {
+                memSidePort.sendFunctional(pkt);
+            }
+            return;
+        }
+
+        fatal_if(pkt->isLLSC() || pkt->isLockedRMW() ||
+                 pkt->req->isReadModifyWrite() ||
+                 (pkt->isRead() && pkt->isWrite()),
+                 "%s: ideal-DCache oracle does not support functional "
+                 "LL/SC or read-modify-write command: %s",
+                 name(), pkt->print());
+
+        if (pkt->isWrite()) {
+            system->commitIdealDCacheFunctionalWrite(pkt);
+            if (pkt->req->isIdealDCacheFunctionalObserved()) {
+                // The canonical commit already merged byte enables and
+                // synchronized raw backing exactly once.
+                fatal_if(!pkt->needsResponse(),
+                         "%s: canonical functional write needs no response: "
+                         "%s", name(), pkt->print());
+                pkt->makeResponse();
+                return;
+            }
+        }
+    }
+
     Addr blk_addr = pkt->getBlockAddr(blkSize);
     bool is_secure = pkt->isSecure();
     CacheBlk *blk = tags->findBlock(pkt->getAddr(), is_secure);
@@ -1330,6 +1428,32 @@ BaseCache::functionalAccess(PacketPtr pkt, bool from_cpu_side)
     // L1 doesn't have a more up-to-date modified copy that still
     // needs to be found.  As a result we always update the request if
     // we have it, but only declare it satisfied if we are the owner.
+
+    // Once an ideal L1D has tracked a line, canonical data is newer than
+    // any lazy resident replica. Functional reads must consult it first.
+    if (ideal_dcache_owned && pkt->isRead() && !pkt->isPrint()) {
+        const Addr last_addr = pkt->getAddr() + pkt->getSize() - 1;
+        for (Addr line_addr = blk_addr;
+             line_addr <= last_addr; line_addr += blkSize) {
+            std::vector<uint8_t> line_data(blkSize);
+            if (system->rebaseIdealDCacheLine(
+                    line_addr, is_secure, line_data.data()) &&
+                pkt->trySatisfyFunctional(
+                    nullptr, line_addr, is_secure, blkSize,
+                    line_data.data())) {
+                pkt->popLabel();
+                pkt->makeResponse();
+                return;
+            }
+            if (line_addr > MaxAddr - blkSize) {
+                break;
+            }
+        }
+    }
+
+    if (ideal_dcache_owned) {
+        rebaseIdealDCacheBlock(blk, pkt);
+    }
 
     // see if we have data at all (owned or otherwise)
     bool have_data = blk && blk->isValid()
@@ -1396,7 +1520,7 @@ BaseCache::updateBlockData(CacheBlk *blk, const PacketPtr cpkt,
     }
 }
 
-void
+bool
 BaseCache::cmpAndSwap(CacheBlk *blk, PacketPtr pkt)
 {
     assert(pkt->isRequest());
@@ -1453,6 +1577,7 @@ BaseCache::cmpAndSwap(CacheBlk *blk, PacketPtr pkt)
             ppDataUpdate->notify(data_update);
         }
     }
+    return overwrite_mem;
 }
 
 bool
@@ -1652,6 +1777,10 @@ BaseCache::updateCompressionData(CacheBlk *&blk, const uint64_t* data,
         return true;
     }
 
+    // Recompressing a stale tracked replica could make placement decisions
+    // from obsolete bytes. Compressed canonical replicas are unsupported.
+    rebaseIdealDCacheBlock(blk);
+
     // The compressor is called to compress the updated data, so that its
     // metadata can be updated.
     Cycles compression_lat = Cycles(0);
@@ -1769,7 +1898,25 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
     // assert(!pkt->needsWritable() || blk->isSet(CacheBlk::WritableBit));
     assert(pkt->getOffset(blkSize) + pkt->getSize() <= blkSize);
 
+    const bool from_ideal = blk == idealDCacheScratchBlock;
+    const bool ideal_dcache_owned = system->idealDCacheOracleOwns(pkt);
+    if (ideal_dcache_owned) {
+        rebaseIdealDCacheBlock(blk, pkt);
+    }
+
     DPRINTF(Cache, "satisfyRequest for %s\n", pkt->print());
+    bool committed_write = false;
+    bool central_sc_success = true;
+    if (pkt->isLLSC() && pkt->isWrite() && ideal_dcache_owned) {
+        central_sc_success =
+            system->checkIdealDCacheStoreConditional(pkt);
+        if (from_ideal) {
+            stats.idealDCacheReservationChecks++;
+            if (!central_sc_success) {
+                stats.idealDCacheReservationFailures++;
+            }
+        }
+    }
 
     // Check RMW operations first since both isRead() and
     // isWrite() will be true for them
@@ -1790,7 +1937,16 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
             pkt->setData(blk_data);
 
             // execute AMO operation
-            (*(pkt->getAtomicOp()))(blk_data);
+            if (ideal_dcache_owned) {
+                std::vector<uint8_t> old_data(
+                    blk_data, blk_data + pkt->getSize());
+                (*(pkt->getAtomicOp()))(blk_data);
+                committed_write =
+                    std::memcmp(old_data.data(), blk_data,
+                                pkt->getSize()) != 0;
+            } else {
+                (*(pkt->getAtomicOp()))(blk_data);
+            }
 
             DPRINTF(CacheVerbose, "Atomic instruction Write to addr %#x size %lu\n", pkt->getAddr(), pkt->getSize());
             for (int i = 0; i < pkt->getSize(); i++) {
@@ -1808,7 +1964,7 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
             // set block status to dirty
             blk->setCoherenceBits(CacheBlk::DirtyBit);
         } else {
-            cmpAndSwap(blk, pkt);
+            committed_write = cmpAndSwap(blk, pkt);
         }
     } else if (pkt->isWrite()) {
         // we have the block in a writable state and can go ahead,
@@ -1817,8 +1973,15 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
         // Exclusive, and never Modified
         assert(blk->isSet(CacheBlk::WritableBit));
         // Write or WriteLine at the first cache with block in writable state
-        if (blk->checkWrite(pkt)) {
+        const bool native_write = blk->checkWrite(pkt);
+        const bool do_write = native_write && central_sc_success &&
+            pkt->cmd != MemCmd::StoreCondFailReq;
+        if (pkt->isLLSC()) {
+            pkt->req->setExtraData(do_write ? 1 : 0);
+        }
+        if (do_write) {
             updateBlockData(blk, pkt, true);
+            committed_write = true;
         }
         // Always mark the line as dirty (and thus transition to the
         // Modified state) even if we are a failed StoreCond so we
@@ -1834,6 +1997,13 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
         // all read responses have a data payload
         assert(pkt->hasRespData());
         pkt->setDataFromBlock(blk->data, blkSize);
+        if (pkt->cmd == MemCmd::LoadLockedReq &&
+            ideal_dcache_owned) {
+            system->trackIdealDCacheLoadLocked(pkt, blk->data);
+            if (from_ideal) {
+                stats.idealDCacheReservationSets++;
+            }
+        }
     } else if (pkt->isUpgrade()) {
         // sanity check
         assert(!pkt->hasSharers());
@@ -1855,6 +2025,18 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
         invalidateBlock(blk);
         DPRINTF(CacheVerbose, "%s for %s (invalidation)\n", __func__,
                 pkt->print());
+    }
+
+    if (committed_write && ideal_dcache_owned) {
+        commitIdealDCacheLine(blk, from_ideal);
+        if (from_ideal) {
+            stats.idealDCacheOracleWrites++;
+            stats.idealDCachePostOperationCommitWrites++;
+        }
+    }
+    if (from_ideal && pkt->isLLSC() && pkt->isWrite() &&
+        !committed_write) {
+        stats.idealDCacheFailedSCs++;
     }
 }
 
@@ -1906,23 +2088,139 @@ BaseCache::calculateAccessLatency(const CacheBlk* blk, const uint32_t delay,
     return lat;
 }
 
-Cycles
-BaseCache::calculateIdealDCacheHitLatency(PacketPtr pkt,
-                                          Cycles tag_latency) const
+bool
+BaseCache::rejectIdealDCacheTimingRequest(PacketPtr pkt, const char *reason)
 {
-    if (pkt->isRead() || pkt->isWrite()) {
-        if (sequentialAccess) {
-            return ticksToCycles(pkt->headerDelay) + tag_latency + dataLatency;
-        }
-        return ticksToCycles(pkt->headerDelay) +
-            std::max(tag_latency, dataLatency);
-    }
-
-    return calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
+    stats.idealDCacheUnsupportedFatals++;
+    DPRINTF(IdealDCache,
+            "unsupported timing request: id=%llu cmd=%s reason=%s\n",
+            static_cast<unsigned long long>(pkt->id), pkt->cmdString(),
+            reason);
+    fatal_if(true, "%s: ideal DCache unsupported timing request: "
+             "packet_id=%llu cmd=%s reason=%s", name(),
+             static_cast<unsigned long long>(pkt->id), pkt->cmdString(),
+             reason);
+    return false;
 }
 
 bool
-BaseCache::isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const
+BaseCache::accountIdealDCacheTimingAttempt(PacketPtr pkt)
+{
+    if (!idealDCache || cacheLevel != 1 || isReadOnly) {
+        return false;
+    }
+
+    stats.idealDCacheTimingAttempts++;
+
+    auto bypass = [this, pkt](statistics::Scalar &counter,
+                              const char *classification) {
+        counter++;
+        DPRINTF(IdealDCache,
+                "timing attempt bypass: id=%llu cmd=%s class=%s\n",
+                static_cast<unsigned long long>(pkt->id), pkt->cmdString(),
+                classification);
+        return false;
+    };
+
+    if (pkt->req->isUncacheable()) {
+        return bypass(stats.idealDCacheBypassUncacheable, "uncacheable");
+    }
+
+    if (!system->idealDCacheOracleOwns(pkt)) {
+        return bypass(stats.idealDCacheBypassUncacheable,
+                      "non-physical-memory-or-device");
+    }
+
+    if (pkt->isStorePFTrain() || pkt->cmd.isPrefetch() ||
+        pkt->req->isPrefetch()) {
+        return bypass(stats.idealDCacheBypassPrefetchTrain,
+                      "prefetch-or-train");
+    }
+
+    if (pkt->req->isCacheMaintenance() || pkt->isClean() ||
+        pkt->isFlush()) {
+        return bypass(stats.idealDCacheBypassMaintenance, "maintenance");
+    }
+
+    // Protocol traffic is owned by the normal coherence path, even if it
+    // carries data or happens to carry HTM metadata.
+    if (pkt->fromCache()) {
+        return bypass(stats.idealDCacheBypassCacheOriginProtocol,
+                      "cache-origin-or-protocol");
+    }
+
+    if (pkt->req->isInstFetch()) {
+        return bypass(stats.idealDCacheBypassNonDataControl,
+                      "instruction-or-control");
+    }
+
+    if (pkt->req->isMemMgmt() || pkt->req->isPTWalk()) {
+        return bypass(stats.idealDCacheBypassMemMgmtPTW,
+                      "memory-management-or-PTW");
+    }
+
+    const bool data_like = pkt->isRead() || pkt->isWrite();
+    if (!data_like) {
+        return bypass(stats.idealDCacheBypassNonDataControl,
+                      "non-data-or-control");
+    }
+
+    // HTM commands are memory-management traffic even when the packet also
+    // carries transactional metadata. Only transactional data is outside the
+    // ideal DCache contract.
+    if (pkt->isHtmTransactional()) {
+        return rejectIdealDCacheTimingRequest(pkt, "transactional HTM data");
+    }
+
+    if (pkt->req->isStrictlyOrdered()) {
+        return rejectIdealDCacheTimingRequest(
+            pkt, "strictly ordered cacheable CPU data request");
+    }
+
+    if (!pkt->needsResponse()) {
+        return rejectIdealDCacheTimingRequest(
+            pkt, "CPU data request does not need a response");
+    }
+
+    if (pkt->isLockedRMW() || pkt->req->isLockedRMW()) {
+        return rejectIdealDCacheTimingRequest(pkt, "locked RMW");
+    }
+
+    if (pkt->req->isReadModifyWrite() && !pkt->isLLSC() &&
+        pkt->cmd != MemCmd::SwapReq) {
+        return rejectIdealDCacheTimingRequest(pkt, "generic RMW");
+    }
+
+    const bool supported_cmd =
+        pkt->cmd == MemCmd::ReadReq ||
+        pkt->cmd == MemCmd::WriteReq ||
+        pkt->cmd == MemCmd::WriteLineReq ||
+        pkt->cmd == MemCmd::LoadLockedReq ||
+        pkt->cmd == MemCmd::StoreCondReq ||
+        pkt->cmd == MemCmd::SwapReq;
+    if (!supported_cmd) {
+        return rejectIdealDCacheTimingRequest(pkt,
+                                              "unsupported data command");
+    }
+
+    if (pkt->getOffset(blkSize) + pkt->getSize() > blkSize) {
+        return rejectIdealDCacheTimingRequest(pkt,
+                                              "request crosses a cache line");
+    }
+
+    fatal_if(!isIdealDCacheCandidate(pkt),
+             "%s: ideal DCache timing classifier disagrees for cmd=%s",
+             name(), pkt->cmdString());
+    stats.idealDCacheCandidateAttempts++;
+    DPRINTF(IdealDCache,
+            "timing candidate attempt: id=%llu cmd=%s addr=%#x size=%u\n",
+            static_cast<unsigned long long>(pkt->id), pkt->cmdString(),
+            pkt->getAddr(), pkt->getSize());
+    return true;
+}
+
+bool
+BaseCache::isIdealDCacheCandidate(PacketPtr pkt) const
 {
     if (!idealDCache || cacheLevel != 1 || isReadOnly) {
         return false;
@@ -1932,84 +2230,147 @@ BaseCache::isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const
         return false;
     }
 
+    if (!system->idealDCacheOracleOwns(pkt)) {
+        return false;
+    }
+
     if (pkt->req->isInstFetch() || pkt->req->isUncacheable() ||
         pkt->req->isCacheMaintenance() || pkt->req->isPrefetch() ||
-        pkt->req->isStrictlyOrdered() || pkt->req->isMemMgmt()) {
+        pkt->req->isStrictlyOrdered() || pkt->req->isMemMgmt() ||
+        pkt->req->isPTWalk() || pkt->req->isLockedRMW() ||
+        pkt->isHtmTransactional()) {
         return false;
     }
 
-    if (pkt->isEviction() || pkt->isLLSC() || pkt->isLockedRMW() ||
-        pkt->req->isReadModifyWrite() || pkt->cmd == MemCmd::SwapReq ||
-        pkt->isAtomicOp()) {
+    if (pkt->isEviction() || pkt->isLockedRMW() ||
+        (pkt->req->isReadModifyWrite() && !pkt->isLLSC() &&
+         pkt->cmd != MemCmd::SwapReq)) {
         return false;
     }
 
-    const bool ordinary_read = pkt->cmd == MemCmd::ReadReq;
-    const bool ordinary_write = pkt->cmd == MemCmd::WriteReq ||
-        pkt->cmd == MemCmd::WriteLineReq;
+    const bool supported_cmd =
+        pkt->cmd == MemCmd::ReadReq ||
+        pkt->cmd == MemCmd::WriteReq ||
+        pkt->cmd == MemCmd::WriteLineReq ||
+        pkt->cmd == MemCmd::LoadLockedReq ||
+        pkt->cmd == MemCmd::StoreCondReq ||
+        pkt->cmd == MemCmd::SwapReq;
     const bool in_single_block =
         pkt->getOffset(blkSize) + pkt->getSize() <= blkSize;
 
-    // If a block exists but cannot satisfy the request, preserve the normal
-    // coherence/upgrade path instead of silently bypassing stale local state.
-    return (ordinary_read || ordinary_write) && in_single_block && blk == nullptr;
+    return supported_cmd && in_single_block;
 }
 
 bool
-BaseCache::trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
-                                 Cycles tag_latency, Cycles &lat,
-                                 PacketList &writebacks)
+BaseCache::isIdealDCacheOwnedBlock(CacheBlk *blk)
 {
-    if (!isIdealDCacheCandidate(pkt, blk)) {
+    if (!system->idealDCacheOracleEnabled() || !blk || !blk->isValid()) {
         return false;
     }
 
-    const Addr blk_addr = pkt->getBlockAddr(blkSize);
-    const bool mshr_hit =
-        mshrQueue.findMatch(blk_addr, pkt->isSecure()) != nullptr;
-    const bool wb_hit =
-        writeBuffer.findMatch(blk_addr, pkt->isSecure()) != nullptr;
+    return system->idealDCacheOracleOwns(
+        regenerateBlkAddr(blk), blkSize,
+        static_cast<RequestorID>(blk->getSrcRequestorId()));
+}
 
-    if (mshr_hit || wb_hit) {
-        DPRINTF(Cache,
-                "%s: ideal DCache backs off for %s, mshr_hit: %d, wb_hit: %d\n",
-                __func__, pkt->print(), mshr_hit, wb_hit);
+bool
+BaseCache::rebaseIdealDCacheBlock(CacheBlk *blk, PacketPtr provenance)
+{
+    if (!system->idealDCacheOracleEnabled() || !blk || !blk->isValid()) {
         return false;
     }
 
-    Packet functional_pkt(pkt, false, pkt->isRead());
-    functional_pkt.senderState = nullptr;
-    functional_pkt.headerDelay = 0;
-    functional_pkt.payloadDelay = 0;
-
-    if (pkt->isWrite()) {
-        functional_pkt.setPtr(pkt->getConstPtr<uint8_t>(), pkt->getSize());
-    }
-
-    DPRINTF(Cache, "%s: ideal DCache functional access for %s\n",
-            __func__, pkt->print());
-    memSidePort.sendFunctional(&functional_pkt);
-
-    if (!functional_pkt.isResponse() || functional_pkt.isError()) {
-        DPRINTF(Cache,
-                "%s: ideal DCache functional access failed for %s\n",
-                __func__, pkt->print());
+    const bool oracle_owned = provenance ?
+        system->idealDCacheOracleOwns(provenance) :
+        isIdealDCacheOwnedBlock(blk);
+    if (!oracle_owned) {
         return false;
     }
 
-    if (pkt->isRead()) {
-        if (!functional_pkt.hasData()) {
-            DPRINTF(Cache,
-                    "%s: ideal DCache read returned no data for %s\n",
-                    __func__, pkt->print());
-            return false;
-        }
-        pkt->setData(functional_pkt.getConstPtr<uint8_t>());
+    const Addr line_addr = regenerateBlkAddr(blk);
+    if (compressor) {
+        std::vector<uint8_t> line_data(blkSize);
+        const bool tracked = system->rebaseIdealDCacheLine(
+            line_addr, blk->isSecure(), line_data.data());
+        fatal_if(tracked,
+                 "%s: tracked ideal-DCache line %#x reached a compressed "
+                 "cache replica", name(), line_addr);
+        return false;
     }
 
-    lat = calculateIdealDCacheHitLatency(pkt, tag_latency);
+    return system->rebaseIdealDCacheLine(
+        line_addr, blk->isSecure(), blk->data);
+}
+
+void
+BaseCache::commitIdealDCacheLine(CacheBlk *blk, bool from_ideal)
+{
+    assert(blk && blk->isValid());
+    system->commitIdealDCacheCacheLine(
+        regenerateBlkAddr(blk), blk->isSecure(), blk->data, from_ideal);
+}
+
+bool
+BaseCache::accessIdealDCache(PacketPtr pkt, CacheBlk *&blk, Cycles &lat)
+{
+    assert(isIdealDCacheCandidate(pkt));
+    assert(idealDCacheScratchBlock);
+    assert(!idealDCacheScratchBlock->isValid());
+
+    idealDCacheScratchBlock->insert(
+        pkt->getBlockAddr(blkSize), pkt->isSecure());
+    blk = idealDCacheScratchBlock;
+    if (!system->readIdealDCacheLine(
+            pkt->getBlockAddr(blkSize), pkt->isSecure(), blk->data)) {
+        stats.idealDCacheOracleFailures++;
+        fatal("%s: ideal DCache line oracle read failed for %#x",
+              name(), pkt->getBlockAddr(blkSize));
+    }
+    stats.idealDCacheOracleReads++;
+
+    blk->setCoherenceBits(CacheBlk::ReadableBit |
+                          CacheBlk::WritableBit);
+    blk->setWhenReady(curTick());
+
+    if (pkt->isLLSC()) {
+        fatal_if(!pkt->req->hasContextId(),
+                 "%s: ideal DCache LL/SC request has no context id: %s",
+                 name(), pkt->print());
+    }
+
+    if (pkt->cmd == MemCmd::StoreCondReq) {
+        // The scratch block cannot retain a native lock between requests.
+        // Recreate its native half; the persistent System reservation still
+        // independently vetoes the store in satisfyRequest().
+        blk->trackLoadLocked(pkt);
+    }
+
+    if (pkt->cmd == MemCmd::SwapReq) {
+        // A failed or same-value ideal CAS/AMO may conservatively cause a
+        // legal spurious SC failure. Invalidate before the scratch operation
+        // so a peer SC cannot incorrectly succeed when no version changes.
+        system->invalidateIdealDCacheReservations(pkt);
+    }
+
     incHitCount(pkt);
+    incSquashedDemandHitCount(pkt, blk);
+    satisfyRequest(pkt, blk);
 
+    stats.idealDCacheEligibleAccesses++;
+    stats.idealDCacheScratchHits++;
+    if (pkt->cmd == MemCmd::SwapReq) {
+        stats.idealDCacheEligibleAtomics++;
+    } else if (pkt->isRead()) {
+        stats.idealDCacheEligibleReads++;
+    } else {
+        stats.idealDCacheEligibleWrites++;
+    }
+
+    lat = ticksToCycles(pkt->headerDelay) + idealDCacheHitLatency;
+    DPRINTF(IdealDCache,
+            "scratch hit prepared: id=%llu cmd=%s addr=%#x latency=%lu\n",
+            static_cast<unsigned long long>(pkt->id), pkt->cmdString(),
+            pkt->getAddr(), lat);
     return true;
 }
 
@@ -2049,6 +2410,13 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
     gem5_assert(!(isReadOnly && pkt->isWrite()),
                 "Should never see a write in a read-only cache %s\n",
                 name());
+    fatal_if(isIdealDCacheCandidate(pkt),
+             "%s: ideal DCache candidate entered normal tag access", name());
+
+    if (system->idealDCacheOracleEnabled() &&
+        (pkt->isWriteback() || pkt->cmd == MemCmd::WriteClean)) {
+        system->normalizeIdealDCachePacket(pkt);
+    }
 
     // Access block in the tags
     Cycles tag_latency(0);
@@ -2280,7 +2648,6 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         // OK to satisfy access
         incHitCount(pkt);
         incSquashedDemandHitCount(pkt, blk);
-
         // Calculate access latency based on the need to access the data array
         if (pkt->isRead() || pkt->isWrite()) {
             // Read and Write can succeed after the data block is ready if Cache Hit
@@ -2314,9 +2681,6 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         } else {
             DPRINTF(Cache, "%s: mshr hit for force hit PC %#lx, forced to miss\n", __func__, pkt->req->getPC());
         }
-    } else if (trySatisfyIdealDCache(pkt, blk, tag_latency, lat,
-                                      writebacks)) {
-        return true;
     }
 
     if (blk && (pkt->needsWritable() && !blk->isSet(CacheBlk::WritableBit))) {
@@ -2329,11 +2693,13 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
     // or have block but need writable
 
     incMissCount(pkt);
-
     lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
 
     if (!blk && pkt->isLLSC() && pkt->isWrite()) {
         // complete miss on store conditional... just give up now
+        if (system->idealDCacheOracleOwns(pkt)) {
+            system->checkIdealDCacheStoreConditional(pkt);
+        }
         pkt->req->setExtraData(0);
         return true;
     }
@@ -2394,7 +2760,12 @@ BaseCache::handleFill(
             // cache... just use temporary storage to complete the
             // current request and then get rid of it
             blk = tempBlock;
-            tempBlock->insert(addr, is_secure);
+            if (system->idealDCacheOracleEnabled()) {
+                tempBlock->insert(addr, is_secure, pkt->requestorId(),
+                                  pkt->req->taskId());
+            } else {
+                tempBlock->insert(addr, is_secure);
+            }
             DPRINTF(Cache, "using temp block for %#llx (%s)\n", addr,
                     is_secure ? "s" : "ns");
         } else if (wpu) {
@@ -2459,6 +2830,7 @@ BaseCache::handleFill(
 
         updateBlockData(blk, pkt, has_old_data);
     }
+    rebaseIdealDCacheBlock(blk, pkt);
     // The block will be ready when the payload arrives and the fill is done
     blk->setWhenReady(clockEdge(dataLatency + pipeLatency) + pkt->headerDelay +
                       pkt->payloadDelay);
@@ -2594,10 +2966,10 @@ BaseCache::invalidateBlock(CacheBlk *blk)
 
     // If handling a block present in the Tags, let it do its invalidation
     // process, which will update stats and invalidate the block itself
-    if (blk != tempBlock) {
+    if (blk != tempBlock && blk != idealDCacheScratchBlock) {
         tags->invalidate(blk);
     } else {
-        tempBlock->invalidate();
+        blk->invalidate();
     }
 }
 
@@ -2631,11 +3003,16 @@ BaseCache::writebackBlk(CacheBlk *blk)
                 "Writeback from read-only cache");
     assert(blk && blk->isValid() &&
         (blk->isSet(CacheBlk::DirtyBit) || writebackClean));
+    rebaseIdealDCacheBlock(blk);
 
     stats.writebacks[Request::wbRequestorId]++;
 
+    const RequestorID carrier_requestor_id =
+        system->idealDCacheOracleEnabled() ?
+        static_cast<RequestorID>(blk->getSrcRequestorId()) :
+        static_cast<RequestorID>(Request::wbRequestorId);
     RequestPtr req = std::make_shared<Request>(
-        regenerateBlkAddr(blk), blkSize, 0, Request::wbRequestorId);
+        regenerateBlkAddr(blk), blkSize, 0, carrier_requestor_id);
 
     if (blk->isSecure())
         req->setFlags(Request::SECURE);
@@ -2678,8 +3055,15 @@ BaseCache::writebackBlk(CacheBlk *blk)
 PacketPtr
 BaseCache::writecleanBlk(CacheBlk *blk, Request::Flags dest, PacketId id)
 {
+    assert(blk && blk->isValid());
+    rebaseIdealDCacheBlock(blk);
+
+    const RequestorID carrier_requestor_id =
+        system->idealDCacheOracleEnabled() ?
+        static_cast<RequestorID>(blk->getSrcRequestorId()) :
+        static_cast<RequestorID>(Request::wbRequestorId);
     RequestPtr req = std::make_shared<Request>(
-        regenerateBlkAddr(blk), blkSize, 0, Request::wbRequestorId);
+        regenerateBlkAddr(blk), blkSize, 0, carrier_requestor_id);
 
     if (blk->isSecure()) {
         req->setFlags(Request::SECURE);
@@ -2753,8 +3137,23 @@ BaseCache::writebackVisitor(CacheBlk &blk)
     if (blk.isSet(CacheBlk::DirtyBit)) {
         assert(blk.isValid());
 
+        const bool ideal_dcache_owned = isIdealDCacheOwnedBlock(&blk);
+        if (ideal_dcache_owned) {
+            rebaseIdealDCacheBlock(&blk);
+        }
+
+        const RequestorID carrier_requestor_id =
+            system->idealDCacheOracleEnabled() ?
+            static_cast<RequestorID>(blk.getSrcRequestorId()) :
+            static_cast<RequestorID>(Request::funcRequestorId);
         RequestPtr request = std::make_shared<Request>(
-            regenerateBlkAddr(&blk), blkSize, 0, Request::funcRequestorId);
+            regenerateBlkAddr(&blk), blkSize, 0, carrier_requestor_id);
+
+        // memWriteback() mirrors dirty state to backing storage; the
+        // architectural write was already committed when the block changed.
+        if (ideal_dcache_owned) {
+            request->setFlags(Request::IDEAL_DCACHE_INTERNAL);
+        }
 
         request->taskId(blk.getTaskId());
         request->setXsMetadata(blk.getXsMetadata());
@@ -2910,6 +3309,8 @@ BaseCache::sendWriteQueuePacket(WriteQueueEntry* wq_entry)
 
     // always a single target for write queue entries
     PacketPtr tgt_pkt = wq_entry->getTarget()->pkt;
+
+    system->normalizeIdealDCachePacket(tgt_pkt);
 
     DPRINTF(Cache, "%s: write %s\n", __func__, tgt_pkt->print());
 
@@ -3267,6 +3668,71 @@ BaseCache::CacheStats::CacheStats(BaseCache &c)
              "number of MSHR completions with only prefetch (no demand merge)"),
     ADD_STAT(demandMergedIntoPfMSHR, statistics::units::Count::get(),
              "number of demand requests that merged into prefetch MSHR"),
+    ADD_STAT(idealDCacheTimingAttempts, statistics::units::Count::get(),
+             "accepted timing attempts classified by the ideal L1D"),
+    ADD_STAT(idealDCacheCandidateAttempts, statistics::units::Count::get(),
+             "timing attempts admitted to the ideal L1D hit contract"),
+    ADD_STAT(idealDCachePortBypassAdmissions,
+             statistics::units::Count::get(),
+             "ideal L1D candidates admitted without cache blocked or tag "
+             "port arbitration"),
+    ADD_STAT(idealDCacheNativeHitHandlerEntries,
+             statistics::units::Count::get(),
+             "ideal L1D candidates entering the native timing hit handler"),
+    ADD_STAT(idealDCacheBypassUncacheable, statistics::units::Count::get(),
+             "uncacheable, MMIO, device, or non-PhysicalMemory timing "
+             "attempts bypassing ideal L1D"),
+    ADD_STAT(idealDCacheBypassPrefetchTrain,
+             statistics::units::Count::get(),
+             "prefetch and prefetch-training timing attempts bypassing ideal "
+             "L1D"),
+    ADD_STAT(idealDCacheBypassMaintenance, statistics::units::Count::get(),
+             "maintenance timing attempts bypassing ideal L1D"),
+    ADD_STAT(idealDCacheBypassMemMgmtPTW, statistics::units::Count::get(),
+             "memory-management and PTW timing attempts bypassing ideal L1D"),
+    ADD_STAT(idealDCacheBypassCacheOriginProtocol,
+             statistics::units::Count::get(),
+             "cache-origin or coherence-protocol timing attempts bypassing "
+             "ideal L1D"),
+    ADD_STAT(idealDCacheBypassNonDataControl,
+             statistics::units::Count::get(),
+             "instruction, non-data, or control timing attempts bypassing "
+             "ideal L1D"),
+    ADD_STAT(idealDCacheUnsupportedFatals, statistics::units::Count::get(),
+             "unsupported ideal L1D timing requests rejected by fatal"),
+    ADD_STAT(idealDCacheUnexpectedEscapes, statistics::units::Count::get(),
+             "ideal L1D candidates rejected after native-hit preparation"),
+    ADD_STAT(idealDCacheEligibleAccesses, statistics::units::Count::get(),
+             "supported requests completed through the ideal L1D hit path"),
+    ADD_STAT(idealDCacheEligibleReads, statistics::units::Count::get(),
+             "read and load-locked commands completed through the ideal L1D "
+             "hit path"),
+    ADD_STAT(idealDCacheEligibleWrites, statistics::units::Count::get(),
+             "write and store-conditional commands completed through the "
+             "ideal L1D hit path"),
+    ADD_STAT(idealDCacheEligibleAtomics, statistics::units::Count::get(),
+             "AMO and swap commands completed through the ideal L1D hit path"),
+    ADD_STAT(idealDCacheScratchHits, statistics::units::Count::get(),
+             "ideal L1D accesses executed in a non-resident scratch block"),
+    ADD_STAT(idealDCacheFailedSCs, statistics::units::Count::get(),
+             "store-condition hits which failed their reservation"),
+    ADD_STAT(idealDCacheReservationSets, statistics::units::Count::get(),
+             "System LL reservations recorded by the ideal L1D"),
+    ADD_STAT(idealDCacheReservationChecks, statistics::units::Count::get(),
+             "System SC reservations checked by the ideal L1D"),
+    ADD_STAT(idealDCacheReservationFailures,
+             statistics::units::Count::get(),
+             "SC reservations rejected by the System canonical version or "
+             "address check"),
+    ADD_STAT(idealDCacheOracleReads, statistics::units::Count::get(),
+             "canonical line reads used by the ideal L1D data oracle"),
+    ADD_STAT(idealDCacheOracleWrites, statistics::units::Count::get(),
+             "canonical stores committed by the ideal L1D data oracle"),
+    ADD_STAT(idealDCacheOracleFailures, statistics::units::Count::get(),
+             "fatal ideal L1D oracle failures"),
+    ADD_STAT(idealDCachePostOperationCommitWrites,
+             statistics::units::Count::get(),
+             "successful oracle writes committing post-operation line state"),
     ADD_STAT(squashedDemandHits, statistics::units::Count::get(),
              "number of squashed inst block demand hits"),
     ADD_STAT(loadTagReadFails, statistics::units::Count::get(),
@@ -3584,7 +4050,14 @@ BaseCache::CpuSidePort::tryTiming(PacketPtr pkt)
         || pkt->isStorePFTrain()) {
         // always let express snoop packets through even if blocked
         return true;
-    } else if (blocked || mustSendRetry) {
+    }
+    if (cache->isIdealDCacheCandidate(pkt)) {
+        // Preserve any retry owed to a different request. The ideal request
+        // itself consumes neither cache blocked state nor a tag-port token.
+        cache->stats.idealDCachePortBypassAdmissions++;
+        return true;
+    }
+    if (blocked || mustSendRetry) {
         // either already committed to send a retry, or blocked
         mustSendRetry = true;
         return false;
@@ -3635,7 +4108,7 @@ BaseCache::CpuSidePort::recvTimingReq(PacketPtr pkt)
             } else {
                 owner.schedule(sendRetryEvent, cache->nextCycle());
             }
-            DPRINTF(Cache, "MSHR arbitration failed for pkt %s, retrying later\n",
+            DPRINTF(Cache, "Cache requested retry for pkt %s\n",
                     pkt->print());
             return false;
         }
@@ -3647,6 +4120,10 @@ BaseCache::CpuSidePort::recvTimingReq(PacketPtr pkt)
 Tick
 BaseCache::CpuSidePort::recvAtomic(PacketPtr pkt)
 {
+    fatal_if(cache->idealDCache,
+        "%s: ideal DCache does not support atomic requests; use timing "
+        "memory mode", cache->name());
+
     if (cache->system->bypassCaches()) {
         // Forward the request if the system is in cache bypass mode.
         return cache->memSidePort.sendAtomic(pkt);

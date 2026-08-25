@@ -1,0 +1,10 @@
+# -*- mode:python -*-
+
+Import('*')
+
+SimObject(
+    'IdealDCacheDirectedTester.py',
+    sim_objects=['IdealDCacheDirectedTester'],
+)
+
+Source('ideal_dcache_directed_tester.cc')

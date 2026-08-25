@@ -1511,6 +1511,15 @@ class Packet : public Printable
     void setRaw(T v);
 
   public:
+    bool
+    isIdealDCacheFunctionalWriteIsolated() const
+    {
+        return isWrite() && req &&
+            (req->isIdealDCacheFunctionalIsolated() ||
+             req->isIdealDCacheFunctionalObserved() ||
+             req->isIdealDCacheInternal());
+    }
+
     /**
      * Check a functional request against a memory value stored in
      * another packet (i.e. an in-transit request or
@@ -1523,6 +1532,10 @@ class Packet : public Printable
     bool
     trySatisfyFunctional(PacketPtr other)
     {
+        if (isIdealDCacheFunctionalWriteIsolated()) {
+            return false;
+        }
+
         if (other->isMaskedWrite()) {
             // Do not forward data if overlapping with a masked write
             if (_isSecure == other->isSecure() &&

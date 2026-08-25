@@ -585,6 +585,7 @@ class TempCacheBlk final : public CacheBlk
     }
     TempCacheBlk(const TempCacheBlk&) = delete;
     using CacheBlk::operator=;
+    using CacheBlk::insert;
     TempCacheBlk& operator=(const TempCacheBlk&) = delete;
     ~TempCacheBlk() { delete [] data; };
 

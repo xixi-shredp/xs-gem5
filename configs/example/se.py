@@ -166,6 +166,7 @@ args = parser.parse_args()
 
 # Set default configurations
 setDefaultArgs(args)
+CacheConfig.validate_ideal_dcache_options(args)
 
 multiprocesses = []
 numThreads = 1

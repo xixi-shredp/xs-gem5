@@ -43,10 +43,35 @@
 import math
 import m5
 from m5.objects import *
+from m5.util import fatal
 from common.Caches import *
 from common.LSQBankConflict import set_lsq_bank_conflict_cache_params
 from common import ObjectList
 from common.PrefetcherConfig import *
+
+def validate_ideal_dcache_options(options, require_caches=True):
+    if not getattr(options, 'ideal_dcache', False):
+        return
+
+    if getattr(options, 'num_cpus', 1) != 1:
+        fatal("--ideal-dcache requires --num-cpus=1")
+    if getattr(options, 'smt', False):
+        fatal("--ideal-dcache does not support SMT")
+    if getattr(options, 'ruby', False):
+        fatal("--ideal-dcache requires the classic cache hierarchy")
+    if getattr(options, 'external_memory_system', None):
+        fatal("--ideal-dcache does not support an external memory system")
+    if require_caches and not getattr(options, 'caches', False):
+        fatal("--ideal-dcache requires classic L1 caches")
+    if getattr(options, 'ideal_cache', False):
+        fatal("--ideal-dcache and --ideal-cache are mutually exclusive")
+    if (getattr(options, 'inf_dcache', False) or
+            getattr(options, 'limit_study_all', False)):
+        fatal("--ideal-dcache cannot be combined with --inf-dcache or "
+              "--limit-study-all")
+    if getattr(options, 'ideal_dcache_hit_latency', 1) < 1:
+        fatal("--ideal-dcache-hit-latency must be at least 1")
+
 
 def _get_hwp(hwp_option):
     if hwp_option == None:
@@ -67,7 +92,11 @@ def _get_cache_opts(cpu, level, options):
         opts['assoc'] = getattr(options, assoc_attr)
 
     prefetcher_attr = '{}_hwp_type'.format(level)
-    if hasattr(options, prefetcher_attr) and (not options.no_pf):
+    l1d_pf_disabled = level == 'l1d' and (
+        getattr(options, 'no_l1d_pf', False) or
+        getattr(options, 'ideal_dcache', False))
+    if hasattr(options, prefetcher_attr) and \
+            not options.no_pf and not l1d_pf_disabled:
         opts['prefetcher'] = create_prefetcher(cpu, level, options)
 
     return opts
@@ -199,6 +228,8 @@ def config_aligned_l2(options, system, l2_cache_class):
         l2_wrapper.cpu_side = system.tol2bus_list[i].mem_side_ports
 
 def config_cache(options, system):
+    validate_ideal_dcache_options(options)
+
     if options.external_memory_system and (options.caches or options.l2cache):
         print("External caches and internal caches are exclusive options.\n")
         sys.exit(1)
@@ -312,13 +343,17 @@ def config_cache(options, system):
 
             if getattr(options, 'ideal_dcache', False):
                 dcache.ideal_dcache = True
+                dcache.ideal_dcache_hit_latency = \
+                    options.ideal_dcache_hit_latency
+                dcache.wpu = NULL
+                dcache.prefetcher = NULL
+                dcache.prefetch_can_offload = False
 
             dcache.do_fast_writeline = not options.kmh_align
             dcache.pipe_latency = 3 if options.kmh_align else 0
             l2_prefetcher = system.l2_caches[i].prefetcher if options.classic_l2 else system.l2_wrappers[i].prefetcher
-            if (not options.no_pf) and options.l1_to_l2_pf_hint:
-                assert dcache.prefetcher != NULL and \
-                    l2_prefetcher != NULL
+            if dcache.prefetcher != NULL and options.l1_to_l2_pf_hint:
+                assert l2_prefetcher != NULL
                 dcache.prefetcher.add_pf_downstream(l2_prefetcher)
 
             if (not options.no_pf) and options.l3cache and options.l2_to_l3_pf_hint:

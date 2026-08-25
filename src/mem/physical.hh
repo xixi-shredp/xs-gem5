@@ -168,6 +168,9 @@ class PhysicalMemory : public Serializable
     // system
     std::vector<BackingStoreEntry> backingStore;
 
+    // The canonical ideal-DCache oracle cannot observe external raw writes.
+    bool writableRawBackingForbidden = false;
+
     // Prevent copying
     PhysicalMemory(const PhysicalMemory&);
 
@@ -249,6 +252,19 @@ class PhysicalMemory : public Serializable
      */
     bool isMemAddr(Addr addr) const;
 
+    /**
+     * Check if an entire range belongs to one memory in the global address
+     * map.
+     */
+    bool isMemRange(const AddrRange &range) const;
+
+    /**
+     * Check if an entire range belongs to a specific memory in the global
+     * address map.
+     */
+    bool isMemRange(const AddrRange &range,
+                    const AbstractMemory *owner) const;
+
     Addr getStartaddr() const;
 
     /**
@@ -280,8 +296,12 @@ class PhysicalMemory : public Serializable
      *
      * @return Pointers to the memory backing store
      */
-    std::vector<BackingStoreEntry> getBackingStore() const
-    { return backingStore; }
+    std::vector<BackingStoreEntry> getBackingStore() const;
+
+    /**
+     * Reject shared or subsequently requested writable raw backing access.
+     */
+    void forbidWritableRawBacking();
 
     /**
      * Perform an untimed memory access and update all the state

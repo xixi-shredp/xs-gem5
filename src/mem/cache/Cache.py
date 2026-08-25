@@ -168,7 +168,9 @@ class BaseCache(ClockedObject):
     force_hit = Param.Bool(False, "Force some PC to hit in L1")
     ideal_dcache = Param.Bool(
         False,
-        "Satisfy ordinary L1 DCache misses with functional memory at hit latency")
+        "Complete supported L1D data operations as non-resident oracle hits")
+    ideal_dcache_hit_latency = Param.Cycles(
+        1, "Response latency for a non-resident ideal L1D hit")
     way_entries = Param.MemorySize(
         "64",
         "num of active generation table entries"

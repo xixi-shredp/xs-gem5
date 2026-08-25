@@ -250,6 +250,10 @@ bool
 Packet::trySatisfyFunctional(Printable *obj, Addr addr, bool is_secure, int size,
                         uint8_t *_data)
 {
+    if (isIdealDCacheFunctionalWriteIsolated()) {
+        return false;
+    }
+
     const Addr func_start = getAddr();
     const Addr func_end   = getAddr() + getSize() - 1;
     const Addr val_start  = addr;

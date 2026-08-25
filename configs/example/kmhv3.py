@@ -72,8 +72,10 @@ def setInfBTBParams(branch_pred):
     branch_pred.ras.numEntries = 4096
 
 
-def setIdealDCacheParams(dcache):
+def setIdealDCacheParams(dcache, hit_latency):
     dcache.ideal_dcache = True
+    dcache.ideal_dcache_hit_latency = hit_latency
+    dcache.wpu = NULL
     dcache.prefetcher = NULL
     dcache.prefetch_can_offload = False
 
@@ -238,7 +240,8 @@ def setKmhV3Params(args, system):
             if limitStudyEnabled(args, 'inf_dcache'):
                 setInfDCacheParams(cpu.dcache, args.cacheline_size)
             if getattr(args, 'ideal_dcache', False):
-                setIdealDCacheParams(cpu.dcache)
+                setIdealDCacheParams(
+                    cpu.dcache, args.ideal_dcache_hit_latency)
             set_lsq_bank_conflict_cache_params(cpu, system)
 
     # l2 caches

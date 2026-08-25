@@ -837,6 +837,11 @@ CREATE TABLE LoadLifeTimeCommitTrace(
 
 
 def build_xiangshan_system(args):
+    # The classic XiangShan path enables its required caches later in
+    # _finish_xiangshan_system(); validate all other constraints now so Ruby
+    # cannot silently ignore the option.
+    CacheConfig.validate_ideal_dcache_options(args, require_caches=False)
+
     np = args.num_cpus
     assert buildEnv['TARGET_ISA'] == "riscv"
 

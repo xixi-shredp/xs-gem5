@@ -48,6 +48,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler.hh"
 #include "base/loader/memory_image.hh"
 #include "base/loader/symtab.hh"
 #include "base/statistics.hh"
@@ -314,6 +315,55 @@ class System : public SimObject, public PCEventScope
      */
     unsigned int cacheLineSize() const { return _cacheLineSize; }
 
+    /** Enable the system-owned canonical data oracle for an ideal L1D. */
+    void registerIdealDCache();
+
+    /** Register a cache that uses compressed tag/data metadata. */
+    void registerCompressedCache();
+
+    bool
+    idealDCacheOracleEnabled() const
+    {
+        return GEM5_UNLIKELY(idealDCacheEnabled);
+    }
+
+    /** Whether a packet's complete range belongs to the ideal-DCache oracle. */
+    bool idealDCacheOracleOwns(PacketPtr pkt) const;
+
+    /** Whether an address range belongs to the oracle for a requestor. */
+    bool idealDCacheOracleOwns(
+        Addr addr, Addr size, RequestorID requestor_id) const;
+
+    /** Whether a packet's complete range belongs to a specific RAM backend. */
+    bool idealDCacheOracleOwns(
+        PacketPtr pkt, const memory::AbstractMemory *owner) const;
+
+    /** Read a canonical line, initializing it from physical backing. */
+    bool readIdealDCacheLine(Addr addr, bool secure, uint8_t *data);
+
+    /**
+     * Copy an already tracked canonical line into an external state carrier.
+     * Returns false without initializing the line when it is not tracked.
+     */
+    bool rebaseIdealDCacheLine(Addr addr, bool secure, uint8_t *data);
+
+    /** Commit a full post-operation line produced by a cache. */
+    void commitIdealDCacheCacheLine(Addr addr, bool secure,
+                                    const uint8_t *data, bool from_ideal);
+
+    /** Commit an external functional write exactly once. */
+    void commitIdealDCacheFunctionalWrite(PacketPtr pkt);
+
+    /** Rebase an explicit cache writeback carrier onto canonical data. */
+    void normalizeIdealDCachePacket(PacketPtr pkt);
+
+    /** Track and check ideal-DCache LL/SC reservations by line version. */
+    void trackIdealDCacheLoadLocked(PacketPtr pkt, const uint8_t *line_data);
+    bool checkIdealDCacheStoreConditional(PacketPtr pkt);
+
+    /** Mark reservations broken by an external coherence acquisition. */
+    void invalidateIdealDCacheReservations(PacketPtr pkt);
+
     Threads threads;
 
     const bool multiThread;
@@ -440,6 +490,84 @@ class System : public SimObject, public PCEventScope
     enums::MemoryMode memoryMode;
 
     const unsigned int _cacheLineSize;
+
+    struct IdealDCacheLineKey
+    {
+        Addr addr;
+        bool secure;
+
+        bool
+        operator==(const IdealDCacheLineKey &other) const
+        {
+            return addr == other.addr && secure == other.secure;
+        }
+    };
+
+    struct IdealDCacheLineKeyHash
+    {
+        size_t operator()(const IdealDCacheLineKey &key) const;
+    };
+
+    struct IdealDCacheLine
+    {
+        std::vector<uint8_t> data;
+        uint64_t version = 0;
+    };
+
+    struct IdealDCacheReservation
+    {
+        IdealDCacheLineKey key;
+        Addr lowAddr;
+        Addr highAddr;
+        uint64_t version;
+        bool invalidated = false;
+    };
+
+    enum class IdealDCacheCommitSource
+    {
+        Cache,
+        Ideal,
+        Memory,
+        Functional
+    };
+
+    struct IdealDCacheOracleStats : public statistics::Group
+    {
+        IdealDCacheOracleStats(System *system);
+
+        statistics::Scalar linesInitialized;
+        statistics::Scalar logicalCommits;
+        statistics::Scalar backingSyncs;
+        statistics::Scalar cacheCommits;
+        statistics::Scalar idealCommits;
+        statistics::Scalar memoryCommits;
+        statistics::Scalar functionalCommits;
+        statistics::Scalar rebases;
+        statistics::Scalar stateCarrierRebases;
+        statistics::Scalar reservationSets;
+        statistics::Scalar reservationChecks;
+        statistics::Scalar reservationVersionFailures;
+        statistics::Scalar reservationInvalidations;
+        statistics::Scalar reservationInvalidationFailures;
+    } idealDCacheOracleStats;
+
+    bool idealDCacheEnabled = false;
+    bool compressedCacheRegistered = false;
+    std::unordered_map<IdealDCacheLineKey, IdealDCacheLine,
+                       IdealDCacheLineKeyHash> idealDCacheLines;
+    std::unordered_map<ContextID, IdealDCacheReservation>
+        idealDCacheReservations;
+
+    Addr idealDCacheLineAddr(Addr addr) const;
+    bool readIdealDCacheBackingLine(Addr addr, bool secure, uint8_t *data);
+    bool syncIdealDCacheBackingLine(Addr addr, bool secure,
+                                    const uint8_t *data);
+    void commitIdealDCacheLine(Addr addr, bool secure, const uint8_t *data,
+                               IdealDCacheCommitSource source,
+                               bool sync_backing);
+    void observeIdealDCacheMemoryWrite(PacketPtr pkt);
+
+    friend class memory::AbstractMemory;
 
     uint64_t workItemsBegin = 0;
     uint64_t workItemsEnd = 0;

@@ -47,6 +47,7 @@
 #include "base/trace.hh"
 #include "debug/CFI.hh"
 #include "debug/Drain.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
@@ -131,6 +132,10 @@ CfiMemory::ProgramBuffer::writeback()
     if (parent.blocks.isLocked(blockPointer)) {
         return false;
     } else {
+        fatal_if(parent.system() && parent.system()->idealDCacheOracleEnabled() &&
+                 parent.isInAddrMap(),
+                 "%s: direct CFI backing writes are unsupported while the "
+                 "ideal-DCache oracle is enabled", parent.name());
         std::memcpy(parent.toHostAddr(parent.start() + blockPointer),
             buffer.data(), bytesWritten);
         return true;
@@ -251,9 +256,7 @@ Tick
 CfiMemory::recvAtomicBackdoor(PacketPtr pkt, MemBackdoorPtr &_backdoor)
 {
     Tick latency = recvAtomic(pkt);
-
-    if (backdoor.ptr())
-        _backdoor = &backdoor;
+    getBackdoor(_backdoor);
     return latency;
 }
 
@@ -262,14 +265,19 @@ CfiMemory::recvFunctional(PacketPtr pkt)
 {
     pkt->pushLabel(name());
 
+    const bool isolate_oracle_write =
+        pkt->isWrite() && system() &&
+        system()->idealDCacheOracleOwns(pkt, this);
     functionalAccess(pkt);
 
-    bool done = false;
-    auto p = packetQueue.begin();
-    // potentially update the packets in our packet queue as well
-    while (!done && p != packetQueue.end()) {
-        done = pkt->trySatisfyFunctional(p->pkt);
-        ++p;
+    if (!isolate_oracle_write) {
+        bool done = false;
+        auto p = packetQueue.begin();
+        // potentially update the packets in our packet queue as well
+        while (!done && p != packetQueue.end()) {
+            done = pkt->trySatisfyFunctional(p->pkt);
+            ++p;
+        }
     }
 
     pkt->popLabel();
@@ -739,6 +747,10 @@ CfiMemory::cfiQuery(Addr flash_address)
 void
 CfiMemory::BlockData::erase(PacketPtr pkt)
 {
+    fatal_if(parent.system() && parent.system()->idealDCacheOracleEnabled() &&
+             parent.isInAddrMap(),
+             "%s: direct CFI block erase is unsupported while the "
+             "ideal-DCache oracle is enabled", parent.name());
     auto host_address = parent.toHostAddr(pkt->getAddr());
     std::memset(host_address, 0xff, blockSize);
 }

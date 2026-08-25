@@ -252,6 +252,7 @@ Cache::doWritebacksAtomic(PacketList& writebacks)
                 // below. We can discard CleanEvicts because cached
                 // copies exist above. Atomic mode isCachedAbove
                 // modifies packet to set BLOCK_CACHED flag
+                system->normalizeIdealDCachePacket(wbPkt);
                 memSidePort.sendAtomic(wbPkt);
             }
         } else {
@@ -259,6 +260,7 @@ Cache::doWritebacksAtomic(PacketList& writebacks)
             // CleanEvict and Writeback with BLOCK_CACHED flag cleared will
             // reset the bit corresponding to this address in the snoop filter
             // below.
+            system->normalizeIdealDCachePacket(wbPkt);
             memSidePort.sendAtomic(wbPkt);
         }
         writebacks.pop_front();
@@ -880,6 +882,12 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
                 assert(tgt_pkt->cmd == MemCmd::StoreCondReq ||
                        tgt_pkt->cmd == MemCmd::StoreCondFailReq ||
                        tgt_pkt->cmd == MemCmd::SCUpgradeFailReq);
+                if (tgt_pkt->isWrite() &&
+                    system->idealDCacheOracleOwns(tgt_pkt)) {
+                    // SCUpgradeFailReq is a coherence carrier. The upper
+                    // architectural StoreCond target consumes the reservation.
+                    system->checkIdealDCacheStoreConditional(tgt_pkt);
+                }
                 // responseLatency is the latency of the return path
                 // from lower level caches/memory to an upper level cache or
                 // the core.
@@ -1226,6 +1234,9 @@ Cache::handleSnoop(PacketPtr pkt, CacheBlk *blk, bool is_timing,
 
     bool respond = false;
     bool blk_valid = blk && blk->isValid();
+    if (blk_valid) {
+        rebaseIdealDCacheBlock(blk);
+    }
     DPRINTF(Cache, "pkt %s is clean: %i\n", pkt->print(), pkt->isClean());
     if (pkt->isClean()) {
         if (blk_valid && blk->isSet(CacheBlk::DirtyBit)) {
@@ -1448,6 +1459,7 @@ Cache::recvTimingSnoopReq(PacketPtr pkt)
         assert(wb_entry->getNumTargets() == 1);
         PacketPtr wb_pkt = wb_entry->getTarget()->pkt;
         assert(wb_pkt->isEviction() || wb_pkt->cmd == MemCmd::WriteClean);
+        system->normalizeIdealDCachePacket(wb_pkt);
 
         if (pkt->isEviction()) {
             // if the block is found in the write queue, set the BLOCK_CACHED

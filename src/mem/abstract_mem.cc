@@ -42,6 +42,7 @@
 
 #include <vector>
 
+#include "base/compiler.hh"
 #include "base/loader/memory_image.hh"
 #include "base/loader/object_file.hh"
 #include "cpu/thread_context.hh"
@@ -114,6 +115,19 @@ AbstractMemory::setBackingStore(uint8_t* pmem_addr)
     pmemAddr = pmem_addr;
 
     DPRINTF(MemoryAccess, "Backing store set to %#lx\n", (uint64_t)pmemAddr);
+}
+
+void
+AbstractMemory::getBackdoor(MemBackdoorPtr &bd_ptr)
+{
+    fatal_if(_system && _system->idealDCacheOracleEnabled() &&
+             isInAddrMap() && backdoor.ptr() && backdoor.writeable(),
+             "%s: writable memory backdoors are unsupported while the "
+             "ideal-DCache oracle is enabled", name());
+
+    if (lockedAddrList.empty() && backdoor.ptr()) {
+        bd_ptr = &backdoor;
+    }
 }
 
 AbstractMemory::MemStats::MemStats(AbstractMemory &_mem)
@@ -386,6 +400,19 @@ AbstractMemory::access(PacketPtr pkt)
         return;
     }
 
+    const bool ideal_dcache_owned = GEM5_UNLIKELY(
+        system() && system()->idealDCacheOracleOwns(pkt, this));
+    bool ideal_dcache_state_carrier = false;
+    if (ideal_dcache_owned) {
+        ideal_dcache_state_carrier =
+            pkt->cmd == MemCmd::WritebackDirty ||
+            pkt->cmd == MemCmd::WritebackClean ||
+            pkt->cmd == MemCmd::WriteClean;
+        if (ideal_dcache_state_carrier) {
+            system()->normalizeIdealDCachePacket(pkt);
+        }
+    }
+
     if (pkt->cmd == MemCmd::CleanEvict || pkt->cmd == MemCmd::WritebackClean) {
         DPRINTF(MemoryAccess, "CleanEvict  on 0x%x: not responding\n",
                 pkt->getAddr());
@@ -402,7 +429,17 @@ AbstractMemory::access(PacketPtr pkt)
         if (pkt->isAtomicOp()) {
             if (pmemAddr) {
                 pkt->setData(host_addr);
-                (*(pkt->getAtomicOp()))(host_addr);
+                if (ideal_dcache_owned) {
+                    std::vector<uint8_t> old_data(
+                        host_addr, host_addr + pkt->getSize());
+                    (*(pkt->getAtomicOp()))(host_addr);
+                    if (std::memcmp(old_data.data(), host_addr,
+                                    pkt->getSize()) != 0) {
+                        system()->observeIdealDCacheMemoryWrite(pkt);
+                    }
+                } else {
+                    (*(pkt->getAtomicOp()))(host_addr);
+                }
             }
         } else {
             std::vector<uint8_t> overwrite_val(pkt->getSize());
@@ -431,8 +468,12 @@ AbstractMemory::access(PacketPtr pkt)
                     panic("Invalid size for conditional read/write\n");
             }
 
-            if (overwrite_mem)
+            if (overwrite_mem) {
                 std::memcpy(host_addr, &overwrite_val[0], pkt->getSize());
+                if (ideal_dcache_owned) {
+                    system()->observeIdealDCacheMemoryWrite(pkt);
+                }
+            }
 
             assert(!pkt->req->isInstFetch());
             TRACE_PACKET("Read/Write");
@@ -449,6 +490,9 @@ AbstractMemory::access(PacketPtr pkt)
         if (pmemAddr) {
             pkt->setData(host_addr);
         }
+        if (pkt->cmd == MemCmd::LoadLockedReq && ideal_dcache_owned) {
+            system()->trackIdealDCacheLoadLocked(pkt, nullptr);
+        }
         TRACE_PACKET(pkt->req->isInstFetch() ? "IFetch" : "Read");
         stats.numReads[pkt->req->requestorId()]++;
         stats.bytesRead[pkt->req->requestorId()] += pkt->getSize();
@@ -461,7 +505,14 @@ AbstractMemory::access(PacketPtr pkt)
 
         // no need to do anything
     } else if (pkt->isWrite()) {
-        if (writeOK(pkt)) {
+        const bool native_write_ok = writeOK(pkt);
+        bool oracle_write_ok = true;
+        if (pkt->isLLSC() && ideal_dcache_owned) {
+            oracle_write_ok =
+                system()->checkIdealDCacheStoreConditional(pkt);
+            pkt->req->setExtraData(native_write_ok && oracle_write_ok ? 1 : 0);
+        }
+        if (native_write_ok && oracle_write_ok) {
             if (pmemAddr) {
                 pkt->writeData(host_addr);
                 DPRINTF(MemoryAccess, "%s write due to %s\n",
@@ -471,6 +522,9 @@ AbstractMemory::access(PacketPtr pkt)
             TRACE_PACKET("Write");
             stats.numWrites[pkt->req->requestorId()]++;
             stats.bytesWritten[pkt->req->requestorId()] += pkt->getSize();
+            if (ideal_dcache_owned && !ideal_dcache_state_carrier) {
+                system()->observeIdealDCacheMemoryWrite(pkt);
+            }
         }
     } else {
         panic("Unexpected packet %s", pkt->print());
@@ -487,6 +541,30 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
     assert(pkt->getAddrRange().isSubset(range));
 
     uint8_t *host_addr = toHostAddr(pkt->getAddr());
+    const bool ideal_dcache_owned = GEM5_UNLIKELY(
+        system() && system()->idealDCacheOracleOwns(pkt, this));
+    bool canonical_functional_write = false;
+    bool ideal_dcache_state_carrier = false;
+    if (ideal_dcache_owned) {
+        ideal_dcache_state_carrier =
+            pkt->cmd == MemCmd::WritebackDirty ||
+            pkt->cmd == MemCmd::WritebackClean ||
+            pkt->cmd == MemCmd::WriteClean;
+        fatal_if(!ideal_dcache_state_carrier &&
+                 (pkt->isLLSC() || pkt->isLockedRMW() ||
+                  pkt->req->isReadModifyWrite() ||
+                  (pkt->isRead() && pkt->isWrite())),
+                 "%s: ideal-DCache oracle does not support functional "
+                 "LL/SC or read-modify-write command: %s",
+                 name(), pkt->print());
+        if (ideal_dcache_state_carrier) {
+            system()->normalizeIdealDCachePacket(pkt);
+        } else {
+            system()->commitIdealDCacheFunctionalWrite(pkt);
+            canonical_functional_write =
+                pkt->req->isIdealDCacheFunctionalObserved();
+        }
+    }
 
     if (pkt->isRead()) {
         if (pmemAddr) {
@@ -495,7 +573,7 @@ AbstractMemory::functionalAccess(PacketPtr pkt)
         TRACE_PACKET("Read");
         pkt->makeResponse();
     } else if (pkt->isWrite()) {
-        if (pmemAddr) {
+        if (pmemAddr && !canonical_functional_write) {
             pkt->writeData(host_addr);
         }
         TRACE_PACKET("Write");

@@ -294,6 +294,13 @@ class Request
 
         // this request is used for store pf train
         STORE_PF_TRAIN              = 0x0001000000000000,
+
+        /** An internal ideal-DCache oracle access to physical backing. */
+        IDEAL_DCACHE_INTERNAL       = 0x0002000000000000,
+        /** This functional write has already updated the ideal-DCache oracle. */
+        IDEAL_DCACHE_FUNCTIONAL_OBSERVED = 0x0004000000000000,
+        /** This ideal-DCache functional write must not mutate queued data. */
+        IDEAL_DCACHE_FUNCTIONAL_ISOLATED = 0x0008000000000000,
         /**
          * These flags are *not* cleared when a Request object is
          * reused (assigned a new address).
@@ -1226,6 +1233,21 @@ class Request
     }
 
     bool isStorePFTrain() const { return _flags.isSet(STORE_PF_TRAIN); }
+    bool
+    isIdealDCacheInternal() const
+    {
+        return _flags.isSet(IDEAL_DCACHE_INTERNAL);
+    }
+    bool
+    isIdealDCacheFunctionalObserved() const
+    {
+        return _flags.isSet(IDEAL_DCACHE_FUNCTIONAL_OBSERVED);
+    }
+    bool
+    isIdealDCacheFunctionalIsolated() const
+    {
+        return _flags.isSet(IDEAL_DCACHE_FUNCTIONAL_ISOLATED);
+    }
     /** Accessor functions for flags. Note that these are for testing
         only; setting flags should be done via setFlags(). */
     bool isUncacheable() const { return _flags.isSet(UNCACHEABLE); }

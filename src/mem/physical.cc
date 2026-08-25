@@ -327,6 +327,49 @@ PhysicalMemory::isMemAddr(Addr addr) const
     return addrMap.contains(addr) != addrMap.end();
 }
 
+bool
+PhysicalMemory::isMemRange(const AddrRange &range) const
+{
+    if (!range.valid() || range.size() == 0) {
+        return false;
+    }
+
+    return addrMap.contains(range) != addrMap.end();
+}
+
+bool
+PhysicalMemory::isMemRange(
+    const AddrRange &range, const AbstractMemory *owner) const
+{
+    if (!owner || !range.valid() || range.size() == 0) {
+        return false;
+    }
+
+    const auto memory = addrMap.contains(range);
+    return memory != addrMap.end() && memory->second == owner;
+}
+
+std::vector<BackingStoreEntry>
+PhysicalMemory::getBackingStore() const
+{
+    fatal_if(writableRawBackingForbidden,
+             "%s: writable raw backing access is unsupported while the "
+             "ideal-DCache oracle is enabled", name());
+    return backingStore;
+}
+
+void
+PhysicalMemory::forbidWritableRawBacking()
+{
+    for (const auto &store : backingStore) {
+        fatal_if(store.inAddrMap && store.shmFd >= 0,
+                 "%s: writable shared backing for %s is unsupported with "
+                 "the ideal-DCache oracle", name(),
+                 store.range.to_string());
+    }
+    writableRawBackingForbidden = true;
+}
+
 Addr
 PhysicalMemory::getStartaddr() const
 {

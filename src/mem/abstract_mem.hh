@@ -234,12 +234,7 @@ class AbstractMemory : public ClockedObject
      */
     void setBackingStore(uint8_t* pmem_addr);
 
-    void
-    getBackdoor(MemBackdoorPtr &bd_ptr)
-    {
-        if (lockedAddrList.empty() && backdoor.ptr())
-            bd_ptr = &backdoor;
-    }
+    void getBackdoor(MemBackdoorPtr &bd_ptr);
 
     /**
      * Get the list of locked addresses to allow checkpointing.

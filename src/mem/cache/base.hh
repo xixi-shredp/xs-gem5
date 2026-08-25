@@ -53,6 +53,7 @@
 #include <queue>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -582,19 +583,32 @@ class BaseCache : public ClockedObject, public CacheAccessor
                         PacketList &writebacks);
 
     /**
-     * Check whether this request can be satisfied by the ideal L1 DCache path.
+     * Classify and account for one accepted ideal-L1D timing attempt.
+     *
+     * @return True only when this attempt must use the ideal hit path.
      */
-    bool isIdealDCacheCandidate(PacketPtr pkt, CacheBlk *blk) const;
+    bool accountIdealDCacheTimingAttempt(PacketPtr pkt);
+
+    /** Terminate an unsupported CPU data request after accounting for it. */
+    bool rejectIdealDCacheTimingRequest(PacketPtr pkt, const char *reason);
 
     /**
-     * Satisfy an ordinary L1 DCache miss by functionally accessing the
-     * downstream memory hierarchy and returning with DCache hit latency.
+     * Check whether this request can be satisfied by the ideal L1 DCache path.
      */
-    bool trySatisfyIdealDCache(PacketPtr pkt, CacheBlk *&blk,
-                               Cycles tag_latency, Cycles &lat,
-                               PacketList &writebacks);
-    Cycles calculateIdealDCacheHitLatency(PacketPtr pkt,
-                                          Cycles tag_latency) const;
+    bool isIdealDCacheCandidate(PacketPtr pkt) const;
+
+    /** Complete a candidate in the non-resident temporary block. */
+    bool accessIdealDCache(PacketPtr pkt, CacheBlk *&blk, Cycles &lat);
+
+    /** Check ownership using the source requestor saved in a cache block. */
+    bool isIdealDCacheOwnedBlock(CacheBlk *blk);
+
+    /** Refresh a tracked resident or scratch block from canonical data. */
+    bool rebaseIdealDCacheBlock(
+        CacheBlk *blk, PacketPtr provenance = nullptr);
+
+    /** Propagate a complete post-operation line to canonical data. */
+    void commitIdealDCacheLine(CacheBlk *blk, bool from_ideal);
 
     /**
      * @brief Checks MSHR arbiter and allocates a slot for the current cycle.
@@ -763,7 +777,7 @@ class BaseCache : public ClockedObject, public CacheAccessor
     /**
      * Handle doing the Compare and Swap function for SPARC.
      */
-    void cmpAndSwap(CacheBlk *blk, PacketPtr pkt);
+    bool cmpAndSwap(CacheBlk *blk, PacketPtr pkt);
 
     /**
      * Return the next queue entry to service, either a pending miss
@@ -1363,6 +1377,39 @@ class BaseCache : public ClockedObject, public CacheAccessor
         /** Number of demand requests that merged into prefetch MSHR */
         statistics::Scalar demandMergedIntoPfMSHR;
 
+        /** Mutually exclusive classification of ideal-L1D timing attempts. */
+        statistics::Scalar idealDCacheTimingAttempts;
+        statistics::Scalar idealDCacheCandidateAttempts;
+        statistics::Scalar idealDCachePortBypassAdmissions;
+        statistics::Scalar idealDCacheNativeHitHandlerEntries;
+        statistics::Scalar idealDCacheBypassUncacheable;
+        statistics::Scalar idealDCacheBypassPrefetchTrain;
+        statistics::Scalar idealDCacheBypassMaintenance;
+        statistics::Scalar idealDCacheBypassMemMgmtPTW;
+        statistics::Scalar idealDCacheBypassCacheOriginProtocol;
+        statistics::Scalar idealDCacheBypassNonDataControl;
+        statistics::Scalar idealDCacheUnsupportedFatals;
+        statistics::Scalar idealDCacheUnexpectedEscapes;
+
+        /** Supported requests completed through the ideal L1D hit path. */
+        statistics::Scalar idealDCacheEligibleAccesses;
+        statistics::Scalar idealDCacheEligibleReads;
+        statistics::Scalar idealDCacheEligibleWrites;
+        statistics::Scalar idealDCacheEligibleAtomics;
+        /** Eligible accesses executed in the non-resident scratch block. */
+        statistics::Scalar idealDCacheScratchHits;
+        /** Store-condition hits which correctly failed their reservation. */
+        statistics::Scalar idealDCacheFailedSCs;
+        statistics::Scalar idealDCacheReservationSets;
+        statistics::Scalar idealDCacheReservationChecks;
+        statistics::Scalar idealDCacheReservationFailures;
+        /** Canonical oracle operations used only for data correctness. */
+        statistics::Scalar idealDCacheOracleReads;
+        statistics::Scalar idealDCacheOracleWrites;
+        statistics::Scalar idealDCacheOracleFailures;
+        /** Successful oracle commits of post-operation cache-line state. */
+        statistics::Scalar idealDCachePostOperationCommitWrites;
+
         /** Number of demand hits that accessed squashed inst blocks. */
         statistics::Scalar squashedDemandHits;
 
@@ -1684,6 +1731,8 @@ class BaseCache : public ClockedObject, public CacheAccessor
 
     const bool forceHit;
     const bool idealDCache;
+    const Cycles idealDCacheHitLatency;
+    TempCacheBlk *idealDCacheScratchBlock = nullptr;
     const bool simulateDcacheRefill;
     o3::LSQ *dcacheMainPipeLSQ = nullptr;
 

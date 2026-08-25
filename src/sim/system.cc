@@ -42,6 +42,8 @@
 #include "sim/system.hh"
 
 #include <algorithm>
+#include <cstring>
+#include <functional>
 
 #include "base/compiler.hh"
 #include "base/cprintf.hh"
@@ -176,6 +178,40 @@ System::Threads::quiesceTick(ContextID id, Tick when)
 
 int System::numSystemsRunning = 0;
 
+System::IdealDCacheOracleStats::IdealDCacheOracleStats(System *system)
+    : statistics::Group(system, "idealDCacheOracle"),
+      ADD_STAT(linesInitialized, statistics::units::Count::get(),
+               "Canonical cache lines initialized"),
+      ADD_STAT(logicalCommits, statistics::units::Count::get(),
+               "Logical writes committed to canonical cache lines"),
+      ADD_STAT(backingSyncs, statistics::units::Count::get(),
+               "Canonical cache lines synchronized to physical backing"),
+      ADD_STAT(cacheCommits, statistics::units::Count::get(),
+               "Logical commits originating from non-ideal caches"),
+      ADD_STAT(idealCommits, statistics::units::Count::get(),
+               "Logical commits originating from ideal L1D accesses"),
+      ADD_STAT(memoryCommits, statistics::units::Count::get(),
+               "Logical commits observed after memory writes"),
+      ADD_STAT(functionalCommits, statistics::units::Count::get(),
+               "Logical commits originating from functional writes"),
+      ADD_STAT(rebases, statistics::units::Count::get(),
+               "Tracked external lines rebased from canonical data"),
+      ADD_STAT(stateCarrierRebases, statistics::units::Count::get(),
+               "Cache writeback carriers rebased from canonical data"),
+      ADD_STAT(reservationSets, statistics::units::Count::get(),
+               "Ideal-DCache LL reservations set"),
+      ADD_STAT(reservationChecks, statistics::units::Count::get(),
+               "Ideal-DCache SC reservations checked"),
+      ADD_STAT(reservationVersionFailures, statistics::units::Count::get(),
+               "Ideal-DCache SC failures caused by a line version change"),
+      ADD_STAT(reservationInvalidations, statistics::units::Count::get(),
+               "Reservations broken by external coherence acquisitions"),
+      ADD_STAT(reservationInvalidationFailures,
+               statistics::units::Count::get(),
+               "Ideal-DCache SC failures caused by coherence invalidation")
+{
+}
+
 System::System(const Params &p)
     : SimObject(p), _systemPort("system_port", this),
       multiThread(p.multi_thread),
@@ -193,6 +229,7 @@ System::System(const Params &p)
                       p.shadow_rom_ranges.end()),
       memoryMode(p.mem_mode),
       _cacheLineSize(p.cache_line_size),
+      idealDCacheOracleStats(this),
       numWorkIds(p.num_work_ids),
       thermalModel(p.thermal_model),
       _m5opRange(p.m5ops_base ?
@@ -306,6 +343,488 @@ bool
 System::isMemAddr(Addr addr) const
 {
     return physmem.isMemAddr(addr);
+}
+
+bool
+System::idealDCacheOracleOwns(PacketPtr pkt) const
+{
+    return idealDCacheOracleOwns(pkt, nullptr);
+}
+
+bool
+System::idealDCacheOracleOwns(
+    Addr start, Addr size, RequestorID requestor_id) const
+{
+    if (GEM5_LIKELY(!idealDCacheEnabled) || size == 0 ||
+        size > MaxAddr - start) {
+        return false;
+    }
+
+    const AddrRange range = RangeSize(start, size);
+    const auto device_memories = deviceMemMap.find(requestor_id);
+    if (device_memories != deviceMemMap.end()) {
+        for (const auto *memory : device_memories->second) {
+            if (range.isSubset(memory->getAddrRange())) {
+                return false;
+            }
+        }
+    }
+
+    return physmem.isMemRange(range);
+}
+
+bool
+System::idealDCacheOracleOwns(
+    PacketPtr pkt, const memory::AbstractMemory *owner) const
+{
+    if (!pkt || !pkt->req || pkt->getSize() == 0) {
+        return false;
+    }
+
+    const Addr start = pkt->getAddr();
+    const Addr size = static_cast<Addr>(pkt->getSize());
+    if (!idealDCacheOracleOwns(start, size, pkt->requestorId())) {
+        return false;
+    }
+
+    return !owner || physmem.isMemRange(RangeSize(start, size), owner);
+}
+
+size_t
+System::IdealDCacheLineKeyHash::operator()(
+    const IdealDCacheLineKey &key) const
+{
+    const size_t addr_hash = std::hash<Addr>{}(key.addr);
+    return (addr_hash << 1) ^ static_cast<size_t>(key.secure);
+}
+
+Addr
+System::idealDCacheLineAddr(Addr addr) const
+{
+    return addr & ~static_cast<Addr>(_cacheLineSize - 1);
+}
+
+void
+System::registerIdealDCache()
+{
+    fatal_if(compressedCacheRegistered,
+             "The ideal-DCache oracle is incompatible with compressed caches "
+             "in system %s", name());
+    if (!idealDCacheEnabled) {
+        physmem.forbidWritableRawBacking();
+        idealDCacheEnabled = true;
+    }
+}
+
+void
+System::registerCompressedCache()
+{
+    fatal_if(idealDCacheEnabled,
+             "Compressed caches are incompatible with the ideal-DCache "
+             "oracle in system %s", name());
+    compressedCacheRegistered = true;
+}
+
+bool
+System::readIdealDCacheBackingLine(Addr addr, bool secure, uint8_t *data)
+{
+    if (!data) {
+        return false;
+    }
+
+    const Addr line_addr = idealDCacheLineAddr(addr);
+    const Addr line_size = static_cast<Addr>(_cacheLineSize);
+    if (line_size > MaxAddr - line_addr ||
+        !physmem.isMemRange(RangeSize(line_addr, line_size))) {
+        return false;
+    }
+
+    std::memset(data, 0, _cacheLineSize);
+    Request::Flags flags;
+    flags.set(Request::IDEAL_DCACHE_INTERNAL);
+    if (secure) {
+        flags.set(Request::SECURE);
+    }
+    RequestPtr req = std::make_shared<Request>(
+        line_addr, _cacheLineSize, flags, Request::funcRequestorId);
+    Packet pkt(req, MemCmd::ReadReq);
+    pkt.dataStatic(data);
+    physmem.functionalAccess(&pkt);
+    return pkt.isResponse() && !pkt.isError() && pkt.hasData();
+}
+
+bool
+System::syncIdealDCacheBackingLine(
+    Addr addr, bool secure, const uint8_t *data)
+{
+    if (!data) {
+        return false;
+    }
+
+    const Addr line_addr = idealDCacheLineAddr(addr);
+    const Addr line_size = static_cast<Addr>(_cacheLineSize);
+    if (line_size > MaxAddr - line_addr ||
+        !physmem.isMemRange(RangeSize(line_addr, line_size))) {
+        return false;
+    }
+
+    Request::Flags flags;
+    flags.set(Request::IDEAL_DCACHE_INTERNAL);
+    if (secure) {
+        flags.set(Request::SECURE);
+    }
+    RequestPtr req = std::make_shared<Request>(
+        line_addr, _cacheLineSize, flags, Request::funcRequestorId);
+    Packet pkt(req, MemCmd::WriteReq);
+    pkt.dataStaticConst(data);
+    physmem.functionalAccess(&pkt);
+    if (!pkt.isResponse() || pkt.isError()) {
+        return false;
+    }
+
+    idealDCacheOracleStats.backingSyncs++;
+    return true;
+}
+
+bool
+System::readIdealDCacheLine(Addr addr, bool secure, uint8_t *data)
+{
+    if (GEM5_UNLIKELY(!idealDCacheEnabled) || !data) {
+        return false;
+    }
+
+    const IdealDCacheLineKey key{idealDCacheLineAddr(addr), secure};
+    auto line = idealDCacheLines.find(key);
+    if (line == idealDCacheLines.end()) {
+        IdealDCacheLine new_line;
+        new_line.data.resize(_cacheLineSize);
+        if (!readIdealDCacheBackingLine(key.addr, secure,
+                                        new_line.data.data())) {
+            return false;
+        }
+        line = idealDCacheLines.emplace(key, std::move(new_line)).first;
+        idealDCacheOracleStats.linesInitialized++;
+    }
+
+    std::memcpy(data, line->second.data.data(), _cacheLineSize);
+    return true;
+}
+
+bool
+System::rebaseIdealDCacheLine(Addr addr, bool secure, uint8_t *data)
+{
+    if (GEM5_UNLIKELY(!idealDCacheEnabled) || !data) {
+        return false;
+    }
+
+    const IdealDCacheLineKey key{idealDCacheLineAddr(addr), secure};
+    const auto line = idealDCacheLines.find(key);
+    if (line == idealDCacheLines.end()) {
+        return false;
+    }
+
+    std::memcpy(data, line->second.data.data(), _cacheLineSize);
+    idealDCacheOracleStats.rebases++;
+    return true;
+}
+
+void
+System::commitIdealDCacheLine(
+    Addr addr, bool secure, const uint8_t *data,
+    IdealDCacheCommitSource source, bool sync_backing)
+{
+    if (GEM5_UNLIKELY(!idealDCacheEnabled)) {
+        return;
+    }
+    fatal_if(!data, "Cannot commit a null ideal-DCache oracle line");
+
+    const IdealDCacheLineKey key{idealDCacheLineAddr(addr), secure};
+    auto [line, inserted] = idealDCacheLines.try_emplace(key);
+    if (inserted) {
+        line->second.data.resize(_cacheLineSize);
+        idealDCacheOracleStats.linesInitialized++;
+    }
+    std::memcpy(line->second.data.data(), data, _cacheLineSize);
+    ++line->second.version;
+
+    idealDCacheOracleStats.logicalCommits++;
+    switch (source) {
+      case IdealDCacheCommitSource::Cache:
+        idealDCacheOracleStats.cacheCommits++;
+        break;
+      case IdealDCacheCommitSource::Ideal:
+        idealDCacheOracleStats.idealCommits++;
+        break;
+      case IdealDCacheCommitSource::Memory:
+        idealDCacheOracleStats.memoryCommits++;
+        break;
+      case IdealDCacheCommitSource::Functional:
+        idealDCacheOracleStats.functionalCommits++;
+        break;
+    }
+
+    fatal_if(sync_backing &&
+             !syncIdealDCacheBackingLine(key.addr, secure,
+                                         line->second.data.data()),
+             "Unable to synchronize ideal-DCache oracle line %#x", key.addr);
+}
+
+void
+System::commitIdealDCacheCacheLine(
+    Addr addr, bool secure, const uint8_t *data, bool from_ideal)
+{
+    commitIdealDCacheLine(
+        addr, secure, data,
+        from_ideal ? IdealDCacheCommitSource::Ideal :
+                     IdealDCacheCommitSource::Cache,
+        true);
+}
+
+void
+System::normalizeIdealDCachePacket(PacketPtr pkt)
+{
+    if (!idealDCacheOracleOwns(pkt) ||
+        pkt->req->isIdealDCacheInternal()) {
+        return;
+    }
+
+    const bool state_carrier =
+        pkt->cmd == MemCmd::WritebackDirty ||
+        pkt->cmd == MemCmd::WritebackClean ||
+        pkt->cmd == MemCmd::WriteClean;
+    if (!state_carrier) {
+        return;
+    }
+
+    fatal_if(!pkt->hasData() || pkt->getSize() != _cacheLineSize ||
+             pkt->getAddr() != idealDCacheLineAddr(pkt->getAddr()),
+             "Malformed ideal-DCache state carrier: %s", pkt->print());
+    if (rebaseIdealDCacheLine(pkt->getAddr(), pkt->isSecure(),
+                              pkt->getPtr<uint8_t>())) {
+        idealDCacheOracleStats.stateCarrierRebases++;
+    }
+}
+
+void
+System::trackIdealDCacheLoadLocked(
+    PacketPtr pkt, const uint8_t *line_data)
+{
+    if (GEM5_UNLIKELY(!idealDCacheEnabled)) {
+        return;
+    }
+    fatal_if(!pkt || !pkt->req || !pkt->isLLSC() || !pkt->isRead() ||
+             !pkt->req->hasContextId(),
+             "Malformed ideal-DCache load-locked packet");
+
+    const IdealDCacheLineKey key{
+        idealDCacheLineAddr(pkt->getAddr()), pkt->isSecure()};
+    auto line = idealDCacheLines.find(key);
+    if (line == idealDCacheLines.end()) {
+        if (line_data) {
+            IdealDCacheLine new_line;
+            new_line.data.assign(line_data, line_data + _cacheLineSize);
+            line = idealDCacheLines.emplace(key, std::move(new_line)).first;
+            idealDCacheOracleStats.linesInitialized++;
+        } else {
+            std::vector<uint8_t> data(_cacheLineSize);
+            fatal_if(!readIdealDCacheLine(key.addr, key.secure, data.data()),
+                     "Unable to initialize ideal-DCache LL line %#x",
+                     key.addr);
+            line = idealDCacheLines.find(key);
+            assert(line != idealDCacheLines.end());
+        }
+    }
+
+    const Addr low_addr = pkt->getAddr();
+    idealDCacheReservations[pkt->req->contextId()] = {
+        key, low_addr, low_addr + pkt->getSize() - 1,
+        line->second.version
+    };
+    idealDCacheOracleStats.reservationSets++;
+}
+
+void
+System::invalidateIdealDCacheReservations(PacketPtr pkt)
+{
+    if (!idealDCacheOracleOwns(pkt) ||
+        pkt->req->isIdealDCacheInternal() || pkt->getSize() == 0 ||
+        !(pkt->needsWritable() || pkt->isInvalidate() ||
+          pkt->req->isCacheMaintenance())) {
+        return;
+    }
+
+    const bool state_carrier =
+        pkt->cmd == MemCmd::WritebackDirty ||
+        pkt->cmd == MemCmd::WritebackClean ||
+        pkt->cmd == MemCmd::WriteClean;
+    if (state_carrier) {
+        return;
+    }
+
+    const Addr pkt_end = pkt->getAddr() + pkt->getSize() - 1;
+    fatal_if(pkt_end < pkt->getAddr(),
+             "Ideal-DCache reservation invalidation overflow: %s",
+             pkt->print());
+    const Addr first_line = idealDCacheLineAddr(pkt->getAddr());
+    const Addr last_line = idealDCacheLineAddr(pkt_end);
+    const bool preserve_requester =
+        pkt->isLLSC() && pkt->req->hasContextId();
+
+    for (auto &[context_id, reservation] : idealDCacheReservations) {
+        if (reservation.key.secure != pkt->isSecure() ||
+            reservation.key.addr < first_line ||
+            reservation.key.addr > last_line ||
+            (preserve_requester &&
+             context_id == pkt->req->contextId()) ||
+            reservation.invalidated) {
+            continue;
+        }
+        reservation.invalidated = true;
+        idealDCacheOracleStats.reservationInvalidations++;
+    }
+}
+
+bool
+System::checkIdealDCacheStoreConditional(PacketPtr pkt)
+{
+    if (GEM5_UNLIKELY(!idealDCacheEnabled)) {
+        return true;
+    }
+    fatal_if(!pkt || !pkt->req || !pkt->isLLSC() || !pkt->isWrite() ||
+             !pkt->req->hasContextId(),
+             "Malformed ideal-DCache store-conditional packet");
+
+    idealDCacheOracleStats.reservationChecks++;
+    const ContextID context_id = pkt->req->contextId();
+    const auto reservation = idealDCacheReservations.find(context_id);
+    const IdealDCacheLineKey key{
+        idealDCacheLineAddr(pkt->getAddr()), pkt->isSecure()};
+    const Addr req_low = pkt->getAddr();
+    const Addr req_high = req_low + pkt->getSize() - 1;
+    const bool address_match =
+        reservation != idealDCacheReservations.end() &&
+        reservation->second.key == key &&
+        req_low >= reservation->second.lowAddr &&
+        req_high <= reservation->second.highAddr;
+
+    bool version_match = false;
+    bool invalidation_match = false;
+    if (address_match) {
+        invalidation_match = !reservation->second.invalidated;
+        if (!invalidation_match) {
+            idealDCacheOracleStats.reservationInvalidationFailures++;
+        }
+        const auto line = idealDCacheLines.find(key);
+        version_match = line != idealDCacheLines.end() &&
+            line->second.version == reservation->second.version;
+        if (!version_match) {
+            idealDCacheOracleStats.reservationVersionFailures++;
+        }
+    }
+
+    if (reservation != idealDCacheReservations.end()) {
+        idealDCacheReservations.erase(reservation);
+    }
+    const bool success =
+        address_match && version_match && invalidation_match;
+    pkt->req->setExtraData(success ? 1 : 0);
+    return success;
+}
+
+void
+System::observeIdealDCacheMemoryWrite(PacketPtr pkt)
+{
+    if (!idealDCacheOracleOwns(pkt) ||
+        pkt->req->isIdealDCacheInternal() || !pkt->isWrite() ||
+        pkt->getSize() == 0) {
+        return;
+    }
+
+    const bool state_carrier =
+        pkt->cmd == MemCmd::WritebackDirty ||
+        pkt->cmd == MemCmd::WritebackClean ||
+        pkt->cmd == MemCmd::WriteClean;
+    if (state_carrier) {
+        return;
+    }
+
+    const Addr pkt_end = pkt->getAddr() + pkt->getSize() - 1;
+    fatal_if(pkt_end < pkt->getAddr(),
+             "Ideal-DCache memory write address overflow: %s",
+             pkt->print());
+    const Addr first_line = idealDCacheLineAddr(pkt->getAddr());
+    const Addr last_line = idealDCacheLineAddr(pkt_end);
+    std::vector<uint8_t> data(_cacheLineSize);
+    for (Addr line = first_line;; line += _cacheLineSize) {
+        fatal_if(!readIdealDCacheBackingLine(
+                     line, pkt->isSecure(), data.data()),
+                 "Unable to observe memory write to ideal-DCache line %#x",
+                 line);
+        commitIdealDCacheLine(line, pkt->isSecure(), data.data(),
+                              IdealDCacheCommitSource::Memory, false);
+        if (line == last_line) {
+            break;
+        }
+    }
+}
+
+void
+System::commitIdealDCacheFunctionalWrite(PacketPtr pkt)
+{
+    if (!idealDCacheOracleOwns(pkt) ||
+        pkt->req->isIdealDCacheInternal() ||
+        pkt->req->isIdealDCacheFunctionalObserved() || !pkt->isWrite() ||
+        pkt->isRead()) {
+        return;
+    }
+
+    const bool state_carrier =
+        pkt->cmd == MemCmd::WritebackDirty ||
+        pkt->cmd == MemCmd::WritebackClean ||
+        pkt->cmd == MemCmd::WriteClean;
+    if (state_carrier) {
+        return;
+    }
+
+    fatal_if(!pkt->hasData(),
+             "Ideal-DCache functional write has no data: %s", pkt->print());
+    const Addr pkt_end = pkt->getAddr() + pkt->getSize() - 1;
+    assert(pkt_end >= pkt->getAddr());
+
+    const auto &byte_enable = pkt->req->getByteEnable();
+    fatal_if(!byte_enable.empty() &&
+             byte_enable.size() != pkt->getSize(),
+             "Ideal-DCache functional write has malformed byte enable: %s",
+             pkt->print());
+
+    pkt->req->setFlags(Request::IDEAL_DCACHE_FUNCTIONAL_OBSERVED);
+    const Addr first_line = idealDCacheLineAddr(pkt->getAddr());
+    const Addr last_line = idealDCacheLineAddr(pkt_end);
+    const uint8_t *pkt_data = pkt->getConstPtr<uint8_t>();
+    std::vector<uint8_t> line_data(_cacheLineSize);
+    for (Addr line = first_line;; line += _cacheLineSize) {
+        fatal_if(!readIdealDCacheLine(
+                     line, pkt->isSecure(), line_data.data()),
+                 "Unable to initialize functional ideal-DCache line %#x",
+                 line);
+        const Addr overlap_start = std::max(line, pkt->getAddr());
+        const Addr overlap_end = std::min(
+            line + static_cast<Addr>(_cacheLineSize) - 1, pkt_end);
+        for (Addr addr = overlap_start;; ++addr) {
+            const size_t pkt_offset = addr - pkt->getAddr();
+            if (byte_enable.empty() || byte_enable[pkt_offset]) {
+                line_data[addr - line] = pkt_data[pkt_offset];
+            }
+            if (addr == overlap_end) {
+                break;
+            }
+        }
+        commitIdealDCacheLine(line, pkt->isSecure(), line_data.data(),
+                              IdealDCacheCommitSource::Functional, true);
+        if (line == last_line) {
+            break;
+        }
+    }
 }
 
 void

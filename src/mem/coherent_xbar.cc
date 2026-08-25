@@ -283,6 +283,11 @@ CoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
         pkt->snoopDelay = 0;
     }
 
+    if (GEM5_UNLIKELY(system->idealDCacheOracleEnabled())) {
+        // Layer-busy retries above have not acquired coherence state.
+        system->invalidateIdealDCacheReservations(pkt);
+    }
+
     // set up a sensible starting point
     bool success = true;
 
@@ -805,6 +810,10 @@ CoherentXBar::recvAtomicBackdoor(PacketPtr pkt, PortID cpu_side_port_id,
     DPRINTF(CoherentXBar, "%s: src %s packet %s\n", __func__,
             cpuSidePorts[cpu_side_port_id]->name(), pkt->print());
 
+    if (GEM5_UNLIKELY(system->idealDCacheOracleEnabled())) {
+        system->invalidateIdealDCacheReservations(pkt);
+    }
+
     unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
     unsigned int pkt_cmd = pkt->cmdToIndex();
 
@@ -1071,24 +1080,38 @@ CoherentXBar::recvFunctional(PacketPtr pkt, PortID cpu_side_port_id)
                 cpuSidePorts[cpu_side_port_id]->name(), pkt->print());
     }
 
-    if (!system->bypassCaches()) {
-        // forward to all snoopers but the source
+    const bool ideal_dcache_oracle =
+        GEM5_UNLIKELY(system->idealDCacheOracleEnabled());
+    const bool isolate_oracle_write =
+        pkt->isWrite() && system->idealDCacheOracleOwns(pkt);
+    if (isolate_oracle_write) {
+        pkt->req->setFlags(Request::IDEAL_DCACHE_FUNCTIONAL_ISOLATED);
+    }
+    if (ideal_dcache_oracle) {
+        system->invalidateIdealDCacheReservations(pkt);
+    }
+
+    if (!system->bypassCaches() && !isolate_oracle_write) {
+        // Forward non-oracle requests to all snoopers but the source.
         forwardFunctional(pkt, cpu_side_port_id);
     }
 
-    // there is no need to continue if the snooping has found what we
-    // were looking for and the packet is already a response
+    // Oracle writes must only follow the addressed path. Their canonical
+    // commit happens either in the first cache or at AbstractMemory for a
+    // direct system-port write, never in the crossbar or queued packets.
     if (!pkt->isResponse()) {
-        // since our CPU-side ports are queued ports we need to check
-        // them as well
-        for (const auto& p : cpuSidePorts) {
-            // if we find a response that has the data, then the
-            // downstream caches/memories may be out of date, so simply stop
-            // here
-            if (p->trySatisfyFunctional(pkt)) {
-                if (pkt->needsResponse())
-                    pkt->makeResponse();
-                return;
+        if (!isolate_oracle_write) {
+            // since our CPU-side ports are queued ports we need to check
+            // them as well
+            for (const auto& p : cpuSidePorts) {
+                // if we find a response that has the data, then the
+                // downstream caches/memories may be out of date, so simply
+                // stop here
+                if (p->trySatisfyFunctional(pkt)) {
+                    if (pkt->needsResponse())
+                        pkt->makeResponse();
+                    return;
+                }
             }
         }
 
@@ -1105,6 +1128,10 @@ CoherentXBar::recvFunctionalSnoop(PacketPtr pkt, PortID mem_side_port_id)
         // don't do DPRINTFs on PrintReq as it clutters up the output
         DPRINTF(CoherentXBar, "%s: src %s packet %s\n", __func__,
                 memSidePorts[mem_side_port_id]->name(), pkt->print());
+    }
+
+    if (pkt->isWrite() && system->idealDCacheOracleOwns(pkt)) {
+        return;
     }
 
     for (const auto& p : cpuSidePorts) {

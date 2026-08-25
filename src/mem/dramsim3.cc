@@ -178,11 +178,15 @@ DRAMsim3::recvFunctional(PacketPtr pkt)
 {
     pkt->pushLabel(name());
 
+    const bool isolate_oracle_write =
+        pkt->isWrite() && system()->idealDCacheOracleOwns(pkt, this);
     functionalAccess(pkt);
 
-    // potentially update the packets in our response queue as well
-    for (auto i = responseQueue.begin(); i != responseQueue.end(); ++i)
-        pkt->trySatisfyFunctional((*i).first);
+    if (!isolate_oracle_write) {
+        // potentially update the packets in our response queue as well
+        for (auto i = responseQueue.begin(); i != responseQueue.end(); ++i)
+            pkt->trySatisfyFunctional((*i).first);
+    }
 
     pkt->popLabel();
 }
