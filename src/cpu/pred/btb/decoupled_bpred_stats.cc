@@ -2,6 +2,7 @@
 #include <sstream>
 #include <tuple>
 
+#include "base/logging.hh"
 #include "base/output.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/pred/btb/decoupled_bpred.hh"
@@ -142,6 +143,14 @@ DecoupledBPUWithBTB::finalizeBpStatPredictionBlock(
         ++bpStat->predictBlockBranchCount[block.branches];
         ++bpStat->predictBlockTakenBranchCount[block.takenBranches];
         ++bpStat->predictBlockNotTakenBranchCount[block.notTakenBranches];
+        ++bpStat->predictBlockFirstTakenPresence[
+            block.hasFirstTaken ? 1 : 0];
+        if (block.hasFirstTaken) {
+            ++bpStat->predictBlockFirstTakenInstructionDistance[
+                block.firstTakenInstructionDistance];
+            ++bpStat->predictBlockFirstTakenByteDistance[
+                block.firstTakenByteDistance];
+        }
         mergeBpStatSequence(bpStat->predictionBlockSequences, block.sequence);
         prediction_blocks.erase(it);
     }
@@ -183,20 +192,59 @@ DecoupledBPUWithBTB::recordBpStatCommittedInst(const DynInstPtr &inst)
     const ThreadID tid = inst->threadNumber;
     const FetchTargetId target_id = inst->ftqId;
     auto &prediction_block = bpStat->predictBlocks[tid][target_id];
+    const Addr inst_pc = inst->pcState().instAddr();
     const Addr fetch_block_addr =
-        inst->pcState().instAddr() & ~mask(floorLog2(FetchBlockBytes));
+        inst_pc & ~mask(floorLog2(FetchBlockBytes));
     auto &fetch_block = bpStat->fetchBlocks[tid][target_id][fetch_block_addr];
 
     const bool is_branch = !inst->isNonSpeculative() && inst->isControl();
     if (is_branch) {
         const auto &rv_pc = inst->pcState().as<RiscvISA::PCState>();
         const bool taken = rv_pc.branching() || inst->isUncondCtrl();
+        auto &branch_pairs = bpStat->globalBranchPairs[tid];
+        const bool adjacent_tt = branch_pairs.seenPrevious &&
+                                 branch_pairs.previousTaken && taken;
+        if (branch_pairs.seenPrevious) {
+            const uint64_t pair_key =
+                (branch_pairs.previousTaken ? 2 : 0) | (taken ? 1 : 0);
+            ++branch_pairs.directionPairs[pair_key];
+        }
+
+        if (taken && inst->isIndirectCtrl()) {
+            auto &target = branch_pairs.indirectTargets[inst_pc];
+            const Addr actual_target = rv_pc.npc();
+            if (!target.seenTarget) {
+                target.seenTarget = true;
+                target.firstTarget = actual_target;
+            } else if (target.firstTarget != actual_target) {
+                target.multipleTargets = true;
+            }
+            if (adjacent_tt) {
+                ++target.adjacentTTPairs;
+            }
+        } else if (adjacent_tt && inst->isDirectCtrl()) {
+            ++branch_pairs.directStableSecondTarget;
+        }
+
+        branch_pairs.seenPrevious = true;
+        branch_pairs.previousTaken = taken;
         bpStat->global[tid].recordBranch(taken);
         prediction_block.sequence.recordBranch(taken);
         fetch_block.sequence.recordBranch(taken);
         ++prediction_block.branches;
         ++fetch_block.branches;
         if (taken) {
+            if (!prediction_block.hasFirstTaken) {
+                const Addr start_pc = ftq.get(target_id, tid).startPC;
+                panic_if(inst_pc < start_pc,
+                         "Committed taken branch PC %#x precedes predict "
+                         "window start PC %#x for FTQ entry %u",
+                         inst_pc, start_pc, target_id);
+                prediction_block.hasFirstTaken = true;
+                prediction_block.firstTakenInstructionDistance =
+                    prediction_block.architecturalInstructions;
+                prediction_block.firstTakenByteDistance = inst_pc - start_pc;
+            }
             ++prediction_block.takenBranches;
             ++fetch_block.takenBranches;
         } else {
@@ -207,6 +255,10 @@ DecoupledBPUWithBTB::recordBpStatCommittedInst(const DynInstPtr &inst)
         bpStat->global[tid].recordNonBranch();
         prediction_block.sequence.recordNonBranch();
         fetch_block.sequence.recordNonBranch();
+    }
+    if (!inst->isMicroop() || inst->isLastMicroop()) {
+        ++prediction_block.architecturalInstructions;
+        ++fetch_block.architecturalInstructions;
     }
     ++prediction_block.instructions;
     ++fetch_block.instructions;
@@ -230,6 +282,26 @@ DecoupledBPUWithBTB::dumpBpStat()
         mergeBpStatSequence(global, sequence);
     }
 
+    std::map<uint64_t, uint64_t> global_direction_pairs = {
+        {0, 0}, {1, 0}, {2, 0}, {3, 0}
+    };
+    uint64_t stable_second_target = 0;
+    for (const auto &branch_pairs : bpStat->globalBranchPairs) {
+        for (size_t key = 0;
+             key < branch_pairs.directionPairs.size(); ++key) {
+            global_direction_pairs[key] += branch_pairs.directionPairs[key];
+        }
+        stable_second_target += branch_pairs.directStableSecondTarget;
+        for (const auto &entry : branch_pairs.indirectTargets) {
+            const auto &target = entry.second;
+            if (target.seenTarget && !target.multipleTargets) {
+                stable_second_target += target.adjacentTTPairs;
+            }
+        }
+    }
+    const std::map<uint64_t, uint64_t> global_stable_second_target = {
+        {1, stable_second_target}
+    };
     auto handle = simout.create("bp-stat.txt", false, true);
     auto &stream = *handle->stream();
     stream << "# bp-stat: committed dynamic instruction distributions\n"
@@ -240,13 +312,29 @@ DecoupledBPUWithBTB::dumpBpStat()
            << "# branch_distance: committed non-branch instructions between "
               "adjacent branches in the selected class\n"
            << "# not_taken_between_taken: not-taken branches strictly between "
-              "adjacent taken branches\n\n";
+              "adjacent taken branches\n"
+           << "# first_taken_instruction_distance: committed architectural "
+              "instructions strictly before the first actual taken branch\n"
+           << "# first_taken_byte_distance: first actual taken branch PC "
+              "minus the prediction-window start PC\n"
+           << "# first_taken_presence: 0 means absent, 1 means present\n"
+           << "# adjacent_branch_direction_pair: consecutive committed "
+              "branches in one thread; 0=NN, 1=NT, 2=TN, 3=TT\n"
+           << "# adjacent_tt_stable_second_target: key 1 counts TT pairs "
+              "whose second branch is direct or an observed single-target "
+              "indirect branch\n\n";
     writeHistogram(stream, "predict_block_branch_count",
                    bpStat->predictBlockBranchCount);
     writeHistogram(stream, "predict_block_taken_branch_count",
                    bpStat->predictBlockTakenBranchCount);
     writeHistogram(stream, "predict_block_not_taken_branch_count",
                    bpStat->predictBlockNotTakenBranchCount);
+    writeHistogram(stream, "predict_block_first_taken_presence",
+                   bpStat->predictBlockFirstTakenPresence);
+    writeHistogram(stream, "predict_block_first_taken_instruction_distance",
+                   bpStat->predictBlockFirstTakenInstructionDistance);
+    writeHistogram(stream, "predict_block_first_taken_byte_distance",
+                   bpStat->predictBlockFirstTakenByteDistance);
     writeHistogram(stream, "fetch_block_branch_count",
                    bpStat->fetchBlockBranchCount);
     writeHistogram(stream, "fetch_block_taken_branch_count",
@@ -262,6 +350,10 @@ DecoupledBPUWithBTB::dumpBpStat()
     writeHistogram(stream, "global_not_taken_between_taken",
                    global.notTakenBetweenTaken);
 
+    writeHistogram(stream, "global_adjacent_branch_direction_pair",
+                   global_direction_pairs);
+    writeHistogram(stream, "global_adjacent_tt_stable_second_target",
+                   global_stable_second_target);
     writeHistogram(stream, "predict_block_all_branch_distance",
                    bpStat->predictionBlockSequences.allBranchDistance);
     writeHistogram(stream, "predict_block_taken_branch_distance",

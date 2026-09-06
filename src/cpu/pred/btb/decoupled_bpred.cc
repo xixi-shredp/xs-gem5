@@ -152,6 +152,15 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
     });
 }
 
+void
+DecoupledBPUWithBTB::resetStats()
+{
+    BPredUnit::resetStats();
+    if (bpStatEnabled) {
+        bpStat = std::make_unique<BpStatData>(numThreads);
+    }
+}
+
 bool
 DecoupledBPUWithBTB::sharedFTQMode() const
 {

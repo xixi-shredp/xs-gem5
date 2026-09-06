@@ -153,15 +153,37 @@ class DecoupledBPUWithBTB : public BPredUnit
     struct BpStatBlock
     {
         uint64_t instructions = 0;
+        uint64_t architecturalInstructions = 0;
         uint64_t branches = 0;
         uint64_t takenBranches = 0;
         uint64_t notTakenBranches = 0;
+        bool hasFirstTaken = false;
+        uint64_t firstTakenInstructionDistance = 0;
+        uint64_t firstTakenByteDistance = 0;
         BpStatSequence sequence;
+    };
+
+    struct BpStatIndirectTarget
+    {
+        bool seenTarget = false;
+        Addr firstTarget = 0;
+        bool multipleTargets = false;
+        uint64_t adjacentTTPairs = 0;
+    };
+
+    struct BpStatGlobalBranchPairs
+    {
+        bool seenPrevious = false;
+        bool previousTaken = false;
+        std::array<uint64_t, 4> directionPairs{};
+        uint64_t directStableSecondTarget = 0;
+        std::map<Addr, BpStatIndirectTarget> indirectTargets;
     };
 
     struct BpStatData
     {
         std::vector<BpStatSequence> global;
+        std::vector<BpStatGlobalBranchPairs> globalBranchPairs;
         // One accumulator per in-flight FetchTarget. FetchTarget is the
         // DecoupledBPU's actual prediction block: it covers at most
         // predictWidth (64B by default) and can end early at a taken branch.
@@ -170,6 +192,9 @@ class DecoupledBPUWithBTB : public BPredUnit
         std::map<uint64_t, uint64_t> predictBlockBranchCount;
         std::map<uint64_t, uint64_t> predictBlockTakenBranchCount;
         std::map<uint64_t, uint64_t> predictBlockNotTakenBranchCount;
+        std::map<uint64_t, uint64_t> predictBlockFirstTakenPresence;
+        std::map<uint64_t, uint64_t> predictBlockFirstTakenInstructionDistance;
+        std::map<uint64_t, uint64_t> predictBlockFirstTakenByteDistance;
         BpStatSequence predictionBlockSequences;
         // A FetchTarget is a prediction window.  Each window contains one or
         // more 32B aligned FBlocks, which are the BTB's basic fetch unit.
@@ -186,7 +211,8 @@ class DecoupledBPUWithBTB : public BPredUnit
         std::vector<std::map<uint64_t, uint64_t>> ftqOccupancy;
 
         explicit BpStatData(unsigned threads)
-            : global(threads), predictBlocks(threads), fetchBlocks(threads),
+            : global(threads), globalBranchPairs(threads),
+              predictBlocks(threads), fetchBlocks(threads),
               ftqOccupancy(threads)
         {}
     };
@@ -196,6 +222,7 @@ class DecoupledBPUWithBTB : public BPredUnit
 
     static void mergeBpStatSequence(BpStatSequence &destination,
                                     const BpStatSequence &source);
+    void resetStats() override;
     void recordBpStatCommittedInst(const DynInstPtr &inst);
     void finalizeBpStatPredictionBlock(FetchTargetId target_id, ThreadID tid);
     void flushBpStatBlocks();
