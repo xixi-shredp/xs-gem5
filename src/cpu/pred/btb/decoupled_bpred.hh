@@ -21,6 +21,8 @@
 #include "cpu/pred/btb/btb_ubtb.hh"
 #include "cpu/pred/btb/common.hh"
 #include "cpu/pred/btb/ftq.hh"
+#include "cpu/pred/btb/hint_history.hh"
+#include "cpu/pred/btb/hint_indirect.hh"
 #include "cpu/pred/btb/history_manager.hh"
 #include "cpu/pred/btb/mbtb.hh"
 #include "cpu/pred/btb/microtage.hh"
@@ -75,7 +77,9 @@ class DecoupledBPUWithBTB : public BPredUnit
     // FetchTargetId ftqId{1}; // next FSQ id to allocate (monotonic)
     // FetchTargetId fetchHeadFtqId{1}; // next FSQ id to be consumed by fetch
 
-    CPU *cpu;
+    CPU *cpu{};
+    HintIndirect::Config hintConfig;
+    std::unique_ptr<HintIndirect> hint;
     ThreadID nextPredictTid = 0;
     const unsigned numPredictingThreads;
     unsigned predictWidth;  // max predict width, default 64
@@ -125,6 +129,8 @@ class DecoupledBPUWithBTB : public BPredUnit
     unsigned numComponents{};
     unsigned numStages{};
     unsigned ftqEntries;
+    /** Allow two ordered predictor lookups for one thread per cycle. */
+    const bool idealTwoTaken;
     SMTFTQMode ftqMode;
     SMTFTQPolicy ftqPolicy;
     unsigned smtFTQThreshold;
@@ -142,6 +148,8 @@ class DecoupledBPUWithBTB : public BPredUnit
         boost::dynamic_bitset<> commitHistory;
         PairPhase s0PairPhase{PairPhase::Even};
         FullBTBPrediction finalPred;      ///< Final prediction
+        FullBTBPrediction hintBaselineS3;
+        HintHistory hintHistory;
         PairTAGE::TrainPacket finalTrainPacket;
         PairTAGE::TrainPacket twoTakenTrainPacket;
         std::vector<BTBEntry> twoTakenBTBEntries;
@@ -171,7 +179,7 @@ class DecoupledBPUWithBTB : public BPredUnit
     bool canStartPrediction(ThreadID tid) const;
     std::vector<ThreadID> scheduleThreads();
 
-    void processNewPrediction(ThreadID tid);
+    bool processNewPrediction(ThreadID tid);
     void prepareTwoTakenTraining(ThreadID tid);
     void processTwoTakenBlock(ThreadID tid);
     void refreshTwoTakenPredictionMetas(ThreadID tid, FullBTBPrediction &pred);
@@ -181,7 +189,10 @@ class DecoupledBPUWithBTB : public BPredUnit
     FetchTarget createFetchTargetEntry(ThreadID tid);
     FetchTarget createFetchTargetEntry(ThreadID tid, Addr startPC, FullBTBPrediction &pred);
 
-    void updateHistoryForPrediction(FetchTarget &entry, FullBTBPrediction &pred);
+    void updateHistoryForPrediction(FetchTarget &entry, FullBTBPrediction &pred,
+                                    FetchTargetId history_id = 0);
+    void recoverRetiredHistoryForTrap(FetchTarget &target,
+                                      FetchTargetId target_id);
 
     void fillAheadPipeline(FetchTarget &entry);
 
@@ -329,6 +340,12 @@ class DecoupledBPUWithBTB : public BPredUnit
         statistics::Scalar redirectPendingPredictionSkips;
         statistics::Distribution predictionsStartedPerCycle;
         statistics::Vector predictionsStartedByThread;
+        statistics::Distribution idealTwoTakenQueriesPerCycle;
+        statistics::Distribution idealTwoTakenEnqueuesPerCycle;
+        statistics::Distribution idealTwoTakenTakenPerCycle;
+        statistics::Scalar idealTwoTakenSecondSlotQueries;
+        statistics::Scalar idealTwoTakenSecondSlotBubbleStops;
+        statistics::Scalar idealTwoTakenSecondSlotFTQStops;
 
         statistics::Scalar s1PredWrongFallthrough;
         statistics::Scalar s1PredWrongUbtb;
@@ -356,6 +373,11 @@ class DecoupledBPUWithBTB : public BPredUnit
      */
     void tick();
 
+    // Called at every active CPU tick, before commit/fetch. Predictor requests
+    // may stall, but confidence writes still have one write port per cycle.
+    void hintCycleTick();
+    void resetStats() override;
+
     void squash(const InstSeqNum &squashed_sn, ThreadID tid)
     {
         panic("Squashing decoupled BP with tightly coupled API\n");
@@ -366,7 +388,7 @@ class DecoupledBPUWithBTB : public BPredUnit
         panic("Squashing decoupled BP with tightly coupled API\n");
     }
 
-    void setCpu(CPU *_cpu) { cpu = _cpu; }
+    void setCpu(CPU *_cpu);
     uint8_t getThreadAsidHash(ThreadID tid) const;
 
     void consumeFetchTarget(unsigned fetched_inst_num, ThreadID tid);
@@ -850,6 +872,13 @@ class DecoupledBPUWithBTB : public BPredUnit
      * @param miss Whether the branch was mispredicted
      */
     void commitBranch(const DynInstPtr &inst, bool miss);
+
+    void h2pSetMeasurementActive(bool active);
+
+    void h2pNotifyCommit(uint64_t measured_units)
+    {
+        ittage->h2pNotifyCommit(measured_units);
+    }
 
 
     void commitPredWrongSource(const FetchTarget &entry);

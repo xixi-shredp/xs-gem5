@@ -177,6 +177,20 @@ class HistoryManager
         return speculativeHists;
     }
 
+    // A trap replays the actual retired prefix, which may contain multiple
+    // controls whose taken target equals fallthrough. Remove the old block
+    // descriptor before adding these bounded, ordered updates for the same ID.
+    void truncateFrom(const uint64_t stream_id)
+    {
+        auto it = speculativeHists.begin();
+        while (it != speculativeHists.end()) {
+            if (it->streamId >= stream_id)
+                it = speculativeHists.erase(it);
+            else
+                ++it;
+        }
+    }
+
     /**
      * @brief Handles history recovery during squash
      *

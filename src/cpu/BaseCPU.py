@@ -150,6 +150,13 @@ class BaseCPU(ClockedObject):
     warmupInstCount = Param.Counter(0,
         "reset stats when any thread has reached this inst count")
 
+    instructionPhaseControl = Param.Bool(False,
+        "Use exact O3 restore/warmup/measure commit boundaries")
+    gcptRestoreBase = Param.Addr(0,
+        "Loaded GCPT restorer base; zero disables GCPT phase detection")
+    gcptRestoreMaxInsts = Param.Counter(100000000,
+        "Maximum retired instructions before verified GCPT restore completion")
+
     enable_difftest = Param.Bool(False,"use NEMU as ref to difftest")
     dump_commit = Param.Bool(False,"dump commit log")
     dump_start = Param.Int(0,"dump start num")

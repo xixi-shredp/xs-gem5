@@ -19,6 +19,9 @@ namespace branch_prediction {
 
 namespace btb_pred {
 
+struct HintQuery;
+struct HintSnapshot;
+
 inline uint8_t
 foldAsidHash16To4(uint16_t asid)
 {
@@ -375,6 +378,26 @@ struct FetchTarget
     // FIXME: use vec
     std::array<std::shared_ptr<void>, 9> predMetas; // each component has a meta, TODO
 
+    // Hint owns a separate prediction-time snapshot and query. Never reuse a
+    // legacy component's metadata slot or overwrite its training prediction.
+    std::shared_ptr<HintQuery> hintQuery;
+    std::shared_ptr<const HintSnapshot> hintSnapshot;
+
+    // A retired control can target its own fallthrough and share an FTQ entry
+    // with later controls. Preserve their order, with a hard bound of one
+    // prediction block (predictWidth / 2) enforced by recordRetiredBranch.
+    // Ordinary instructions need only lastRetiredPC, not individual records.
+    struct RetiredControl
+    {
+        BranchInfo branch;
+        bool taken;
+    };
+    std::vector<RetiredControl> retiredControls;
+    BranchInfo retiredTakenBranch;
+    bool retiredTaken = false;
+    Addr lastRetiredPC = 0;
+    bool retiredPrefixRecovered = false;
+
     Tick predTick;         // tick of the prediction
     boost::dynamic_bitset<> history; // record GHR/s0History
     boost::dynamic_bitset<> phistory; // record PATH/s0History
@@ -439,6 +462,18 @@ struct FetchTarget
 
     Addr getRealStartPC() const {
         return startPC;
+    }
+
+    void recordRetiredBranch(const BranchInfo &branch, bool taken,
+                             unsigned max_insts)
+    {
+        fatal_if(retiredControls.size() >= max_insts,
+                 "Retired control prefix exceeds one prediction block");
+        retiredControls.push_back({branch, taken});
+        if (taken) {
+            retiredTaken = true;
+            retiredTakenBranch = branch;
+        }
     }
 
     DirectionHistoryUpdate getGHistUpdateDuringSquash(
@@ -549,6 +584,9 @@ struct FullBTBPrediction
     unsigned predSource;
     OverrideReason overrideReason;
     Tick predTick;
+
+    std::shared_ptr<HintQuery> hintQuery;
+    std::shared_ptr<const HintSnapshot> hintSnapshot;
 
     //only use for countering the source of the prediction
     int s1Source;

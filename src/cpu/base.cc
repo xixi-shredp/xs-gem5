@@ -363,7 +363,8 @@ BaseCPU::init()
 {
     // Set up instruction-count-based termination events, if any. This needs
     // to happen after threadContexts has been constructed.
-    if (params().max_insts_any_thread != 0) {
+    if (params().max_insts_any_thread != 0 &&
+        !params().instructionPhaseControl) {
         const char *cause = "a thread reached the max instruction count";
         for (ThreadID tid = 0; tid < numThreads; ++tid)
             scheduleInstStop(tid, params().max_insts_any_thread, cause);

@@ -6,6 +6,7 @@
 
 #include "base/debug_helper.hh"
 #include "base/intmath.hh"
+#include "base/output.hh"
 #include "base/trace.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "debug/DecoupleBP.hh"
@@ -13,6 +14,7 @@
 #include "debug/DecoupleBPUseful.hh"
 #include "debug/ITTAGE.hh"
 #include "debug/ITTAGEHistory.hh"
+#include "sim/core.hh"
 
 namespace gem5 {
 
@@ -29,6 +31,8 @@ tablePcShifts(p.TTagPcShifts),
 histLengths(p.histLengths),
 maxHistLen(p.maxHistLen),
 numTablesToAlloc(p.numTablesToAlloc),
+h2pStat(p.h2pStat),
+h2pOutput(p.h2pStat, p.h2pStatInterval),
 ittageStats(this, p.numPredictors)
 {
     DPRINTF(ITTAGE, "BTBITTAGE constructor numBr=%d\n", numBr);
@@ -70,6 +74,10 @@ ittageStats(this, p.numPredictors)
     //     useAlt[i].resize(1, 0);
     // }
     usefulResetCnt = 0;
+
+    if (h2pStat) {
+        registerExitCallback([this]() { h2pOutput.dump(); });
+    }
 }
 
 ThreadID
@@ -180,7 +188,8 @@ BTBITTAGE::lookupHelper(Addr startAddr, const std::vector<BTBEntry> &btbEntries,
                 ittageStats.predTableHits.sample(main_info.table, 1);
             }
             // Note: predTargetHit will be updated in the update phase when we know the actual target
-            TagePrediction pred(btb_entry.pc, main_info, alt_info, use_alt, main_target);
+            TagePrediction pred(btb_entry.pc, main_info, alt_info, use_alt,
+                                main_target);
             threadMeta[tid]->preds[btb_entry.pc] = pred;
         }
     }
@@ -310,8 +319,10 @@ BTBITTAGE::refreshPredictionMeta(Addr stream_start,
         bool use_alt_provider = main_weak && alt_provided;
         bool use_base = !provided || (provided && main_weak && !alt_provided);
         bool use_alt = use_alt_provider || use_base;
+
         meta->preds[btb_entry.pc] = TagePrediction(
-            btb_entry.pc, main_info, alt_info, use_alt, main_info.entry.target);
+            btb_entry.pc, main_info, alt_info, use_alt,
+            main_info.entry.target);
     }
 }
 
@@ -718,19 +729,47 @@ BTBITTAGE::checkFoldedHist(const boost::dynamic_bitset<> &hist, ThreadID tid,
 void
 BTBITTAGE::commitBranch(const FetchTarget &stream, const DynInstPtr &inst)
 {
-    if (!(inst->isIndirectCtrl() && !inst->isReturn())) {
+    if (!H2PIndirectStats::eligibleIndirect(
+            inst->isIndirectCtrl(), inst->isReturn())) {
         // ittage only cares about indirect non-return branches
         return;
     }
-    auto meta = std::static_pointer_cast<TageMeta>(stream.predMetas[getComponentIdx()]);
     auto pc = inst->getPC();
     auto npc = inst->getNPC();
-    auto pred_it = meta->preds.find(pc);
+    std::shared_ptr<TageMeta> meta;
+    const int component_idx = getComponentIdx();
+    if (component_idx >= 0 &&
+        static_cast<size_t>(component_idx) < stream.predMetas.size()) {
+        meta = std::static_pointer_cast<TageMeta>(
+            stream.predMetas[component_idx]);
+    }
+
     bool this_branch_hit = false;
     Addr pred_npc;
-    if (pred_it != meta->preds.end()) {
-        this_branch_hit = true;
-        pred_npc = (pred_it->second).target;
+    const TagePrediction *prediction = nullptr;
+    if (meta) {
+        auto pred_it = meta->preds.find(pc);
+        if (pred_it != meta->preds.end()) {
+            prediction = &pred_it->second;
+            this_branch_hit = true;
+            pred_npc = prediction->target;
+        }
+    }
+
+    if (h2pStat) {
+        // predBranchInfo retains the final target consumed by fetch, including
+        // BTB fallback. Resolution updates exeBranchInfo, not this prediction.
+        // ITTAGE provider metadata and its training target are irrelevant here.
+        const auto final_target = H2PIndirectStats::selectFinalTarget(
+            pc, stream.predTaken, stream.predBranchInfo.pc,
+            stream.predBranchInfo.target);
+        const bool h2p_miss = !final_target || *final_target != npc;
+        h2pOutput.record(pc, npc, final_target);
+        DPRINTF(ITTAGE,
+                "H2P commit pc %#lx target %#lx valid %d predicted %#lx "
+                "miss %d\n",
+                pc, npc, final_target.has_value(),
+                final_target.value_or(0), h2p_miss);
     }
     bool iscalled = inst->isCall();
 
@@ -770,6 +809,25 @@ BTBITTAGE::commitBranch(const FetchTarget &stream, const DynInstPtr &inst)
     }
 
 
+}
+
+void
+BTBITTAGE::resetStats()
+{
+    TimedBaseBTBPredictor::resetStats();
+    h2pOutput.reset();
+}
+
+void
+BTBITTAGE::h2pSetMeasurementActive(bool active)
+{
+    h2pOutput.setMeasurementActive(active);
+}
+
+void
+BTBITTAGE::h2pNotifyCommit(uint64_t measured_units)
+{
+    h2pOutput.notifyCommit(measured_units);
 }
 
 #ifndef UNIT_TEST

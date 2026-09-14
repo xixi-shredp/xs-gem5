@@ -4,6 +4,7 @@
 #include <array>
 #include <utility>
 
+#include "arch/riscv/pcstate.hh"
 #include "arch/riscv/regs/misc.hh"
 #include "base/debug_helper.hh"
 #include "base/output.hh"
@@ -82,6 +83,7 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
       bpDBSwitches(p.bpDBSwitches),
       numStages(p.numStages),
       ftqEntries(p.ftq_size),
+      idealTwoTaken(p.idealTwoTaken),
       ftqMode(p.smtFTQMode),
       ftqPolicy(p.smtFTQPolicy),
       smtFTQThreshold(p.smtFTQThreshold),
@@ -89,6 +91,23 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
       resolveBlockThreshold(p.resolveBlockThreshold),
       dbpBtbStats(this, p.numStages, p.fsq_size, maxInstsNum, p.numThreads)
 {
+    hintConfig.mode = p.hintMode;
+    hintConfig.candidatePath = p.hintCandidates;
+    hintConfig.metadataPath = p.hintMetadata;
+    hintConfig.camEntries = p.hintCamEntries;
+    hintConfig.contextEntries = p.hintContextEntries;
+    hintConfig.ways = p.hintWays;
+    hintConfig.slotEntries = p.hintSlotEntries;
+    hintConfig.confQueueDepth = p.hintConfQueueDepth;
+    fatal_if(p.hintMode != "off" &&
+             (numThreads != 1 || numPredictingThreads != 1 ||
+              idealTwoTaken || pairtage->isEnabled()),
+             "Hint requires one thread and one prediction per cycle, without "
+             "PairTAGE or idealTwoTaken");
+    fatal_if(p.hintMode != "off" && historyBits != HintGHRBits,
+             "Hint requires maxHistLen=%u", HintGHRBits);
+    fatal_if(p.hintMode != "off" && numStages <= HintS3Stage,
+             "Hint requires an S3 prediction stage at index %u", HintS3Stage);
     panic_if(numPredictingThreads == 0 ||
              numPredictingThreads > numThreads ||
              numPredictingThreads > 2,
@@ -98,6 +117,14 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
     panic_if(numPredictingThreads > 1 && pairtage->isEnabled(),
              "PairTAGE does not yet support concurrent SMT predictions; "
              "disable PairTAGE or set smtNumPredictingThreads to one");
+    panic_if(idealTwoTaken && numThreads != 1,
+             "idealTwoTaken currently supports exactly one thread (got %u)",
+             numThreads);
+    panic_if(idealTwoTaken && numPredictingThreads != 1,
+             "idealTwoTaken requires smtNumPredictingThreads=1 (got %u)",
+             numPredictingThreads);
+    panic_if(idealTwoTaken && pairtage->isEnabled(),
+             "idealTwoTaken and PairTAGE cannot be enabled together");
     panic_if(ftqMode == SMTFTQMode::Shared &&
              ftqPolicy == SMTFTQPolicy::Threshold &&
              smtFTQThreshold > ftqEntries,
@@ -177,8 +204,51 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
     lastPhaseFsqEntryNumFetchedInstDist.resize(maxInstsNum+1, 0);
 
     registerExitCallback([this]() {
+        if (hint) {
+            hint->tick(cpu->curCycle());
+            hint->finish();
+        }
         this->dumpStats();
     });
+}
+
+void
+DecoupledBPUWithBTB::setCpu(CPU *_cpu)
+{
+    cpu = _cpu;
+    if (hintConfig.mode == "off")
+        return;
+    fatal_if(hint, "Hint predictor cannot be attached to a CPU twice");
+    hintConfig.clockPeriod = cpu->clockPeriod();
+    hint = std::make_unique<HintIndirect>(hintConfig, this);
+    threads[0].hintHistory.configure(hint->historyPCs());
+}
+
+void
+DecoupledBPUWithBTB::hintCycleTick()
+{
+    if (hint)
+        hint->tick(cpu->curCycle());
+}
+
+void
+DecoupledBPUWithBTB::resetStats()
+{
+    if (hint)
+        hint->tick(cpu->curCycle());
+    BPredUnit::resetStats();
+    if (hint)
+        hint->resetStats();
+}
+
+void
+DecoupledBPUWithBTB::h2pSetMeasurementActive(bool active)
+{
+    ittage->h2pSetMeasurementActive(active);
+    if (hint) {
+        hint->tick(cpu->curCycle());
+        hint->setMeasurementActive(active);
+    }
 }
 
 bool
@@ -360,6 +430,9 @@ DecoupledBPUWithBTB::tick()
     }
 
     unsigned predictionsStarted = 0;
+    unsigned idealQueriesStarted = 0;
+    unsigned predictionsEnqueued = 0;
+    unsigned takenPredictionsEnqueued = 0;
     for (const ThreadID tid : scheduledTids) {
         if (threads[tid].blockPredictionPending) {
             DPRINTF(Override, "Prediction blocked to prioritize resolve update\n");
@@ -371,10 +444,43 @@ DecoupledBPUWithBTB::tick()
             dbpBtbStats.predictionsStartedByThread[tid]++;
         }
     }
-    dbpBtbStats.predictionsStartedPerCycle.sample(predictionsStarted);
-
+    idealQueriesStarted = predictionsStarted;
     for (int tid = 0; tid < numThreads; tid++) {
-        processNewPrediction(tid);
+        const bool firstEnqueued = processNewPrediction(tid);
+        if (firstEnqueued) {
+            predictionsEnqueued++;
+            takenPredictionsEnqueued += ftq.back(tid).predTaken;
+        }
+
+        if (idealTwoTaken && firstEnqueued) {
+            auto &thread = threads[tid];
+            if (canStartPrediction(tid) &&
+                !thread.blockPredictionPending) {
+                DPRINTF(DecoupleBP,
+                        "Ideal2Taken slot 1 lookup: tid %u startPC %#lx\n",
+                        tid, thread.s0PC);
+                requestNewPrediction(tid);
+                idealQueriesStarted++;
+                dbpBtbStats.idealTwoTakenSecondSlotQueries++;
+                DPRINTF(DecoupleBP,
+                        "Ideal2Taken slot 1 result: startPC %#lx, taken %d, "
+                        "target %#lx, bubbles %u\n",
+                        thread.finalPred.bbStart,
+                        thread.finalPred.isTaken(),
+                        thread.finalPred.getTarget(predictWidth),
+                        thread.numOverrideBubbles);
+
+                const bool secondEnqueued = processNewPrediction(tid);
+                if (secondEnqueued) {
+                    predictionsEnqueued++;
+                    takenPredictionsEnqueued += ftq.back(tid).predTaken;
+                } else if (thread.numOverrideBubbles > 0) {
+                    dbpBtbStats.idealTwoTakenSecondSlotBubbleStops++;
+                }
+            } else if (ftqFull(tid)) {
+                dbpBtbStats.idealTwoTakenSecondSlotFTQStops++;
+            }
+        }
 
         // Decrement override bubbles counter
         auto& numOverrideBubbles = threads[tid].numOverrideBubbles;
@@ -383,6 +489,17 @@ DecoupledBPUWithBTB::tick()
             dbpBtbStats.overrideBubbleNum++;
             DPRINTF(Override, "Consuming override bubble, %d remaining\n", numOverrideBubbles);
         }
+    }
+
+    dbpBtbStats.predictionsStartedPerCycle.sample(predictionsStarted);
+    if (idealTwoTaken) {
+        assert(idealQueriesStarted <= 2);
+        assert(predictionsEnqueued <= 2);
+        assert(takenPredictionsEnqueued <= predictionsEnqueued);
+        dbpBtbStats.idealTwoTakenQueriesPerCycle.sample(idealQueriesStarted);
+        dbpBtbStats.idealTwoTakenEnqueuesPerCycle.sample(predictionsEnqueued);
+        dbpBtbStats.idealTwoTakenTakenPerCycle.sample(
+            takenPredictionsEnqueued);
     }
 
     for (int tid = 0; tid < numThreads; tid++) {
@@ -431,8 +548,60 @@ DecoupledBPUWithBTB::requestNewPrediction(ThreadID tid)
     }
 
     // Query each predictor component with current PC and history
+    std::shared_ptr<const HintSnapshot> hint_snapshot;
+    std::shared_ptr<HintQuery> hint_query;
+    if (hint) {
+        hint_snapshot = std::make_shared<const HintSnapshot>(
+            thread.hintHistory, thread.s0History);
+        const Addr end = (thread.s0PC + predictWidth) &
+            ~mask(floorLog2(predictWidth) - 1);
+        hint_query = hint->query(hint_snapshot, thread.s0PC, end,
+                                 cpu->curCycle());
+    }
     for (int i = 0; i < numComponents; i++) {
         components[i]->putPCHistory(thread.s0PC, thread.s0History, predsOfEachStage);  //s0History not used
+    }
+
+    if (hint) {
+        // The original last stage remains the fast-training broadcast. Hint
+        // supplies only the fetch target; it does not train an indirect hint
+        // target into the legacy S1 predictor tables.
+        thread.hintBaselineS3 = predsOfEachStage.back();
+        FullBTBPrediction *baseline = &predsOfEachStage.front();
+        for (int stage = numStages - 1; stage >= 0; --stage) {
+            if (!predsOfEachStage[stage].btbEntries.empty()) {
+                baseline = &predsOfEachStage[stage];
+                break;
+            }
+        }
+        const auto selected = baseline->getTakenEntry();
+        const auto s3_selected =
+            predsOfEachStage[HintS3Stage].getTakenEntry();
+        const bool identified = s3_selected.valid &&
+            s3_selected.pc == selected.pc && s3_selected.isIndirect &&
+            !s3_selected.isReturn;
+        const auto override_target = hint->complete(hint_query,
+            selected.pc, baseline->getTarget(predictWidth), selected.valid,
+            selected.isIndirect, selected.isReturn, identified);
+        for (unsigned stage = 0; stage < numStages; ++stage) {
+            auto &prediction = predsOfEachStage[stage];
+            prediction.hintQuery = hint_query;
+            prediction.hintSnapshot = hint_snapshot;
+            if (!override_target || stage < HintS3Stage)
+                continue;
+            const auto entry = prediction.getTakenEntry();
+            if (!entry.valid || !entry.isIndirect || entry.isReturn ||
+                entry.pc != selected.pc)
+                continue;
+            auto it = std::find_if(prediction.indirectTargets.begin(),
+                prediction.indirectTargets.end(),
+                [&entry](const auto &item) { return item.first == entry.pc; });
+            if (it == prediction.indirectTargets.end())
+                prediction.indirectTargets.emplace_back(entry.pc,
+                                                         *override_target);
+            else
+                it->second = *override_target;
+        }
     }
 
     generateFinalPredAndCreateBubbles(tid);
@@ -537,17 +706,19 @@ DecoupledBPUWithBTB::generateFinalPredAndCreateBubbles(ThreadID tid)
 
     // Match RTL fastTrain: every valid S3 prediction is broadcast to the S1
     // predictors, even when the final result is fallthrough.
+    auto &fast_train_prediction = hint ? threads[tid].hintBaselineS3 :
+                                        predsOfEachStage[numStages - 1];
     if (ubtb->isEnabled()) {
-        ubtb->updateUsingS3Pred(predsOfEachStage[numStages - 1]);
+        ubtb->updateUsingS3Pred(fast_train_prediction);
     }
     if (abtb->isEnabled() && !ftq.empty(tid)) {
         auto previous_block_startpc = ftq.back(tid).startPC;
-        abtb->updateUsingS3Pred(predsOfEachStage[numStages - 1], previous_block_startpc);
+        abtb->updateUsingS3Pred(fast_train_prediction, previous_block_startpc);
     } else if (abtb->isEnabled()) {
-        abtb->updateUsingS3Pred(predsOfEachStage[numStages - 1], 0);
+        abtb->updateUsingS3Pred(fast_train_prediction, 0);
     }
     if (microtage->isEnabled()) {
-        microtage->updateUsingS3Pred(predsOfEachStage[numStages - 1]);
+        microtage->updateUsingS3Pred(fast_train_prediction);
     }
 
     // 4. Record override bubbles and update statistics
@@ -576,21 +747,21 @@ DecoupledBPUWithBTB::generateFinalPredAndCreateBubbles(ThreadID tid)
 }
 
 // this function enqueues fsq and update s0PC and s0History
-void
+bool
 DecoupledBPUWithBTB::processNewPrediction(ThreadID tid)
 {
 
     // Check if a prediction is available to enqueue
     if (!threads[tid].validprediction) {
         DPRINTF(Override, "No prediction available to enqueue into FSQ\n");
-        return;
+        return false;
     }
 
     // Check for override bubbles
     // When higher stages override lower stages, bubbles are needed for pipeline consistency
     if (threads[tid].numOverrideBubbles > 0) {
         DPRINTF(Override, "Waiting for %u override bubbles before enqueuing\n", threads[tid].numOverrideBubbles);
-        return;
+        return false;
     }
 
     // Monitor FSQ size for statistics
@@ -598,7 +769,7 @@ DecoupledBPUWithBTB::processNewPrediction(ThreadID tid)
     if (ftqFull(tid)) {
         dbpBtbStats.fsqFullCannotEnq++;
         DPRINTF(Override, "FSQ is full (%lu entries)\n", ftq.size(tid));
-        return;
+        return false;
     }
 
     auto& s0PC = threads[tid].s0PC;
@@ -606,7 +777,7 @@ DecoupledBPUWithBTB::processNewPrediction(ThreadID tid)
     // Validate PC value
     if (s0PC == MaxAddr) {
         DPRINTF(DecoupleBP, "Invalid PC value %#lx, cannot make prediction\n", s0PC);
-        return;
+        return false;
     }
 
     DPRINTF(DecoupleBP, "Creating new prediction for PC %#lx\n", s0PC);
@@ -646,6 +817,8 @@ DecoupledBPUWithBTB::processNewPrediction(ThreadID tid)
     // 7. Increment statistics
     printTarget(ftq.back(tid));
     dbpBtbStats.fsqEntryEnqueued++;
+
+    return true;
 
 }
 
@@ -923,6 +1096,9 @@ DecoupledBPUWithBTB::handleSquash(ThreadID tid, unsigned target_id,
 
     // Find the target being squashed
     if (!ftq.hasTarget(target_id, tid)) {
+        fatal_if(hint,
+                 "Hint cannot restore all histories from missing FTQ target "
+                 "%u (tid %u, redirect %#x)", target_id, tid, redirect_pc);
         DPRINTF(DecoupleBP,
                 "Ignore squash for tid %u on missing FTQ target %u; "
                 "recovering predictor state from redirect PC %#lx\n",
@@ -937,11 +1113,30 @@ DecoupledBPUWithBTB::handleSquash(ThreadID tid, unsigned target_id,
     // Get reference to the target
     auto &target = ftq.get(target_id, tid);
 
+    // A TC redirect can still name the last retired FTQ entry before the
+    // handler commits its first instruction. Its replayed ledger contains
+    // multiple records with this ID; recover the complete retired prefix
+    // again rather than treating the handler PC as a branch in the old block.
+    if (target.retiredPrefixRecovered) {
+        fatal_if(squash_type == SQUASH_CTRL,
+                 "Control squash refers to already retired trap prefix %u",
+                 target_id);
+        squash_type = SQUASH_TRAP;
+    }
+
     // Update target state
     target.resolved = true;
     target.exeTaken = actually_taken;
-    target.squashPC = squash_pc.instAddr();
+    target.squashPC = target.retiredPrefixRecovered ? target.lastRetiredPC :
+                                                      squash_pc.instAddr();
     target.squashType = squash_type;
+
+    if (squash_type == SQUASH_TRAP) {
+        // A trap retains all instructions up to and including lastRetiredPC.
+        // The ordered prefix includes taken controls targeting fallthrough.
+        target.exeTaken = target.retiredTaken;
+        target.exeBranchInfo = target.retiredTakenBranch;
+    }
 
     // Special handling for control squash - create branch info
     if (squash_type == SQUASH_CTRL && static_inst) {
@@ -989,6 +1184,7 @@ DecoupledBPUWithBTB::controlSquash(unsigned target_id,
     bool is_indirect = static_inst->isIndirectCtrl();
 
     if (!ftq.hasTarget(target_id, tid)) {
+        fatal_if(hint, "Hint control squash is missing FTQ target %u", target_id);
         threads[tid].redirectPending = false;
         DPRINTF(DecoupleBP, "The squashing target is insane, ignore squash on it");
         return;
@@ -1041,8 +1237,19 @@ DecoupledBPUWithBTB::trapSquash(unsigned target_id,
             "Trap squash: target id: %d, inst_pc: %#lx\n",
             target_id, inst_pc.instAddr());
 
-    // Call shared squash handling logic
-    handleSquash(tid, target_id, SQUASH_TRAP, inst_pc, inst_pc.instAddr());
+    // inst_pc is the post-trap handler PC. Only the last committed PC belongs
+    // to the retiring block; using the handler to truncate this block can
+    // insert speculative conditionals and discard a retired call/return.
+    std::unique_ptr<PCStateBase> retired_pc(inst_pc.clone());
+    retired_pc->as<RiscvISA::PCState>().set(last_committed_pc);
+    if (ftq.hasTarget(target_id, tid)) {
+        fatal_if(ftq.get(target_id, tid).lastRetiredPC != last_committed_pc,
+                 "Trap retired prefix mismatch: FTQ %u has %#x, commit has %#x",
+                 target_id, ftq.get(target_id, tid).lastRetiredPC,
+                 last_committed_pc);
+    }
+    handleSquash(tid, target_id, SQUASH_TRAP, *retired_pc,
+                 inst_pc.instAddr());
 }
 
 void
@@ -1299,6 +1506,8 @@ DecoupledBPUWithBTB::createFetchTargetEntry(
 
     entry.s1Source = pred.s1Source;
     entry.s3Source = pred.s3Source;
+    entry.hintQuery = pred.hintQuery;
+    entry.hintSnapshot = pred.hintSnapshot;
 
     // Save predictors' metadata
     for (int i = 0; i < numComponents; i++) {
@@ -1379,7 +1588,8 @@ DecoupledBPUWithBTB::getPreservedReturnAddr(const DynInstPtr &dynInst)
  */
 void
 DecoupledBPUWithBTB::updateHistoryForPrediction(FetchTarget &entry,
-                                                FullBTBPrediction &pred)
+                                                FullBTBPrediction &pred,
+                                                FetchTargetId history_id)
 {
     ThreadID tid = entry.tid;
     auto& s0History = threads[tid].s0History;
@@ -1390,6 +1600,13 @@ DecoupledBPUWithBTB::updateHistoryForPrediction(FetchTarget &entry,
     const auto ghist_update = pred.getGHistUpdate();
     const auto bwhist_update = pred.getBwHistUpdate();
     const auto phist_update = pred.getPHistUpdate();
+
+    if (hint) {
+        const auto branch = pred.getTakenEntry();
+        threads[tid].hintHistory.update(branch.pc,
+            pred.getTarget(predictWidth), branch.isIndirect, branch.isCall,
+            branch.isReturn, branch.valid);
+    }
 
     // RAS updates its speculative stack, not folded history.
     if (ras->isEnabled()) {
@@ -1414,7 +1631,8 @@ DecoupledBPUWithBTB::updateHistoryForPrediction(FetchTarget &entry,
     // Update history manager and verify TAGE folded history
     historyManagers[tid].addSpeculativeHist(
         entry.startPC, entry.history, entry.phistory, ghist_update,
-        phist_update, entry.predBranchInfo, ftq.backId(tid) + 1);
+        phist_update, entry.predBranchInfo,
+        history_id ? history_id : ftq.backId(tid) + 1);
 
     // Update global backward history
     histShiftIn(bwhist_update.shamt, bwhist_update.taken, s0BwHistory);
@@ -1450,6 +1668,96 @@ DecoupledBPUWithBTB::updateHistoryForPrediction(FetchTarget &entry,
 #endif
 }
 
+void
+DecoupledBPUWithBTB::recoverRetiredHistoryForTrap(
+    FetchTarget &target, FetchTargetId target_id)
+{
+    const ThreadID tid = target.tid;
+    auto &thread = threads[tid];
+    thread.s0History = target.history;
+    thread.s0PHistory = target.phistory;
+    thread.s0BwHistory = target.bwhistory;
+    thread.s0LHistory = target.lhistory;
+    thread.s0PairPhase = target.pairPhase;
+
+    // First restore each component to exactly the same block-entry snapshot.
+    // Clear exeTaken in the temporary descriptor so RAS does not reapply the
+    // final call/return before the whole actual prefix is replayed in order.
+    FetchTarget base = target;
+    base.exeTaken = false;
+    base.exeBranchInfo = BranchInfo();
+    PathHistoryUpdate no_path;
+    no_path.shamt = 0;
+    if (ras->isEnabled())
+        ras->recoverState(base);
+    if (abtb->isEnabled())
+        abtb->recoverState(base);
+    for (auto *component : components) {
+        component->recoverHist(thread.s0History, base, 0, false);
+        component->recoverPHist(thread.s0PHistory, base, no_path);
+    }
+    if (mgsc->isEnabled()) {
+        mgsc->recoverBwHist(thread.s0BwHistory, base, 0, false);
+        mgsc->recoverIHist(base, 0, false);
+        mgsc->recoverLHist(thread.s0LHistory, base, 0, false);
+    }
+    if (hint) {
+        fatal_if(!target.hintSnapshot,
+                 "Hint trap squash has no block-entry history snapshot");
+        thread.hintHistory = target.hintSnapshot->history;
+    }
+    historyManagers[tid].truncateFrom(target_id);
+
+    // A normally taken branch ends a block, but a branch targeting its own
+    // fallthrough can remain in the same FTQ entry. A bounded list, rather
+    // than only the last taken branch, preserves such histories and RAS ops.
+    fatal_if(target.retiredControls.size() > maxInstsNum,
+             "Trap retired prefix exceeds one prediction block");
+    for (const auto &retired : target.retiredControls) {
+        const auto &branch = retired.branch;
+        FullBTBPrediction pred;
+        pred.tid = tid;
+        pred.asidHash = target.asidHash;
+        pred.bbStart = target.startPC;
+        pred.btbEntries.emplace_back(branch);
+        if (branch.isCond)
+            pred.condTakens.emplace_back(branch.pc, retired.taken);
+        pred.returnTarget = branch.target;
+
+        FetchTarget step;
+        step.tid = tid;
+        step.asidHash = target.asidHash;
+        step.startPC = target.startPC;
+        step.history = thread.s0History;
+        step.phistory = thread.s0PHistory;
+        step.predBranchInfo = branch;
+        step.predTaken = retired.taken;
+        // Reuse the production update path for all raw and folded histories,
+        // including IMLI and RAS, instead of duplicating their hash semantics.
+        updateHistoryForPrediction(step, pred, target_id);
+    }
+    advancePairPhase(thread.s0PairPhase);
+    target.retiredPrefixRecovered = true;
+
+    DPRINTF(DecoupleBPHist,
+            "Trap retired history restored: FTQ %lu last_pc %#lx controls %lu "
+            "redirect is independent of history boundary\n",
+            target_id, target.lastRetiredPC, target.retiredControls.size());
+#ifndef NDEBUG
+    checkHistories(thread.s0History, thread.s0PHistory, tid);
+    if (tage->isEnabled())
+        tage->checkFoldedHist(tage->usesPathHistory() ? thread.s0PHistory :
+                             thread.s0History, tid, "trap retired prefix");
+    if (ittage->isEnabled())
+        ittage->checkFoldedHist(thread.s0PHistory, tid, "trap retired prefix");
+    if (microtage->isEnabled())
+        microtage->checkFoldedHist(thread.s0PHistory, tid, "trap retired prefix");
+    if (mgsc->isEnabled())
+        mgsc->checkFoldedHist(thread.s0History, thread.s0PHistory,
+                             thread.s0LHistory, tid, "trap retired prefix");
+#endif
+}
+
 /**
  * @brief Recovers branch history during a squash event
  *
@@ -1470,6 +1778,10 @@ DecoupledBPUWithBTB::recoverHistoryForSquash(
     SquashType squash_type,
     Addr redirect_pc)
 {
+    if (squash_type == SQUASH_TRAP) {
+        recoverRetiredHistoryForTrap(target, target_id);
+        return;
+    }
     ThreadID tid = target.tid;
     auto& s0History = threads[tid].s0History;
     auto& s0PHistory = threads[tid].s0PHistory;
@@ -1491,6 +1803,11 @@ DecoupledBPUWithBTB::recoverHistoryForSquash(
         squash_pc.instAddr(), is_conditional, actually_taken, redirect_pc);
     const auto phist_update = target.getPHistUpdateDuringSquash(
         squash_pc.instAddr(), actually_taken, redirect_pc);
+
+    if (hint) {
+        threads[tid].hintHistory.recoverForSquash(target,
+            squash_pc.instAddr(), squash_type == SQUASH_CTRL);
+    }
 
     // RAS recovers its speculative stack, not folded history.
     if (ras->isEnabled()) {

@@ -43,6 +43,10 @@ typings
 /*debug*
 /*build*
 /*test*
+!/tests/
+!/tests/gem5/
+!/tests/gem5/ideal_2_taken/
+!/tests/gem5/ideal_2_taken/**
 /*txt*
 /ext/dramsim3/DRAMsim3/
 .cache

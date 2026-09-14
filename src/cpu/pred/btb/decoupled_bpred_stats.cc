@@ -3,6 +3,7 @@
 #include <tuple>
 
 #include "base/output.hh"
+#include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/pred/btb/decoupled_bpred.hh"
 #include "debug/BTB.hh"
@@ -503,6 +504,18 @@ DecoupledBPUWithBTB::DBPBTBStats::DBPBTBStats(
     "number of distinct SMT thread predictions started in one cycle"),
     ADD_STAT(predictionsStartedByThread, statistics::units::Count::get(),
     "number of predictions started for each SMT thread"),
+    ADD_STAT(idealTwoTakenQueriesPerCycle, statistics::units::Count::get(),
+    "ideal 2-taken predictor lookups started in one cycle"),
+    ADD_STAT(idealTwoTakenEnqueuesPerCycle, statistics::units::Count::get(),
+    "fetch targets enqueued by ideal 2-taken in one cycle"),
+    ADD_STAT(idealTwoTakenTakenPerCycle, statistics::units::Count::get(),
+    "taken fetch targets enqueued by ideal 2-taken in one cycle"),
+    ADD_STAT(idealTwoTakenSecondSlotQueries, statistics::units::Count::get(),
+    "ideal 2-taken cycles that issued a second predictor lookup"),
+    ADD_STAT(idealTwoTakenSecondSlotBubbleStops, statistics::units::Count::get(),
+    "ideal 2-taken second lookups retained due to override bubbles"),
+    ADD_STAT(idealTwoTakenSecondSlotFTQStops, statistics::units::Count::get(),
+    "ideal 2-taken cycles that could not issue a second lookup because the FTQ became full"),
     ADD_STAT(s1PredWrongFallthrough, statistics::units::Count::get(), "S1pred wrong full throughs"),
     ADD_STAT(s1PredWrongUbtb, statistics::units::Count::get(),"S1pred wrong using ubtb "),
     ADD_STAT(s1PredWrongAbtb, statistics::units::Count::get(), "S1pred wrong using abtb "),
@@ -525,6 +538,9 @@ DecoupledBPUWithBTB::DBPBTBStats::DBPBTBStats(
     branchClassCounts.init(NumBranchClasses);
     predictionsStartedPerCycle.init(0, numThreads, 1);
     predictionsStartedByThread.init(numThreads);
+    idealTwoTakenQueriesPerCycle.init(0, 2, 1);
+    idealTwoTakenEnqueuesPerCycle.init(0, 2, 1);
+    idealTwoTakenTakenPerCycle.init(0, 2, 1);
     branchClassMisses.init(NumBranchClasses);
     controlSquashByClass.init(NumBranchClasses);
     for (int i = 0; i < NumS1SourceBuckets; ++i) {
@@ -849,7 +865,7 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
     addBranchClassStat(branchClass, mispred);
 
     // ---------- Find corresponding fetch target entry ----------
-    auto entry = ftq.get(inst->ftqId, inst->threadNumber);
+    auto &entry = ftq.get(inst->ftqId, inst->threadNumber);
 
     // Record branch trace if enabled
     if (enableBranchTrace) {
@@ -863,6 +879,18 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
     Addr fallThruPC = rv_pc.getFallThruPC();
     BranchInfo info(branchAddr, targetAddr, inst->staticInst, fallThruPC-branchAddr);
     bool taken = rv_pc.branching() || inst->isUncondCtrl();
+
+    // Keep the bounded actual retired control prefix. A trap may
+    // arrive after a non-control instruction in this block; prediction data
+    // and the handler PC cannot reconstruct this prefix reliably.
+    entry.recordRetiredBranch(info, taken, maxInstsNum);
+
+    if (hint && inst->isIndirectCtrl() && !inst->isReturn()) {
+        const bool final_valid = entry.predTaken &&
+            entry.predBranchInfo.pc == branchAddr;
+        hint->commit(entry.hintQuery, inst->seqNum, branchAddr, targetAddr,
+            final_valid, entry.predBranchInfo.target, cpu->curCycle());
+    }
 
     // ---------- Process misprediction and update statistics ----------
     processMisprediction(entry, branchAddr, info, taken, mispred);
@@ -878,7 +906,19 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
     }
     //here add final counter
 
-    if (mispred) {
+    // Preserve attribution to the original predictor for an overridden
+    // indirect branch. Hint's corrected/harmed/final counters are separate;
+    // a Hint error must not be charged to ITTAGE merely because it supplied
+    // the original S3 prediction.
+    bool source_miss = mispred;
+    if (entry.hintQuery && entry.hintQuery->overridden &&
+        entry.hintQuery->pc == branchAddr &&
+        inst->isIndirectCtrl() && !inst->isReturn()) {
+        const auto &query = *entry.hintQuery;
+        source_miss = !query.baselineValid || query.baselinePC != branchAddr ||
+                      query.baselineTarget != targetAddr;
+    }
+    if (source_miss) {
         commitPredWrongSource(entry);
     }
 
@@ -970,6 +1010,8 @@ DecoupledBPUWithBTB::notifyInstCommit(const DynInstPtr &inst)
 {
     // Update committed instruction count for target
     ftq.get(inst->ftqId, inst->threadNumber).commitInstNum++;
+    ftq.get(inst->ftqId, inst->threadNumber).lastRetiredPC =
+        inst->pcState().instAddr();
 
     // Update global committed instruction count
     numInstCommitted++;

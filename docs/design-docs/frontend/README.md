@@ -14,6 +14,7 @@
 6. `ubtb_design.md`
 7. `abtb_design.md`
 8. `microtage_design.md`
+9. `ittage_h2p_stat.md`
 
 各文档当前大致分工如下：
 
@@ -25,11 +26,9 @@
 - `ubtb_design.md`：最前级 taken-target predictor
 - `abtb_design.md`：ahead pipeline 下的较大容量早期 target predictor
 - `microtage_design.md`：放在 `S1` 的轻量方向预测器
+- `ittage_h2p_stat.md`：ITTAGE H2P 间接分支识别的统计口径与输出格式
 
-当前暂未单独展开的模块包括：
-
-- `ITTAGE`
-- `RAS`
+当前暂未单独展开的模块包括 `RAS`；ITTAGE 目前只记录了 H2P 统计功能，尚无完整设计说明。
 
 如果后续继续补文档，建议仍沿用这一目录中的写法：
 

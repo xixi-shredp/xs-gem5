@@ -819,6 +819,32 @@ def run_vanilla(options, root, testsys, cpu_class):
         if options.warmup_insts_no_switch != None:
             testsys.cpu[i].warmupInstCount = options.warmup_insts_no_switch
 
+    # Count warm-up/measure only after the embedded GCPT restorer retires.
+    # The O3 CPU recognizes its register-restoring mret sequence in memory.
+    phase_requested = (
+        options.warmup_insts_no_switch is not None
+        or options.maxinsts is not None
+        or getattr(options, "h2p_stat", False)
+        or getattr(options, "h2p_hint_mode", "off") != "off"
+    )
+    phase_cpu_supported = isinstance(testsys.cpu[0], BaseO3CPU)
+    if getattr(options, "h2p_stat", False) and not phase_cpu_supported:
+        fatal("--h2p-stat requires an O3 CPU for committed instruction accounting")
+    if getattr(options, "h2p_hint_mode", "off") != "off" and not phase_cpu_supported:
+        fatal("H2P Hint requires an O3 CPU for committed instruction accounting")
+    if phase_requested and np == 1 and phase_cpu_supported:
+        if switch_cpus is not None:
+            fatal("Exact restore/warm-up counting does not support CPU switching")
+        if options.warmup_insts_no_switch is not None:
+            if options.warmup_insts_no_switch < 0:
+                fatal("--warmup-insts-no-switch must be nonnegative")
+            if options.maxinsts and options.maxinsts <= options.warmup_insts_no_switch:
+                fatal("--maxinsts must exceed the warm-up instruction count")
+        testsys.cpu[0].instructionPhaseControl = True
+        if (getattr(options, "generic_rv_cpt", None)
+                and not getattr(options, "raw_cpt", False)):
+            testsys.cpu[0].gcptRestoreBase = 0x80000000
+
     checkpoint_dir = None
     root.apply_config(options.param)
     m5.instantiate(checkpoint_dir)

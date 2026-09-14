@@ -1136,6 +1136,15 @@ class BTBITTAGE(TimedBaseBTBPredictor):
     cxx_class = 'gem5::branch_prediction::btb_pred::BTBITTAGE'
     cxx_header = "cpu/pred/btb/btb_ittage.hh"
 
+    h2pStat = Param.Bool(
+        Parent.h2pStat,
+        "Collect H2P records when enabled by the parent branch predictor",
+    )
+
+    h2pStatInterval = Param.UInt64(
+        Parent.h2pStatInterval, "Measured instructions per H2P window; zero disables",
+    )
+
     numPredictors = Param.Unsigned(5, "Number of TAGE predictors")
     tableSizes = VectorParam.Unsigned([256]*2 + [512]*3, "the ITTAGE T0~Tn length")
     TTagBitSizes = VectorParam.Unsigned([9]*5, "the T0~Tn entry's tag bit size")
@@ -1222,6 +1231,25 @@ class DecoupledBPUWithBTB(BranchPredictor):
 
     # n = 2
     ftq_size = Param.Unsigned(128, "Fetch target queue size")
+    idealTwoTaken = Param.Bool(
+        False,
+        "Allow up to two sequential BTB predictions in one cycle",
+    )
+    h2pStat = Param.Bool(
+        False,
+        "Collect committed indirect branches with absent or incorrect final targets",
+    )
+    h2pStatInterval = Param.UInt64(
+        0, "Measured instructions per H2P window; zero disables",
+    )
+    hintMode = Param.String("off", "H2P Hint mode: off, collect, or replay")
+    hintCandidates = Param.String("", "Ranked Hint candidate JSON file")
+    hintMetadata = Param.String("", "Frozen Hint metadata JSON file")
+    hintCamEntries = Param.Unsigned(16, "H2P Hint CAM capacity")
+    hintContextEntries = Param.Unsigned(4096, "Total Hint context SRAM entries")
+    hintWays = Param.Unsigned(2, "Hint context SRAM associativity")
+    hintSlotEntries = Param.Unsigned(32, "Shared Hint target slots")
+    hintConfQueueDepth = Param.Unsigned(8, "Hint confidence write queue depth")
     smtFTQMode = Param.SMTFTQMode('Independent',
                                   "SMT FTQ mode: per-thread independent or shared quota")
     smtFTQPolicy = Param.SMTFTQPolicy('Partitioned',

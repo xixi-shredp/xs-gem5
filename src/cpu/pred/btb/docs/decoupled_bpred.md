@@ -4,6 +4,29 @@
 
 The `DecoupledBPUWithBTB` is a decoupled branch prediction unit implementation using a BTB-based design for GEM5. It separates branch prediction from instruction fetch, enabling more accurate predictions through multiple prediction stages. The predictor uses several components including UBTB (micro-BTB), BTB (Branch Target Buffer), and TAGE predictor to generate predictions at different pipeline stages.
 
+## Ideal two-taken mode
+
+`--ideal-2-taken` gives a single-thread `DecoupledBPUWithBTB` up to two
+ordered predictor lookups per cycle.  After the first prediction is enqueued,
+the predictor advances the PC, speculative histories, folded histories, and
+RAS state before querying the next fetch block.  The second lookup therefore
+sees the control-flow state produced by the first one, but the dependency adds
+no cycle latency.
+
+Both lookups use the normal predictor components and retain prediction misses,
+targets, override bubbles, and FTQ backpressure.  A fall-through block consumes
+one of the two lookup slots.  The second lookup is not issued until the first
+block has entered the FTQ, so a pending override bubble or a full FTQ ends work
+for that cycle.  The option is currently restricted to one thread and cannot
+be combined with PairTAGE.  It changes BPU production bandwidth only; Fetch
+still follows its independently configured fetch-width and two-fetch rules.
+
+Example:
+
+```sh
+build/RISCV/gem5.opt configs/example/kmhv3.py --ideal-2-taken <other options>
+```
+
 ## Key Data Structures
 
 ### 1. Prediction Components

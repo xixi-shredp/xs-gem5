@@ -586,6 +586,11 @@ decode QUADRANT {
                 0x1: fence_i({{
                 }}, uint64_t, IsNonSpeculative, IsSerializeAfter, No_OpClass);
             }
+            format CboZeroOp {
+                0x2: decode IMM12 {
+                    0x004: cbo_zero();
+                }
+            }
         }
 
         0x04: decode FUNCT3 {

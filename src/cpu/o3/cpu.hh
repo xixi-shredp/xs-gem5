@@ -134,6 +134,20 @@ class CPU : public BaseCPU
 
     bool dump_done = false;
     bool warmup_done = false;
+    enum class InstructionPhase { Restore, Warmup, Measure, Finished };
+    InstructionPhase instructionPhase = InstructionPhase::Measure;
+    uint64_t restoreCommitted = 0;
+    uint64_t warmupCommitted = 0;
+    uint64_t measureCommitted = 0;
+    uint64_t retiredPostRestore = 0;
+    unsigned terminalFusionExcess = 0;
+    bool warmupFusionSplit = false;
+    Addr restoreMretPc = 0;
+    Addr restoreTargetPc = 0;
+    unsigned restoreTailCommitted = 0;
+    void initInstructionPhases();
+    void logInstructionPhase(const char *phase) const;
+
 
 
     /** The tick event used for scheduling CPU ticks. */
@@ -399,6 +413,10 @@ class CPU : public BaseCPU
     ListIt addInst(const DynInstPtr &inst);
 
     /** Function to tell the CPU that an instruction has completed. */
+    void finishInstructionCommit(const DynInstPtr &inst);
+    bool instructionMeasurementFinished() const
+    { return instructionPhase == InstructionPhase::Finished; }
+
     void instDone(ThreadID tid, const DynInstPtr &inst);
 
     /** Remove an instruction from the front end of the list.  There's

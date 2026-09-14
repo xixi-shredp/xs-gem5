@@ -19,6 +19,10 @@ from common import CpuConfig
 from common import MemConfig
 from common import ObjectList
 from common import PrefetcherConfig
+from common.H2PStat import add_h2p_stat_option, validate_h2p_stat_config
+from common.H2PHint import (
+    add_h2p_hint_options, h2p_hint_params, validate_h2p_hint_config,
+)
 from common.Caches import *
 from common import Options
 from common.FUScheduler import *
@@ -430,6 +434,13 @@ def config_difftest(cpu_list, args, sys):
 
 def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
     np = args.num_cpus
+    h2p_config_error = validate_h2p_stat_config(args)
+    if h2p_config_error:
+        fatal(h2p_config_error)
+    hint_config_error = validate_h2p_hint_config(args)
+    if hint_config_error:
+        fatal(hint_config_error)
+
     # Set the cache line size for the entire system
     test_sys.cache_line_size = args.cacheline_size
 
@@ -488,6 +499,14 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
 
         test_sys.cpu[i].branchPred = DecoupledBPUWithBTB(
             bpDBSwitches=bp_db_switches,
+            idealTwoTaken=getattr(args, 'ideal_2_taken', False),
+            h2pStat=getattr(args, 'h2p_stat', False),
+            h2pStatInterval=getattr(args, 'h2p_stat_interval', 0),
+            ittage=BTBITTAGE(
+                h2pStat=getattr(args, 'h2p_stat', False),
+                h2pStatInterval=getattr(args, 'h2p_stat_interval', 0),
+            ),
+            **h2p_hint_params(args),
         )
         test_sys.cpu[i].branchPred.isDumpMisspredPC = True
 
@@ -900,6 +919,17 @@ def xiangshan_system_init():
         default=False,
         help="Use BTBTAGEUpperBound in kmhv3 instead of the default BTBTAGE",
     )
+    parser.add_argument(
+        "--ideal-2-taken",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow DecoupledBPUWithBTB to make up to two sequential "
+            "predictions per cycle"
+        ),
+    )
+    add_h2p_stat_option(parser)
+    add_h2p_hint_options(parser)
     parser.add_argument(
         "--disable-l1-direct-compression",
         action="store_false",

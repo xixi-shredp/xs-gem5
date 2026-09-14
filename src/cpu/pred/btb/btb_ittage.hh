@@ -5,6 +5,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "cpu/o3/limits.hh"
 #include "cpu/pred/btb/common.hh"
 #include "cpu/pred/btb/folded_hist.hh"
+#include "cpu/pred/btb/h2p_indirect_stats.hh"
 #include "cpu/pred/btb/timed_base_pred.hh"
 #include "debug/DecoupleBP.hh"
 #include "params/BTBITTAGE.hh"
@@ -122,6 +124,11 @@ class BTBITTAGE : public TimedBaseBTBPredictor
 
     void commitBranch(const FetchTarget &stream, const DynInstPtr &inst) override;
 
+    void resetStats() override;
+
+    void h2pSetMeasurementActive(bool active);
+    void h2pNotifyCommit(uint64_t measured_units);
+
     // check folded hists after speculative update and recover
     void checkFoldedHist(const bitset &history, const char *when);
     void checkFoldedHist(const bitset &history, ThreadID tid, const char *when);
@@ -192,6 +199,10 @@ class BTBITTAGE : public TimedBaseBTBPredictor
     unsigned numTablesToAlloc;
 
     unsigned numBr;
+
+    const bool h2pStat;
+
+    H2PIndirectStatsOutput h2pOutput;
 
     unsigned instShiftAmt {1};
 

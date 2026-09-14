@@ -1330,7 +1330,8 @@ Commit::commitInsts()
             continue;
         }
 
-        while (num_committed < commit_width &&
+        while (!cpu->instructionMeasurementFinished() &&
+               num_committed < commit_width &&
                num_committed_per_thread[commit_thread] <
                    commit_width_per_thread[commit_thread] &&
                (commitStatus[commit_thread] == Running ||
@@ -1678,6 +1679,8 @@ Commit::commitInsts()
                     bool onInstBoundary = !head_inst->isMicroop() ||
                                         head_inst->isLastMicroop() ||
                                         !head_inst->isDelayedCommit();
+
+                    cpu->finishInstructionCommit(head_inst);
 
                     if (onInstBoundary) {
                         int count = 0;

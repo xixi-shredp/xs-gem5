@@ -55,6 +55,7 @@
 #include "cpu/o3/limits.hh"
 #include "cpu/o3/thread_context.hh"
 #include "cpu/o3/trace/TraceReader.hh"
+#include "cpu/pred/btb/decoupled_bpred.hh"
 #include "cpu/reg_class.hh"
 #include "cpu/simple_thread.hh"
 #include "cpu/thread_context.hh"
@@ -69,6 +70,7 @@
 #include "sim/cur_tick.hh"
 #include "sim/full_system.hh"
 #include "sim/process.hh"
+#include "sim/sim_exit.hh"
 #include "sim/stat_control.hh"
 #include "sim/system.hh"
 
@@ -576,6 +578,11 @@ CPU::tick()
 
     //Tick each of the stages
 
+    if (auto *bpu = dynamic_cast<
+            branch_prediction::btb_pred::DecoupledBPUWithBTB *>(fetch.getBp())) {
+        bpu->hintCycleTick();
+    }
+
     commit.tick();
     iew.tick();
     rename.tick();
@@ -638,6 +645,7 @@ void
 CPU::startup()
 {
     BaseCPU::startup();
+    initInstructionPhases();
 
     fetch.startupStage();
     decode.startupStage();
@@ -690,6 +698,8 @@ CPU::deactivateThread(ThreadID tid)
 Counter
 CPU::totalInsts() const
 {
+    if (params().instructionPhaseControl)
+        return restoreCommitted + warmupCommitted + measureCommitted;
     Counter total(0);
 
     ThreadID size = thread.size();
@@ -1368,20 +1378,166 @@ CPU::addInst(const DynInstPtr &inst)
 }
 
 void
+CPU::logInstructionPhase(const char *phase) const
+{
+    inform("H2P_PHASE phase=%s tick=%llu committed=%llu warmup=%llu "
+           "measure=%llu retired_post_restore=%llu terminal_fusion_excess=%u "
+           "warmup_fusion_split=%u",
+           phase, curTick(), thread[0]->numInst,
+           warmupCommitted, measureCommitted, retiredPostRestore,
+           terminalFusionExcess, warmupFusionSplit);
+}
+
+void
+CPU::initInstructionPhases()
+{
+    if (!params().instructionPhaseControl)
+        return;
+    fatal_if(numThreads != 1, "Instruction phase control requires one thread");
+    fatal_if(params().max_insts_any_thread &&
+             params().max_insts_any_thread <= warmupInstCount,
+             "maxinsts must exceed warmup instructions");
+    auto *bpu = dynamic_cast<branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
+        fetch.getBp());
+    const Addr base = params().gcptRestoreBase;
+    if (base) {
+        fatal_if(!FullSystem, "GCPT restore detection requires full-system mode");
+        const auto size = system->physProxy.read<uint32_t>(base + 4);
+        fatal_if(size < 132 || size > 0x100000,
+                 "Unsupported GCPT restorer header size: %#x", size);
+        fatal_if(system->physProxy.read<uint64_t>(base + 0xecdb0) != 0xbeef,
+                 "GCPT boot flag does not identify a checkpoint restore");
+        restoreTargetPc = system->physProxy.read<uint64_t>(base + 0xecdb8);
+        fatal_if(!restoreTargetPc || (restoreTargetPc & 1),
+                 "Invalid GCPT saved target PC: %#x", restoreTargetPc);
+        // LibCheckpointAlpha uses .option norvc. Match all integer restores,
+        // ending with ld sp,16(sp); mret, rather than choosing the first mret.
+        unsigned candidates = 0;
+        for (Addr offset = 124; offset + 4 <= size; offset += 4) {
+            if (system->physProxy.read<uint32_t>(base + offset) != 0x30200073)
+                continue;
+            bool matches = true;
+            for (unsigned i = 0; i < 31; ++i) {
+                const unsigned reg = i == 0 ? 1 : (i == 30 ? 2 : i + 2);
+                const uint32_t encoding = (reg * 8 << 20) | (2 << 15) |
+                                          (3 << 12) | (reg << 7) | 3;
+                matches &= system->physProxy.read<uint32_t>(
+                    base + offset - 124 + i * 4) == encoding;
+            }
+            if (matches) {
+                restoreMretPc = base + offset;
+                ++candidates;
+            }
+        }
+        fatal_if(candidates != 1,
+                 "Unsupported GCPT integer restore tail: found %u matches",
+                 candidates);
+        instructionPhase = InstructionPhase::Restore;
+        inform("GCPT_RESTORE base=%#x size=%#x mret=%#x target=%#x",
+               base, size, restoreMretPc, restoreTargetPc);
+        registerExitCallback([this] {
+            fatal_if(instructionPhase == InstructionPhase::Restore,
+                     "Simulation ended before verified GCPT restore completion");
+        });
+    } else {
+        instructionPhase = warmupInstCount ? InstructionPhase::Warmup :
+                                            InstructionPhase::Measure;
+    }
+    if (bpu)
+        bpu->h2pSetMeasurementActive(instructionPhase == InstructionPhase::Measure);
+}
+
+void
+CPU::finishInstructionCommit(const DynInstPtr &inst)
+{
+    auto *bpu = dynamic_cast<branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
+        fetch.getBp());
+    if (inst->isNop() || inst->isInstPrefetch() ||
+        (inst->isMicroop() && !inst->isLastMicroop()))
+        return;
+    const unsigned units = inst->staticInst->isFusion() ? 2 : 1;
+    if (!params().instructionPhaseControl) {
+        if (bpu)
+            bpu->h2pNotifyCommit(units);
+        return;
+    }
+    if (instructionPhase == InstructionPhase::Restore) {
+        restoreCommitted += units;
+        fatal_if(params().gcptRestoreMaxInsts &&
+                 restoreCommitted > params().gcptRestoreMaxInsts,
+                 "GCPT restore exceeded instruction watchdog");
+        const Addr pc = inst->pcState().instAddr();
+        if (pc == restoreMretPc - 124 + restoreTailCommitted * 4)
+            ++restoreTailCommitted;
+        else
+            restoreTailCommitted = pc == restoreMretPc - 124 ? 1 : 0;
+        if (pc == restoreMretPc) {
+            fatal_if(restoreTailCommitted != 32 ||
+                     inst->pcState().as<RiscvISA::PCState>().npc() != restoreTargetPc,
+                     "GCPT restore tail or saved target mismatch at mret");
+            logInstructionPhase("restore_complete");
+            instructionPhase = warmupInstCount ? InstructionPhase::Warmup :
+                                                InstructionPhase::Measure;
+            if (!warmupInstCount) {
+                statistics::reset();
+                if (bpu)
+                    bpu->h2pSetMeasurementActive(true);
+                logInstructionPhase("warmup_complete");
+            }
+        }
+        return;
+    }
+    retiredPostRestore += units;
+    // Account fused retirement as the same two architectural units used by
+    // instDone, while allowing a phase/window boundary between those units.
+    for (unsigned i = 0; i < units; ++i) {
+        if (instructionPhase == InstructionPhase::Finished)
+            break;
+        thread[inst->threadNumber]->threadStats.numInsts++;
+        cpuStats.committedInsts[inst->threadNumber]++;
+        ipc_r++;
+        cpi_r.roll(1);
+        if (instructionPhase == InstructionPhase::Warmup) {
+            ++warmupCommitted;
+            if (warmupCommitted == warmupInstCount) {
+                warmupFusionSplit = i + 1 < units;
+                logInstructionPhase("warmup_complete");
+                statistics::reset();
+                instructionPhase = InstructionPhase::Measure;
+                if (bpu)
+                    bpu->h2pSetMeasurementActive(true);
+            }
+        } else {
+            ++measureCommitted;
+            if (bpu)
+                bpu->h2pNotifyCommit(1);
+            if (params().max_insts_any_thread &&
+                warmupCommitted + measureCommitted == params().max_insts_any_thread) {
+                terminalFusionExcess = units - i - 1;
+                instructionPhase = InstructionPhase::Finished;
+                if (bpu)
+                    bpu->h2pSetMeasurementActive(false);
+                logInstructionPhase("measure_complete");
+                exitSimLoop("a thread reached the max instruction count");
+            }
+        }
+    }
+}
+
+void
 CPU::instDone(ThreadID tid, const DynInstPtr &inst)
 {
     if (!inst->isMicroop() || inst->isLastMicroop()) {
         thread[tid]->numInst++;
-        thread[tid]->threadStats.numInsts++;
-        cpuStats.committedInsts[tid]++;
-        ipc_r++;
-        cpi_r.roll(1);
-        if (inst->staticInst->isFusion()) {
+        if (inst->staticInst->isFusion())
             thread[tid]->numInst++;
-            thread[tid]->threadStats.numInsts++;
-            cpuStats.committedInsts[tid]++;
-            ipc_r++;
-            cpi_r.roll(1);
+        if (!params().instructionPhaseControl) {
+            const unsigned units = inst->staticInst->isFusion() ? 2 : 1;
+            thread[tid]->threadStats.numInsts += units;
+            cpuStats.committedInsts[tid] += units;
+            ipc_r += units;
+            for (unsigned i = 0; i < units; ++i)
+                cpi_r.roll(1);
         }
 
         const uint64_t committedThreadInsts = thread[tid]->numInst;
@@ -1401,7 +1557,8 @@ CPU::instDone(ThreadID tid, const DynInstPtr &inst)
         // Check for instruction-count-based events.
         thread[tid]->comInstEventQueue.serviceEvents(thread[tid]->numInst);
 
-        if (this->warmupInstCount && !warmup_done &&
+        if (!params().instructionPhaseControl &&
+                this->warmupInstCount && !warmup_done &&
                 committedThreadInsts >= this->warmupInstCount) {
             fprintf(stderr, "Will trigger stat dump and reset\n");
             statistics::schedStatEvent(true, true, curTick(), 0);
