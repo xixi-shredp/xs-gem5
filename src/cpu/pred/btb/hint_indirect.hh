@@ -4,10 +4,12 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "base/types.hh"
@@ -34,7 +36,8 @@ struct HintQuery
     uint32_t key = 0;
     unsigned set = 0;
     unsigned way = 0;
-    unsigned slot = 0;
+    size_t entryId = std::numeric_limits<size_t>::max();
+    size_t slot = 0;
     bool tagHit = false;
     unsigned conf = 0;
     Addr hintTarget = 0;
@@ -55,6 +58,7 @@ class HintIndirect
     struct Config
     {
         std::string mode = "off";
+        bool ideal = false;
         std::string candidatePath;
         std::string metadataPath;
         unsigned camEntries = 16;
@@ -94,14 +98,28 @@ class HintIndirect
         uint64_t occupancySum = 0;
     };
 
+    enum class Table { Cam, Context, Slots };
+
+    struct Occupancy
+    {
+        uint64_t residentEntries = 0;
+        double avgEntries = 0;
+        uint64_t peakEntries = 0;
+        uint64_t sampleCycles = 0;
+        uint64_t finiteCapacity = 0;
+    };
+
     HintIndirect(const Config &config, statistics::Group *parent);
     ~HintIndirect();
 
     bool enabled() const { return config.mode != "off"; }
     bool isCollect() const { return config.mode == "collect"; }
     bool isReplay() const { return config.mode == "replay"; }
+    bool isIdeal() const { return config.ideal; }
     const std::vector<Addr> &historyPCs() const { return historyPcs; }
 
+    // Ordered [start, end) bounds. Empty or wrapped bounds consume the normal
+    // query opportunity and return no candidate, matching the original BTBs.
     std::shared_ptr<HintQuery> query(
         const std::shared_ptr<const HintSnapshot> &snapshot,
         Addr block_start, Addr block_end, uint64_t cycle);
@@ -120,13 +138,17 @@ class HintIndirect
 
     void tick(uint64_t cycle);
     void setMeasurementActive(bool active);
+    void setMeasurementActive(bool active, uint64_t cycle);
     void resetStats();
+    void resetStats(uint64_t cycle);
     void finish();
 
     const Counts &totals() const { return global; }
     const QueueCounts &queueCounts() const { return queueStats; }
     size_t pendingUpdates() const { return updates.size(); }
     unsigned confidenceAt(unsigned set, unsigned way) const;
+    unsigned confidenceAtEntry(size_t entry_id) const;
+    Occupancy occupancy(Table table) const;
 
   private:
     struct CamEntry
@@ -138,7 +160,8 @@ class HintIndirect
     {
         bool valid = false;
         uint32_t tag = 0;
-        unsigned slot = 0;
+        uint32_t key = 0;
+        size_t slot = 0;
         unsigned conf = 0;
     };
     struct Update
@@ -185,10 +208,15 @@ class HintIndirect
     unsigned sets = 0;
     unsigned indexBits = 0;
     std::vector<Addr> candidates;
+    std::vector<Addr> candidateIndex;
     std::vector<Addr> historyPcs;
     std::vector<CamEntry> cam;
     std::vector<Addr> slots;
     std::vector<ContextEntry> entries;
+    std::unordered_map<uint32_t, size_t> idealIndex;
+    std::array<uint64_t, 3> residentEntries{};
+    uint64_t occupancyCycles = 0;
+    std::optional<uint64_t> occupancyCycle;
     std::deque<Update> updates;
     Counts global;
     std::map<Addr, Counts> perPc;

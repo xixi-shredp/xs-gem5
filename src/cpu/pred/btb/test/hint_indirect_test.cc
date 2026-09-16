@@ -6,6 +6,8 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <map>
 #include <sstream>
 
 #include <boost/dynamic_bitset.hpp>
@@ -16,6 +18,7 @@
 #include "cpu/pred/btb/hint_history.hh"
 #include "cpu/pred/btb/hint_indirect.hh"
 #include "cpu/pred/btb/history_manager.hh"
+#include "cpu/pred/btb/test/hint_history_ideal_test.hh"
 #include "sim/sim_exit.hh"
 
 namespace gem5::branch_prediction::btb_pred
@@ -325,17 +328,79 @@ metadataText(bool empty)
         "{\"set\":0,\"way\":1,\"tag\":2,\"slot\":1,\"conf\":3,\"valid\":true}]}");
 }
 
+// Convert only driver-owned finite fixtures. Production acceptance is always
+// decided by HintIndirect's loader, never by this fixture generator.
+std::string
+idealizeMetadata(const std::string &finite)
+{
+    boost::property_tree::ptree tree;
+    std::istringstream input(finite);
+    boost::property_tree::read_json(input, tree);
+    std::ostringstream output;
+    output << "{\"format\":\"h2p-hint\",\"version\":3,"
+        "\"storage\":\"unlimited\",\"hash_version\":2,\"ghr_bits\":970,"
+        "\"mask_order\":[\"GHR\",\"GITHR\",\"LITHR\",\"Call\",\"Return\"],"
+        "\"history\":{\"githr_targets\":64,\"lithr_targets\":4,\"call_pcs\":64,"
+        "\"return_pcs\":64,\"target_shift\":1},"
+        "\"finite_reference\":{\"cam_entries\":16,\"context_entries\":4096,"
+        "\"ways\":2,\"slot_entries\":32},\"layout\":{\"conf_queue_depth\":8},"
+        "\"source\":{\"purpose\":\"production-helper-test\"},\"cam\":[";
+    bool first = true;
+    for (const auto &node : tree.get_child("cam")) {
+        if (!first) output << ',';
+        first = false;
+        const auto &row = node.second;
+        output << "{\"pc\":\"" << row.get<std::string>("pc")
+               << "\",\"mask\":" << row.get<unsigned>("mask")
+               << ",\"valid\":" << (row.get<bool>("valid") ? "true" : "false")
+               << '}';
+    }
+    output << "],\"slots\":[";
+    first = true;
+    for (const auto &node : tree.get_child("slots")) {
+        if (!first) output << ',';
+        first = false;
+        output << '"' << node.second.get_value<std::string>() << '"';
+    }
+    output << "],\"entries\":[";
+    first = true;
+    for (const auto &node : tree.get_child("entries")) {
+        if (!first) output << ',';
+        first = false;
+        const auto &row = node.second;
+        output << "{\"key\":" << ((row.get<uint32_t>("tag") << 11) |
+                                    row.get<uint32_t>("set"))
+               << ",\"slot\":" << row.get<uint64_t>("slot")
+               << ",\"conf\":" << row.get<unsigned>("conf")
+               << ",\"valid\":" << (row.get<bool>("valid") ? "true" : "false")
+               << '}';
+    }
+    output << "]}";
+    return output.str();
+}
+
+std::string
+idealizeCandidates(std::string finite)
+{
+    const std::string old_version = "\"version\":2";
+    const auto position = finite.find(old_version);
+    expect(position != std::string::npos, "finite candidate version fixture");
+    finite.replace(position, old_version.size(),
+                   "\"version\":3,\"storage\":\"unlimited\"");
+    return finite;
+}
+
 std::shared_ptr<const HintSnapshot>
 snapshotFor(const HintIndirect &hardware)
 {
     HintHistory history;
-    history.configure(hardware.historyPCs());
+    history.configure(hardware.historyPCs(), hardware.isIdeal());
     return std::make_shared<const HintSnapshot>(
         history, boost::dynamic_bitset<>(HintGHRBits));
 }
 
 void
-testMaskQueries()
+testMaskQueries(bool ideal = false)
 {
     HintHistory history;
     history.configure({0x1000});
@@ -382,15 +447,20 @@ testMaskQueries()
             ",\"conf\":3,\"valid\":true}]");
         HintIndirect::Config config;
         config.mode = "replay";
+        config.ideal = ideal;
+        const std::string prefix = ideal ? "ideal-mask-test-" : "mask-test-";
+        const std::string input_prefix = ideal ? "ideal-mask-test-" : "hint-mask-";
         config.metadataPath = writeInput(
-            "hint-mask-" + std::to_string(mask) + ".json", text);
-        config.outputPrefix = "mask-test-" + std::to_string(mask);
+            input_prefix + std::to_string(mask) + ".json",
+            ideal ? idealizeMetadata(text) : text);
+        config.outputPrefix = prefix + std::to_string(mask);
         HintIndirect hardware(config, nullptr);
         hardware.setMeasurementActive(true);
         auto query = hardware.query(snapshot, 0x1000, 0x1010, 1);
         const auto prediction = hardware.complete(query, 0x1000, 0x6000,
                                                    true, true, false, true);
-        expect(query->key == key && query->mask == mask && query->way == 1 &&
+        expect(query->key == key && query->mask == mask &&
+               (ideal ? query->entryId == 0 : query->way == 1) &&
                prediction == std::optional<Addr>(expected_target),
                "all 32 loaded CAM masks drive actual production SRAM lookup");
         hardware.commit(query, 1, 0x1000, expected_target,
@@ -403,15 +473,21 @@ testMaskQueries()
 }
 
 void
-testHardware(const std::string &metadata, const std::string &candidates)
+testHardware(const std::string &metadata, const std::string &candidates,
+             bool ideal = false)
 {
     HintIndirect::Config config;
     config.mode = "replay";
+    config.ideal = ideal;
     config.metadataPath = metadata;
     config.candidatePath = candidates;
-    config.outputPrefix = "replay-test";
+    config.outputPrefix = ideal ? "ideal-replay-test" : "replay-test";
     config.clockPeriod = 10;
     HintIndirect hardware(config, nullptr);
+    auto confidence = [&](unsigned way) {
+        return ideal ? hardware.confidenceAtEntry(way) :
+                       hardware.confidenceAt(0, way);
+    };
     const auto snapshot = snapshotFor(hardware);
     auto predict = [&](uint64_t cycle, Addr pc, Addr baseline = 0x6000) {
         auto query = hardware.query(snapshot, pc, pc + 16, cycle);
@@ -435,14 +511,14 @@ testHardware(const std::string &metadata, const std::string &candidates)
                         true, 0x4000, 10);
     }
     hardware.tick(10);
-    expect(hardware.confidenceAt(0, 0) == 3 &&
+    expect(confidence(0) == 3 &&
            hardware.pendingUpdates() == 3, "no same-cycle confidence bypass");
     hardware.tick(11);
     hardware.tick(11);
-    expect(hardware.confidenceAt(0, 0) == 2 &&
+    expect(confidence(0) == 2 &&
            hardware.pendingUpdates() == 2, "single write per cycle");
     hardware.tick(13);
-    expect(hardware.confidenceAt(0, 0) == 0 &&
+    expect(confidence(0) == 0 &&
            hardware.queueCounts().zeroTransitions == 1,
            "idle catch-up preserves writes at cycles 12 and 13");
     auto shadow = predict(14, 0x1000, 0x4000);
@@ -459,14 +535,15 @@ testHardware(const std::string &metadata, const std::string &candidates)
            "each recovery followed by one-to-zero is logged");
 
     auto two_way = predict(17, 0x2000, 0x5000);
-    expect(two_way->set == 0 && two_way->way == 1 &&
+    expect(two_way->set == 0 &&
+           (ideal ? two_way->entryId == 1 : two_way->way == 1) &&
            two_way->hintTarget == 0x5000, "second way selected by tag");
     auto absent = predict(18, 0x3000);
     expect(!absent->tagHit && !absent->overridden,
            "third key in same set has no implicit extra way");
     hardware.commit(absent, 18, 0x3000, 0x6000, true, 0x6000, 18);
     auto alias = predict(19, 0x20001002);
-    expect(alias->tagHit && alias->set == 0 && alias->way == 0,
+    expect(alias->tagHit && alias->set == 0 && alias->entryId == a->entryId,
            "full-PC alias uses the same physical table entry");
     auto contention = hardware.query(snapshot, 0x1000, 0x1010, 20);
     expect(contention->pc == 0x1000, "CAM selects earliest PC in block");
@@ -504,20 +581,20 @@ testHardware(const std::string &metadata, const std::string &candidates)
            hardware.queueCounts().dropped == 1,
            "eight-entry FIFO drops the new ninth update");
     hardware.tick(42);
-    expect(hardware.pendingUpdates() == 6 && hardware.confidenceAt(0, 1) == 3,
+    expect(hardware.pendingUpdates() == 6 && confidence(1) == 3,
            "saturation applies at writeback for multiple in-flight updates");
     hardware.finish();
     expect(hardware.pendingUpdates() == 6, "finish does not drain future writes");
-    const auto stats = readOutput("replay-test/hint-stats.json");
+    const auto stats = readOutput(config.outputPrefix + "/hint-stats.json");
     expect(stats.find("\"pending\":6") != std::string::npos,
            "pending updates are explicit in output");
-    const auto log = readOutput("replay-test/conf0.txt");
+    const auto log = readOutput(config.outputPrefix + "/conf0.txt");
     expect(std::count(log.begin(), log.end(), '\n') == 2 &&
            log.find("\"writeback_cycle\":13") != std::string::npos &&
            log.find("\"writeback_cycle\":16") != std::string::npos,
            "each logical confidence-zero write cycle is preserved");
 
-    config.outputPrefix = "reset-test";
+    config.outputPrefix = ideal ? "ideal-reset-test" : "reset-test";
     HintIndirect reset_hardware(config, nullptr);
     reset_hardware.setMeasurementActive(true);
     auto query = reset_hardware.query(snapshot, 0x1000, 0x1010, 1);
@@ -529,11 +606,11 @@ testHardware(const std::string &metadata, const std::string &candidates)
            reset_hardware.totals().executions == 0,
            "stats reset preserves FIFO and records carried-in update");
     reset_hardware.tick(2);
-    expect(reset_hardware.confidenceAt(0, 0) == 2 &&
+    expect(reset_hardware.confidenceAtEntry(0) == 2 &&
            reset_hardware.queueCounts().applied == 1,
            "carried-in write changes existing microarchitecture state");
     reset_hardware.resetStats();
-    expect(reset_hardware.confidenceAt(0, 0) == 2,
+    expect(reset_hardware.confidenceAtEntry(0) == 2,
            "stats reset preserves trained confidence");
     reset_hardware.finish();
 }
@@ -581,6 +658,677 @@ testCollect(const std::string &candidate_path)
            "missing prediction metadata never fabricates contexts");
 }
 
+void
+testUnlimitedCapacity()
+{
+    constexpr size_t count = 5001;
+    constexpr size_t target_count = 257;
+    auto text = idealizeMetadata(metadataText(true));
+    const auto replace = [&text](const std::string &old_text,
+                                  const std::string &new_text) {
+        const auto position = text.find(old_text);
+        expect(position != std::string::npos, "ideal capacity fixture field");
+        text.replace(position, old_text.size(), new_text);
+    };
+    std::ostringstream cam, targets, entries;
+    cam << "\"cam\":[{\"pc\":\"0x200\",\"mask\":0,\"valid\":false}";
+    for (size_t index = 0; index < count; ++index) {
+        cam << ",{\"pc\":\"0x" << std::hex << ((index + 1) * 4096)
+            << "\",\"mask\":0,\"valid\":true}";
+    }
+    cam << ",{\"pc\":\"0x20001002\",\"mask\":0,\"valid\":true}]";
+    targets << "\"slots\":[";
+    for (size_t index = 0; index < target_count; ++index) {
+        if (index) targets << ',';
+        targets << "\"0x" << std::hex << (0x80000000 + index * 2) << '"';
+    }
+    targets << ']';
+    // Put an invalid row first and reverse the valid keys. A saved entry ID
+    // must follow image row order, independent of key, PC, and finite set.
+    entries << "\"entries\":[{\"key\":0,\"slot\":0,\"conf\":0,\"valid\":false}";
+    for (size_t index = count; index-- > 0;) {
+        entries << ",{\"key\":" << ((index + 1) * 2048)
+                << ",\"slot\":" << (index % target_count)
+                << ",\"conf\":3,\"valid\":true}";
+    }
+    entries << ']';
+    replace("\"cam\":[]", cam.str());
+    replace("\"slots\":[]", targets.str());
+    replace("\"entries\":[]", entries.str());
+    HintIndirect::Config config;
+    config.mode = "replay";
+    config.ideal = true;
+    config.metadataPath = writeInput("hint-test-unlimited.json", text);
+    config.outputPrefix = "unlimited-capacity-test";
+    HintIndirect hardware(config, nullptr);
+    const auto snapshot = snapshotFor(hardware);
+    using Table = HintIndirect::Table;
+    expect(hardware.historyPCs().size() == count + 1,
+           "unlimited CAM and local-history candidates exceed 20 PCs");
+    for (const auto table : {Table::Cam, Table::Context, Table::Slots}) {
+        const auto occupancy = hardware.occupancy(table);
+        expect(occupancy.sampleCycles == 0 && occupancy.avgEntries == 0 &&
+               occupancy.peakEntries == 0,
+               "resident tables without measurement samples have zero mean/peak");
+    }
+    expect(hardware.occupancy(Table::Cam).residentEntries == count + 1 &&
+           hardware.occupancy(Table::Context).residentEntries == count &&
+           hardware.occupancy(Table::Slots).residentEntries == target_count,
+           "valid resident counts exclude invalid rows and deduplicate slots");
+    hardware.setMeasurementActive(true, 100);
+    uint64_t cycle = 101;
+    for (size_t index = 0; index < count; ++index) {
+        const Addr pc = (index + 1) * 4096;
+        auto query = hardware.query(snapshot, pc, pc + 16, cycle++);
+        const auto prediction = hardware.complete(query, pc, 0x4000,
+                                                   true, true, false, true);
+        expect(query->set == 0 && query->tagHit &&
+               query->entryId == count - index &&
+               query->slot == index % target_count &&
+               prediction == std::optional<Addr>(
+                   0x80000000 + (index % target_count) * 2),
+               "all 5001 keys in one original set survive with stable IDs");
+    }
+    auto original = hardware.query(snapshot, 0x1000, 0x1010, cycle++);
+    hardware.complete(original, 0x1000, 0x6000, true, true, false, true);
+    hardware.commit(original, 1, 0x1000, 0x6000,
+                    true, original->hintTarget, cycle - 1);
+    auto alias = hardware.query(snapshot, 0x20001002, 0x20001012, cycle++);
+    hardware.complete(alias, alias->pc, 0x6000, true, true, false, true);
+    expect(alias->key == original->key && alias->entryId == original->entryId &&
+           alias->conf == 2 && hardware.confidenceAtEntry(1) == 3,
+           "true 28-bit alias shares confidence; unrelated reverse ID is intact");
+    hardware.commit(alias, 2, alias->pc, alias->hintTarget,
+                    true, alias->hintTarget, cycle - 1);
+    auto contention = hardware.query(snapshot, 0x1000, 0x3000, cycle++);
+    expect(contention->pc == 0x1000 &&
+           !hardware.complete(contention, 0x2000, 0x80000002,
+                              true, true, false, true),
+           "unlimited CAM still cancels a later selected candidate");
+    const auto before_idle = hardware.occupancy(Table::Context).sampleCycles;
+    hardware.tick(cycle + 10000);
+    expect(hardware.occupancy(Table::Context).sampleCycles > before_idle + 9999,
+           "idle measurement cycles are included without querying the table");
+    hardware.setMeasurementActive(false, cycle + 20000);
+    const auto measured = hardware.occupancy(Table::Context);
+    expect(measured.sampleCycles == cycle + 20000 - 100 &&
+           measured.avgEntries == count && measured.peakEntries == count,
+           "frozen mean and peak equal resident count over exact phase boundaries");
+    hardware.tick(cycle + 30000);
+    expect(hardware.occupancy(Table::Context).sampleCycles == measured.sampleCycles,
+           "measurement end stops occupancy sampling");
+    hardware.finish();
+    expect(readOutput(config.outputPrefix + "/hint-stats.json").find(
+        "\"storage\":\"unlimited\"") != std::string::npos,
+        "unlimited statistics explicitly identify storage mode");
+}
+
+void
+testIdealOccupancyAndCollect()
+{
+    using Table = HintIndirect::Table;
+    HintIndirect::Config config;
+    config.mode = "replay";
+    config.ideal = true;
+    config.metadataPath = writeInput("hint-test-ideal-occupancy.json",
+                                    idealizeMetadata(metadataText(false)));
+    config.outputPrefix = "ideal-occupancy-test";
+    HintIndirect hardware(config, nullptr);
+    const auto snapshot = snapshotFor(hardware);
+    hardware.setMeasurementActive(true, 10);
+    std::shared_ptr<HintQuery> latest;
+    for (uint64_t cycle = 11; cycle <= 13; ++cycle) {
+        latest = hardware.query(snapshot, 0x1000, 0x1010, cycle);
+        hardware.complete(latest, 0x1000, 0x6000, true, true, false, true);
+        hardware.commit(latest, cycle, 0x1000, 0x6000, true, 0x4000, cycle);
+    }
+    hardware.tick(14);
+    expect(hardware.confidenceAtEntry(latest->entryId) == 0 &&
+           hardware.occupancy(Table::Context).residentEntries == 2,
+           "confidence-zero valid rows remain resident");
+    auto shadow = hardware.query(snapshot, 0x1000, 0x1010, 15);
+    hardware.complete(shadow, 0x1000, 0x4000, true, true, false, true);
+    hardware.commit(shadow, 15, 0x1000, 0x4000, true, 0x4000, 15);
+    hardware.resetStats(15);
+    const auto reset = hardware.occupancy(Table::Context);
+    expect(reset.residentEntries == 2 && reset.sampleCycles == 0 &&
+           reset.avgEntries == 0 && reset.peakEntries == 0 &&
+           hardware.pendingUpdates() == 1,
+           "reset preserves frozen storage and FIFO but clears occupancy samples");
+    hardware.tick(115);
+    expect(hardware.confidenceAtEntry(shadow->entryId) == 1 &&
+           hardware.occupancy(Table::Context).sampleCycles == 100,
+           "carried shadow update recovers and idle sampling restarts at reset");
+    hardware.setMeasurementActive(false, 125);
+    hardware.finish();
+    expect(hardware.occupancy(Table::Context).sampleCycles == 110,
+           "occupancy records exact post-reset measure duration");
+
+    config.outputPrefix = "ideal-no-samples-test";
+    HintIndirect no_samples(config, nullptr);
+    no_samples.setMeasurementActive(true, 100);
+    no_samples.setMeasurementActive(false, 100);
+    no_samples.finish();
+    expect(no_samples.occupancy(Table::Context).sampleCycles == 0 &&
+           no_samples.occupancy(Table::Context).avgEntries == 0 &&
+           no_samples.occupancy(Table::Context).peakEntries == 0,
+           "zero-length measure never fabricates an occupancy sample");
+
+    config.outputPrefix = "ideal-empty-test";
+    config.metadataPath = writeInput("hint-test-ideal-empty.json",
+                                    idealizeMetadata(metadataText(true)));
+    HintIndirect empty(config, nullptr);
+    empty.setMeasurementActive(true, 10);
+    empty.setMeasurementActive(false, 20);
+    empty.finish();
+    for (const auto table : {Table::Cam, Table::Context, Table::Slots}) {
+        const auto occupancy = empty.occupancy(table);
+        expect(occupancy.residentEntries == 0 && occupancy.avgEntries == 0 &&
+               occupancy.peakEntries == 0 && occupancy.sampleCycles == 10,
+               "empty table still records the measurement duration");
+    }
+
+    config.mode = "collect";
+    config.metadataPath.clear();
+    config.outputPrefix = "ideal-collect-test";
+    std::ostringstream candidates;
+    candidates << "{\"format\":\"h2p-hint-candidates\",\"version\":3,"
+        "\"storage\":\"unlimited\",\"source\":{},\"pcs\":[";
+    for (unsigned index = 0; index < 50; ++index) {
+        if (index) candidates << ',';
+        candidates << "\"0x" << std::hex << (0x1000 + index * 2) << '"';
+    }
+    candidates << "]}";
+    config.candidatePath = writeInput("hint-test-ideal-candidates-50.json",
+                                     candidates.str());
+    HintIndirect collect(config, nullptr);
+    collect.setMeasurementActive(true, 10);
+    const auto query = collect.query(snapshotFor(collect), 0x1000, 0x1100, 11);
+    expect(query->hasCandidate && query->pc == 0x1000,
+           "unlimited collection keeps earliest-candidate arbitration metadata");
+    expect(!collect.complete(query, 0x1062, 0x4000,
+                             true, true, false, true),
+           "unlimited collect never changes the prediction");
+    collect.commit(query, 1, 0x1062, 0x4000, true, 0x4000, 12);
+    collect.commit(nullptr, 2, 0x1000, 0x5000, false, 0, 13);
+    collect.setMeasurementActive(false, 20);
+    collect.finish();
+    for (const auto table : {Table::Cam, Table::Context, Table::Slots}) {
+        const auto occupancy = collect.occupancy(table);
+        expect(occupancy.residentEntries == 0 && occupancy.sampleCycles == 0,
+               "collect has no comparable resident hardware table occupancy");
+    }
+    const auto profile = readGzip(config.outputPrefix + "/hint-profile.jsonl.gz");
+    expect(profile.find("\"version\":3") != std::string::npos &&
+           profile.find("\"storage\":\"unlimited\"") != std::string::npos &&
+           profile.find("\"pc\":\"0x1062\"") != std::string::npos &&
+           profile.find("\"contexts\":null") != std::string::npos,
+           "v3 collection retains later candidate and absent-context observations");
+}
+
+void
+testFiniteIdealEquivalence()
+{
+    HintIndirect::Config finite_config;
+    finite_config.mode = "replay";
+    finite_config.metadataPath = writeInput("hint-equivalent-finite.json",
+                                            metadataText(false));
+    finite_config.outputPrefix = "equivalent-finite-test";
+    auto ideal_config = finite_config;
+    ideal_config.ideal = true;
+    ideal_config.metadataPath = writeInput("hint-equivalent-ideal.json",
+                                           idealizeMetadata(metadataText(false)));
+    ideal_config.outputPrefix = "equivalent-ideal-test";
+    HintIndirect finite(finite_config, nullptr);
+    HintIndirect ideal(ideal_config, nullptr);
+    const auto finite_snapshot = snapshotFor(finite);
+    const auto ideal_snapshot = snapshotFor(ideal);
+    finite.setMeasurementActive(true, 100);
+    ideal.setMeasurementActive(true, 100);
+    for (uint64_t cycle = 101; cycle < 201; ++cycle) {
+        const Addr pc = cycle % 2 ? 0x1000 : 0x2000;
+        const Addr expected = pc == 0x1000 ? 0x4000 : 0x5000;
+        const Addr actual = cycle % 7 < 4 ? expected : 0x6000;
+        const bool btb = cycle % 11 != 0;
+        const bool is_return = cycle % 13 == 0;
+        const bool taken = cycle % 17 != 0;
+        auto a = finite.query(finite_snapshot, pc, pc + 16, cycle);
+        auto b = ideal.query(ideal_snapshot, pc, pc + 16, cycle);
+        const auto a_target = finite.complete(a, pc, 0x6000,
+                                              taken, true, is_return, btb);
+        const auto b_target = ideal.complete(b, pc, 0x6000,
+                                             taken, true, is_return, btb);
+        expect(a->key == b->key && a->conf == b->conf &&
+               a->tagHit == b->tagHit && a->eligible == b->eligible &&
+               a->overridden == b->overridden && a_target == b_target,
+               "finite-fitting mapping preserves each query and S3 selection");
+        // Both streams omit returns and a deterministic wrong-path subset.
+        if (!is_return && cycle % 5) {
+            const Addr final_target = a_target.value_or(0x6000);
+            finite.commit(a, cycle, pc, actual, taken, final_target, cycle);
+            ideal.commit(b, cycle, pc, actual, taken, final_target, cycle);
+        }
+    }
+    finite.setMeasurementActive(false, 201);
+    ideal.setMeasurementActive(false, 201);
+    finite.finish();
+    ideal.finish();
+    const auto &a = finite.totals();
+    const auto &b = ideal.totals();
+    expect(a.executions == b.executions && a.baselineMisses == b.baselineMisses &&
+           a.finalMisses == b.finalMisses && a.corrected == b.corrected &&
+           a.harmed == b.harmed && a.eligible == b.eligible &&
+           a.tagHits == b.tagHits && a.confEnabled == b.confEnabled &&
+           a.overrides == b.overrides &&
+           finite.queueCounts().applied == ideal.queueCounts().applied &&
+           finite.queueCounts().enqueued == ideal.queueCounts().enqueued &&
+           finite.queueCounts().dropped == ideal.queueCounts().dropped &&
+           finite.queueCounts().zeroTransitions == ideal.queueCounts().zeroTransitions &&
+           finite.queueCounts().recoveries == ideal.queueCounts().recoveries &&
+           finite.pendingUpdates() == ideal.pendingUpdates(),
+           "equivalent mappings preserve retirement and FIFO outcomes");
+}
+
+void
+testPredictionBounds(bool ideal, bool collect)
+{
+    constexpr Addr last = std::numeric_limits<Addr>::max();
+    // These PCs exercise both ends of the unsigned address space. The Context
+    // fixture fits two ways even when the low and high PCs share a set.
+    const std::array<Addr, 6> pcs = {
+        0, 0x20, 0x1008, last - 63, last - 31, last - 1};
+    std::ostringstream cam, candidates, entries;
+    cam << "\"cam\":[";
+    candidates << "{\"format\":\"h2p-hint-candidates\",\"version\":2,"
+                  "\"source\":{},\"pcs\":[";
+    entries << "\"entries\":[";
+    std::map<unsigned, unsigned> ways;
+    for (size_t index = 0; index < pcs.size(); ++index) {
+        if (index) {
+            cam << ',';
+            candidates << ',';
+            entries << ',';
+        }
+        cam << "{\"pc\":\"0x" << std::hex << pcs[index]
+            << "\",\"mask\":0,\"valid\":true}";
+        candidates << "\"0x" << std::hex << pcs[index] << '"';
+        const auto key = foldWord((pcs[index] >> 1) & HintAddressWordMask);
+        const unsigned set = key & 2047;
+        const unsigned way = ways[set]++;
+        expect(way < 2, "bounds fixture fits the finite Context table");
+        entries << "{\"set\":" << set << ",\"way\":" << way
+                << ",\"tag\":" << (key >> 11)
+                << ",\"slot\":0,\"conf\":3,\"valid\":true}";
+    }
+    cam << ']';
+    candidates << "]}";
+    entries << ']';
+    auto metadata = metadataText(true);
+    const auto replace = [&metadata](const std::string &old_text,
+                                      const std::string &new_text) {
+        const auto position = metadata.find(old_text);
+        expect(position != std::string::npos, "bounds metadata fixture field");
+        metadata.replace(position, old_text.size(), new_text);
+    };
+    replace("\"cam\":[]", cam.str());
+    replace("\"slots\":[]", "\"slots\":[\"0x4000\"]");
+    replace("\"entries\":[]", entries.str());
+    HintIndirect::Config config;
+    config.mode = collect ? "collect" : "replay";
+    config.ideal = ideal;
+    config.outputPrefix = std::string(ideal ? "ideal-" : "finite-") +
+                          (collect ? "collect-bounds-test" : "replay-bounds-test");
+    config.candidatePath = writeInput(config.outputPrefix + "-candidates.json",
+        ideal ? idealizeCandidates(candidates.str()) : candidates.str());
+    if (!collect) {
+        config.metadataPath = writeInput(config.outputPrefix + "-metadata.json",
+            ideal ? idealizeMetadata(metadata) : metadata);
+    }
+    HintIndirect hardware(config, nullptr);
+    const auto snapshot = snapshotFor(hardware);
+    const auto original_contexts = snapshot->contextsFor(0x20);
+    hardware.setMeasurementActive(true, 100);
+
+    auto seed = hardware.query(snapshot, 0x20, 0x40, 101);
+    const auto seed_target = hardware.complete(seed, 0x20, 0x6000,
+                                                true, true, false, true);
+    hardware.commit(seed, 1, 0x20, 0x6000, true,
+                    seed_target.value_or(0x6000), 101);
+    expect(hardware.pendingUpdates() == (collect ? 0 : 1),
+           "bounds fixture has one pending confidence update only in replay");
+
+    // This is the BPU/ABTB/MBTB end construction for a 64-byte block.
+    const auto block_end = [](Addr start) {
+        return (start + Addr(64)) & ~Addr(31);
+    };
+    struct BoundsCase
+    {
+        Addr start;
+        Addr end;
+        std::optional<Addr> expected;
+    };
+    const std::array<BoundsCase, 12> cases = {{
+        {last - 15, block_end(last - 15), std::nullopt},
+        {last - 63, block_end(last - 63), std::nullopt},
+        {last - 1, block_end(last - 1), std::nullopt},
+        {last, block_end(last), std::nullopt},
+        {0, 0, std::nullopt},
+        {0x20, 0x20, std::nullopt},
+        {0x1008, 0x20, std::nullopt},
+        {last, last, std::nullopt},
+        {last - 95, block_end(last - 95), last - 63},
+        {last - 31, last, last - 31},
+        {last - 1, last, last - 1},
+        {0, 0x20, Addr(0)},
+    }};
+    uint64_t cycle = 102;
+    unsigned expected_hits = 1; // The seed query above.
+    for (const auto &bounds : cases) {
+        std::optional<Addr> ordered_match;
+        for (const auto pc : pcs) {
+            if (pc >= bounds.start && pc < bounds.end &&
+                (!ordered_match || pc < *ordered_match)) {
+                ordered_match = pc;
+            }
+        }
+        expect(ordered_match == bounds.expected,
+               "bounds expectation agrees with original BTB range predicates");
+        auto query = hardware.query(snapshot, bounds.start, bounds.end, cycle);
+        expect(query && query->snapshot == snapshot &&
+               query->queryCycle == cycle && query->blockStart == bounds.start &&
+               query->blockEnd == bounds.end,
+               "all bounds retain prediction-time metadata and normal cycle identity");
+        expect(query->hasCandidate == bounds.expected.has_value() &&
+               (!bounds.expected || query->pc == *bounds.expected),
+               "finite and ideal use the same ordered half-open CAM range");
+        expect(query->tagHit == (!collect && bounds.expected.has_value()),
+               "empty and wrapped bounds cannot access a Context entry");
+        const Addr selected = bounds.expected.value_or(0x20);
+        const bool taken = bounds.expected.has_value();
+        const auto target = hardware.complete(query, selected, 0x4000,
+                                               taken, true, false, taken);
+        expect(bool(target) == (!collect && bounds.expected.has_value()),
+               "invalid bounds preserve the original target without override");
+        if (!bounds.expected) {
+            expect(query->entryId == std::numeric_limits<size_t>::max() &&
+                   !query->overridden,
+                   "no saved table identity is fabricated for empty ranges");
+            // A wrapped wrong-path fetch is squashed rather than committed.
+            // Collect must retain the snapshot without inventing eligibility.
+            expect(!query->eligible,
+                   "no BTB-selected branch means no valid query eligibility");
+        } else {
+            ++expected_hits;
+        }
+        expect(hardware.pendingUpdates() == 0 &&
+               hardware.queueCounts().enqueued == (collect ? 0 : 1) &&
+               hardware.queueCounts().applied == (collect ? 0 : 1),
+               "wrapped query drains prior ready write but never scores a new entry");
+        if (!collect) {
+            expect(hardware.confidenceAtEntry(seed->entryId) == 2,
+                   "bounds handling leaves trained confidence unchanged");
+        }
+        ++cycle;
+    }
+    expect(snapshot->contextsFor(0x20) == original_contexts,
+           "query bounds do not mutate speculative history snapshots");
+    hardware.setMeasurementActive(false, cycle);
+    hardware.finish();
+    boost::property_tree::ptree stats;
+    std::istringstream stats_input(readOutput(config.outputPrefix +
+                                               "/hint-stats.json"));
+    boost::property_tree::read_json(stats_input, stats);
+    expect(stats.get<unsigned>("query.lookups") == cases.size() + 1 &&
+           stats.get<unsigned>("query.cam_hits") == expected_hits &&
+           stats.get<unsigned>("query.tag_hits") == (collect ? 0 : expected_hits),
+           "every range consumes one query attempt, with no hidden second CAM lookup");
+}
+
+void
+testIdealInvalidEntry()
+{
+    auto text = idealizeMetadata(metadataText(false));
+    const std::string valid =
+        "\"key\":2048,\"slot\":0,\"conf\":3,\"valid\":true";
+    const auto position = text.find(valid);
+    expect(position != std::string::npos, "ideal invalid-entry fixture key");
+    text.replace(position, valid.size(),
+        "\"key\":2048,\"slot\":0,\"conf\":0,\"valid\":false");
+    HintIndirect::Config config;
+    config.mode = "replay";
+    config.ideal = true;
+    config.metadataPath = writeInput("hint-test-ideal-invalid-entry.json", text);
+    config.outputPrefix = "ideal-invalid-entry-test";
+    HintIndirect hardware(config, nullptr);
+    const auto snapshot = snapshotFor(hardware);
+    hardware.setMeasurementActive(true, 0);
+
+    // A neighbouring valid key makes this a nonempty Context table. Exercise
+    // both the invalid key's own PC and a second PC sharing its 28-bit hash.
+    for (uint64_t cycle = 1; cycle <= 4; ++cycle) {
+        const Addr pc = cycle % 2 ? 0x1000 : 0x20001002;
+        const Addr actual = cycle <= 2 ? 0x4000 : 0x6000;
+        auto query = hardware.query(snapshot, pc, pc + 16, cycle);
+        expect(query->hasCandidate && query->key == 2048 && !query->tagHit &&
+               query->entryId == std::numeric_limits<size_t>::max(),
+               "invalid ideal key and its alias cannot produce a saved table hit");
+        expect(!hardware.complete(query, pc, actual,
+                                  true, true, false, true),
+               "invalid ideal entry cannot override even when its target is correct");
+        hardware.commit(query, cycle, pc, actual, true, actual, cycle);
+        expect(hardware.pendingUpdates() == 0 &&
+               hardware.queueCounts().enqueued == 0 &&
+               hardware.queueCounts().dropped == 0 &&
+               hardware.totals().tagHits == 0 &&
+               hardware.confidenceAtEntry(0) == 0,
+               "committed correct and wrong target observations cannot score invalid ideal entry");
+    }
+    hardware.tick(10);
+    expect(hardware.queueCounts().applied == 0 &&
+           hardware.queueCounts().recoveries == 0 &&
+           hardware.confidenceAtEntry(0) == 0 &&
+           hardware.occupancy(HintIndirect::Table::Context).residentEntries == 1,
+           "invalid ideal row stays disabled and unoccupied after future ticks");
+    auto valid_query = hardware.query(snapshot, 0x2000, 0x2010, 11);
+    expect(valid_query->tagHit && valid_query->entryId == 1 &&
+           valid_query->conf == 3 && valid_query->hintTarget == 0x5000 &&
+           hardware.complete(valid_query, 0x2000, 0x6000,
+                             true, true, false, true) == std::optional<Addr>(0x5000),
+           "invalid ideal key does not disable the neighbouring valid entry");
+    hardware.commit(valid_query, 5, 0x2000, 0x5000, true, 0x5000, 11);
+    hardware.tick(12);
+    expect(hardware.totals().executions == 5 &&
+           hardware.totals().tagHits == 1 &&
+           hardware.queueCounts().enqueued == 1 &&
+           hardware.queueCounts().applied == 1 &&
+           hardware.pendingUpdates() == 0 &&
+           hardware.confidenceAtEntry(0) == 0 &&
+           hardware.confidenceAtEntry(1) == 3,
+           "only the valid ideal entry participates in conserved confidence updates");
+    hardware.setMeasurementActive(false, 12);
+    hardware.finish();
+}
+
+void
+testMixedConfidenceFIFO(bool ideal)
+{
+    HintIndirect::Config config;
+    config.mode = "replay";
+    config.ideal = ideal;
+    config.outputPrefix = ideal ? "ideal-mixed-fifo-test" : "finite-mixed-fifo-test";
+    config.metadataPath = writeInput(config.outputPrefix + "-metadata.json",
+        ideal ? idealizeMetadata(metadataText(false)) : metadataText(false));
+    HintIndirect hardware(config, nullptr);
+    const auto snapshot = snapshotFor(hardware);
+    hardware.setMeasurementActive(true, 0);
+
+    struct Score
+    {
+        Addr pc;
+        Addr actual;
+    };
+    const std::array<Score, 9> scores = {{
+        {0x1000, 0x6000}, // A -1: 3 -> 2.
+        {0x2000, 0x6000}, // B -1: 3 -> 2.
+        {0x1000, 0x4000}, // A +1: 2 -> 3.
+        {0x2000, 0x6000}, // B -1: 2 -> 1.
+        {0x1000, 0x6000}, // A -1: 3 -> 2.
+        {0x2000, 0x5000}, // B +1: 1 -> 2.
+        {0x1000, 0x6000}, // A -1: 2 -> 1.
+        {0x2000, 0x6000}, // B -1: 2 -> 1.
+        {0x2000, 0x5000}, // New B +1 must be dropped, not replace an old update.
+    }};
+    const std::array<std::array<unsigned, 2>, 8> after_write = {{{2, 3},
+        {2, 2}, {3, 2}, {3, 1}, {2, 1}, {2, 2}, {1, 2}, {1, 1}}};
+    std::array<std::shared_ptr<HintQuery>, 9> queries;
+    for (size_t index = 0; index < scores.size(); ++index) {
+        const Addr pc = scores[index].pc;
+        const Addr target = pc == 0x1000 ? 0x4000 : 0x5000;
+        queries[index] = hardware.query(snapshot, pc, pc + 16, index + 1);
+        expect(queries[index]->tagHit && queries[index]->conf == 3 &&
+               hardware.complete(queries[index], pc, 0x6000,
+                                 true, true, false, true) == std::optional<Addr>(target),
+               "mixed FIFO queries save both original entry identities and targets");
+    }
+    const size_t entry_a = queries[0]->entryId;
+    const size_t entry_b = queries[1]->entryId;
+    expect(entry_a != entry_b, "mixed FIFO uses two distinct Context entries");
+    hardware.tick(20);
+    for (size_t index = 0; index < scores.size(); ++index) {
+        hardware.commit(queries[index], index + 1, scores[index].pc,
+                        scores[index].actual, true, queries[index]->hintTarget, 20);
+        expect(hardware.totals().executions == index + 1,
+               "FIFO-full commit returns normally and accounts for every branch");
+    }
+    expect(hardware.pendingUpdates() == 8 &&
+           hardware.queueCounts().enqueued == 8 &&
+           hardware.queueCounts().dropped == 1 &&
+           hardware.queueCounts().applied == 0,
+           "mixed FIFO accepts eight updates and drops the new ninth before any write");
+
+    // Read in the commit cycle while the FIFO is full: neither +/- update
+    // bypasses the table or writes before the next CPU cycle.
+    auto same_cycle = hardware.query(snapshot, 0x1000, 0x1010, 20);
+    expect(same_cycle->entryId == entry_a && same_cycle->conf == 3 &&
+           hardware.confidenceAtEntry(entry_a) == 3 &&
+           hardware.confidenceAtEntry(entry_b) == 3 &&
+           hardware.pendingUpdates() == 8,
+           "queued mixed scores never bypass a same-cycle prediction read");
+    std::ostringstream observations;
+    observations << "{\"format\":\"hint-mixed-fifo-driver\",\"ideal\":"
+                 << (ideal ? "true" : "false")
+                 << ",\"entry_a\":" << entry_a << ",\"entry_b\":" << entry_b
+                 << ",\"commit_cycle\":20,\"reads\":["
+                 << "{\"cycle\":20,\"a\":" << hardware.confidenceAtEntry(entry_a)
+                 << ",\"b\":" << hardware.confidenceAtEntry(entry_b)
+                 << ",\"applied\":" << hardware.queueCounts().applied
+                 << ",\"pending\":" << hardware.pendingUpdates() << '}';
+    for (size_t index = 0; index < after_write.size(); ++index) {
+        const uint64_t cycle = 21 + index;
+        const Addr pc = scores[index].pc;
+        auto query = hardware.query(snapshot, pc, pc + 16, cycle);
+        const unsigned expected_conf = after_write[index][pc == 0x1000 ? 0 : 1];
+        expect(query->conf == expected_conf &&
+               query->entryId == (pc == 0x1000 ? entry_a : entry_b) &&
+               query->hintTarget == (pc == 0x1000 ? 0x4000 : 0x5000) &&
+               hardware.confidenceAtEntry(entry_a) == after_write[index][0] &&
+               hardware.confidenceAtEntry(entry_b) == after_write[index][1],
+               "each mixed score writes its saved target entry in FIFO order before lookup");
+        hardware.tick(cycle);
+        expect(hardware.queueCounts().applied == index + 1 &&
+               hardware.pendingUpdates() == 7 - index &&
+               hardware.queueCounts().enqueued == 8 &&
+               hardware.queueCounts().dropped == 1 &&
+               hardware.confidenceAtEntry(entry_a) == after_write[index][0] &&
+               hardware.confidenceAtEntry(entry_b) == after_write[index][1],
+               "repeated same-cycle ticks cannot issue an additional confidence write");
+        observations << ",{\"cycle\":" << cycle
+                     << ",\"a\":" << hardware.confidenceAtEntry(entry_a)
+                     << ",\"b\":" << hardware.confidenceAtEntry(entry_b)
+                     << ",\"applied\":" << hardware.queueCounts().applied
+                     << ",\"pending\":" << hardware.pendingUpdates() << '}';
+    }
+    hardware.tick(100);
+    expect(hardware.confidenceAtEntry(entry_a) == 1 &&
+           hardware.confidenceAtEntry(entry_b) == 1 &&
+           hardware.queueCounts().applied == 8 &&
+           hardware.pendingUpdates() == 0 &&
+           hardware.totals().tagHits == 9 &&
+           hardware.queueCounts().enqueued + hardware.queueCounts().dropped ==
+               hardware.totals().tagHits,
+           "dropped newest positive score never writes later; all scores conserve exactly");
+    for (const auto &query : queries) {
+        expect(query->conf == 3,
+               "queued prediction confidence snapshots do not mutate with writeback");
+    }
+    observations << "],\"enqueued\":" << hardware.queueCounts().enqueued
+                 << ",\"dropped\":" << hardware.queueCounts().dropped
+                 << ",\"final_applied\":" << hardware.queueCounts().applied << "}\n";
+    writeInput(config.outputPrefix + "-evidence.json", observations.str());
+    hardware.setMeasurementActive(false, 100);
+    hardware.finish();
+}
+
+void
+testEarlierTakenCancellation(bool ideal)
+{
+    HintIndirect::Config config;
+    config.mode = "replay";
+    config.ideal = ideal;
+    config.outputPrefix = ideal ? "ideal-earlier-taken-test" :
+                                 "finite-earlier-taken-test";
+    config.metadataPath = writeInput(config.outputPrefix + "-metadata.json",
+        ideal ? idealizeMetadata(metadataText(false)) : metadataText(false));
+    HintIndirect hardware(config, nullptr);
+    const auto snapshot = snapshotFor(hardware);
+    hardware.setMeasurementActive(true, 0);
+    struct EarlierBranch
+    {
+        bool indirect;
+        bool isReturn;
+    };
+    const std::array<EarlierBranch, 3> earlier = {{
+        {false, false}, {true, true}, {true, false}}};
+    for (size_t index = 0; index < earlier.size(); ++index) {
+        const uint64_t cycle = index + 1;
+        auto query = hardware.query(snapshot, 0xff0, 0x1010, cycle);
+        expect(query->pc == 0x1000 && query->hasCandidate && query->tagHit &&
+               query->conf == 3 && query->hintTarget == 0x4000,
+               "earlier-taken fixture has a valid enabled shadow Hint target");
+        const auto target = hardware.complete(query, 0xff8, 0x7000,
+            true, earlier[index].indirect, earlier[index].isReturn, true);
+        expect(query->baselinePC < query->pc && !target &&
+               !query->overridden && !query->eligible,
+               "earlier selected direct/return/indirect branch cancels later CAM takeover");
+        // The real caller retires only non-return indirect branches into the
+        // helper. An earlier indirect may commit, but cannot score the later
+        // candidate's otherwise valid shadow prediction.
+        if (earlier[index].indirect && !earlier[index].isReturn) {
+            hardware.commit(query, cycle, 0xff8, 0x7000, true, 0x7000, cycle);
+        }
+        hardware.tick(cycle);
+        expect(hardware.pendingUpdates() == 0 &&
+               hardware.queueCounts().enqueued == 0 &&
+               hardware.confidenceAtEntry(query->entryId) == 3,
+               "earlier branch cannot train the later candidate's Context entry");
+    }
+    hardware.setMeasurementActive(false, 4);
+    hardware.finish();
+    boost::property_tree::ptree stats;
+    std::istringstream input(readOutput(config.outputPrefix + "/hint-stats.json"));
+    boost::property_tree::read_json(input, stats);
+    expect(stats.get<unsigned>("query.lookups") == 3 &&
+           stats.get<unsigned>("query.cam_hits") == 3 &&
+           stats.get<unsigned>("query.tag_hits") == 3 &&
+           stats.get<unsigned>("query.overrides") == 0 &&
+           stats.get<unsigned>("query.cancel_not_indirect") == 1 &&
+           stats.get<unsigned>("query.cancel_return") == 1 &&
+           stats.get<unsigned>("query.cancel_pc_mismatch") == 1 &&
+           stats.get<unsigned>("global.executions") == 1 &&
+           stats.get<unsigned>("global.tag_hits") == 0,
+           "earlier-taken cases use one query per block and no committed Hint score");
+}
+
 } // anonymous namespace
 
 void
@@ -590,21 +1338,49 @@ HintIndirectTest::startup()
     if (!metadata.empty()) {
         HintIndirect::Config config;
         config.mode = "replay";
+        config.ideal = ideal;
         config.metadataPath = metadata;
         config.candidatePath = candidates;
         HintIndirect hardware(config, nullptr);
+        if (rangePortReuse) {
+            const auto snapshot = snapshotFor(hardware);
+            hardware.query(snapshot, std::numeric_limits<Addr>::max() - 15,
+                           0x20, 1);
+            hardware.query(snapshot, 0x1000, 0x1010, 1);
+            fatal("Wrapped Hint query incorrectly released its same-cycle port");
+        }
         hardware.finish();
     } else {
         testHistory();
+        testIdealHistory();
         testRetiredPrefix();
         testMaskQueries();
+        testMaskQueries(true);
         const auto candidate_path = writeInput("hint-test-candidates.json",
             "{\"format\":\"h2p-hint-candidates\",\"version\":2,\"source\":{},"
             "\"pcs\":[\"0x1000\",\"0x1008\",\"0x2000\",\"0x3000\",\"0x20001002\"]}");
         const auto metadata_path = writeInput("hint-test-metadata.json",
                                               metadataText(false));
         testHardware(metadata_path, candidate_path);
+        testHardware(writeInput("hint-test-ideal-metadata.json",
+                                idealizeMetadata(metadataText(false))),
+                     writeInput("hint-test-ideal-candidates.json",
+                                idealizeCandidates(readOutput(
+                                    "hint-test-candidates.json"))), true);
         testCollect(candidate_path);
+        testUnlimitedCapacity();
+        testIdealOccupancyAndCollect();
+        testFiniteIdealEquivalence();
+        for (const bool ideal : {false, true}) {
+            for (const bool collect : {false, true}) {
+                testPredictionBounds(ideal, collect);
+            }
+        }
+        testIdealInvalidEntry();
+        testMixedConfidenceFIFO(false);
+        testMixedConfidenceFIFO(true);
+        testEarlierTakenCancellation(false);
+        testEarlierTakenCancellation(true);
 
         HintIndirect::Config empty_config;
         empty_config.mode = "replay";

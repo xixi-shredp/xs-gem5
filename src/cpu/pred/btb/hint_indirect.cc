@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -252,11 +253,83 @@ const char *HistoryJson =
     "{\"githr_targets\":64,\"lithr_targets\":4,\"call_pcs\":64,"
     "\"return_pcs\":64,\"target_shift\":1}";
 const char *MaskOrderJson = "[\"GHR\",\"GITHR\",\"LITHR\",\"Call\",\"Return\"]";
+const char *FiniteReferenceJson =
+    "{\"cam_entries\":16,\"context_entries\":4096,\"ways\":2,"
+    "\"slot_entries\":32}";
+
+void
+writeOccupancy(std::ostream &out, const HintIndirect::Occupancy &value)
+{
+    const double capacity = value.finiteCapacity;
+    out << "{\"resident_entries\":" << value.residentEntries
+        << ",\"avg_entries\":" << value.avgEntries
+        << ",\"peak_entries\":" << value.peakEntries
+        << ",\"sample_cycles\":" << value.sampleCycles
+        << ",\"finite_capacity\":" << value.finiteCapacity
+        << ",\"resident_multiple\":" << value.residentEntries / capacity
+        << ",\"avg_multiple\":" << value.avgEntries / capacity
+        << ",\"peak_multiple\":" << value.peakEntries / capacity << '}';
+}
 
 } // anonymous namespace
 
 struct HintIndirect::Statistics : public statistics::Group
 {
+    // These values are calculated only at dump, avoiding per-cycle scalar
+    // writes for immutable resident tables. Elapsed cycles are maintained in
+    // O(1) by the production helper, including cycles without any query.
+    struct TableStats
+    {
+        statistics::Scalar residentEntries;
+        statistics::Scalar avgEntries;
+        statistics::Scalar peakEntries;
+        statistics::Scalar sampleCycles;
+        statistics::Scalar finiteCapacity;
+        statistics::Scalar residentMultiple;
+        statistics::Scalar avgMultiple;
+        statistics::Scalar peakMultiple;
+
+        TableStats(statistics::Group *parent, const std::string &table)
+            : residentEntries(parent, (table + "_resident_entries").c_str(),
+                  statistics::units::Count::get(), "Loaded valid Hint entries"),
+              avgEntries(parent, (table + "_avg_entries").c_str(),
+                  statistics::units::Count::get(),
+                  "Measure-cycle-weighted mean resident Hint entries"),
+              peakEntries(parent, (table + "_peak_entries").c_str(),
+                  statistics::units::Count::get(),
+                  "Peak resident Hint entries during measurement"),
+              sampleCycles(parent, (table + "_sample_cycles").c_str(),
+                  statistics::units::Cycle::get(),
+                  "Elapsed measurement cycles for resident occupancy"),
+              finiteCapacity(parent, (table + "_finite_capacity").c_str(),
+                  statistics::units::Count::get(),
+                  "Default finite Hint capacity used as comparison"),
+              residentMultiple(parent, (table + "_resident_multiple").c_str(),
+                  statistics::units::Ratio::get(),
+                  "Resident entries divided by default finite capacity"),
+              avgMultiple(parent, (table + "_avg_multiple").c_str(),
+                  statistics::units::Ratio::get(),
+                  "Average entries divided by default finite capacity"),
+              peakMultiple(parent, (table + "_peak_multiple").c_str(),
+                  statistics::units::Ratio::get(),
+                  "Peak entries divided by default finite capacity")
+        {}
+
+        void update(const Occupancy &value)
+        {
+            residentEntries = value.residentEntries;
+            avgEntries = value.avgEntries;
+            peakEntries = value.peakEntries;
+            sampleCycles = value.sampleCycles;
+            finiteCapacity = value.finiteCapacity;
+            const double capacity = value.finiteCapacity;
+            residentMultiple = value.residentEntries / capacity;
+            avgMultiple = value.avgEntries / capacity;
+            peakMultiple = value.peakEntries / capacity;
+        }
+    };
+
+    const HintIndirect &owner;
     statistics::Scalar queries;
     statistics::Scalar overrides;
     statistics::Scalar committed;
@@ -267,9 +340,12 @@ struct HintIndirect::Statistics : public statistics::Group
     statistics::Scalar queueDropped;
     statistics::Scalar zeroTransitions;
     statistics::Scalar recoveries;
+    TableStats cam;
+    TableStats context;
+    TableStats slots;
 
-    explicit Statistics(statistics::Group *parent)
-        : statistics::Group(parent, "h2pHint"),
+    Statistics(statistics::Group *parent, const HintIndirect &owner)
+        : statistics::Group(parent, "h2pHint"), owner(owner),
           ADD_STAT(queries, statistics::units::Count::get(),
                    "Hint block query attempts in measurement"),
           ADD_STAT(overrides, statistics::units::Count::get(),
@@ -289,8 +365,17 @@ struct HintIndirect::Statistics : public statistics::Group
           ADD_STAT(zeroTransitions, statistics::units::Count::get(),
                    "Confidence writes transitioning from one to zero"),
           ADD_STAT(recoveries, statistics::units::Count::get(),
-                   "Confidence writes transitioning from zero to one")
+                   "Confidence writes transitioning from zero to one"),
+          cam(this, "cam"), context(this, "context"), slots(this, "slots")
     {}
+
+    void preDumpStats() override
+    {
+        statistics::Group::preDumpStats();
+        cam.update(owner.occupancy(Table::Cam));
+        context.update(owner.occupancy(Table::Context));
+        slots.update(owner.occupancy(Table::Slots));
+    }
 };
 
 struct HintIndirect::Output
@@ -321,6 +406,8 @@ HintIndirect::HintIndirect(const Config &config, statistics::Group *parent)
 {
     fatal_if(config.mode != "off" && config.mode != "collect" &&
              config.mode != "replay", "Invalid Hint mode %s", config.mode);
+    fatal_if(config.ideal && !enabled(),
+             "Ideal Hint requires collect or replay mode");
     if (!enabled()) {
         fatal_if(!config.candidatePath.empty() || !config.metadataPath.empty(),
                  "Hint input files require collect or replay mode");
@@ -330,13 +417,19 @@ HintIndirect::HintIndirect(const Config &config, statistics::Group *parent)
              !config.slotEntries || !config.confQueueDepth ||
              !config.clockPeriod || config.contextEntries % config.ways,
              "Hint geometry and clock period must be positive and consistent");
+    fatal_if(config.ideal && (config.camEntries != 16 ||
+             config.contextEntries != 4096 || config.ways != 2 ||
+             config.slotEntries != 32),
+             "Ideal Hint cannot override finite table geometry parameters");
     sets = config.contextEntries / config.ways;
     fatal_if((sets & (sets - 1)) || sets > (1U << 27),
              "Hint number of sets must be a power of two below 2^28");
     for (unsigned value = sets; value > 1; value >>= 1) {
         ++indexBits;
     }
-    entries.resize(config.contextEntries);
+    if (!config.ideal) {
+        entries.resize(config.contextEntries);
+    }
     try {
         if (!config.candidatePath.empty()) {
             loadCandidates();
@@ -366,7 +459,12 @@ HintIndirect::HintIndirect(const Config &config, statistics::Group *parent)
     }
     // Tests may leave this null and inspect production counts directly.
     if (parent) {
-        stats = std::make_unique<Statistics>(parent);
+        stats = std::make_unique<Statistics>(parent, *this);
+    }
+    if (isReplay()) {
+        residentEntries = {cam.size(), static_cast<uint64_t>(std::count_if(
+            entries.begin(), entries.end(),
+            [](const auto &entry) { return entry.valid; })), slots.size()};
     }
     openOutputs();
 }
@@ -378,7 +476,13 @@ HintIndirect::loadCandidates()
 {
     const auto tree = readJson(config.candidatePath);
     require(stringField(tree, "format") == "h2p-hint-candidates" &&
-            integer(tree, "version") == 2, "unknown candidate format/version");
+            integer(tree, "version") == (config.ideal ? 3 : 2),
+            "candidate format/version does not match Hint storage mode");
+    if (config.ideal || tree.get_child_optional("storage")) {
+        require(stringField(tree, "storage") ==
+                (config.ideal ? "unlimited" : "finite"),
+                "candidate storage does not match Hint mode");
+    }
     checkObject(tree.get_child("source"), "source");
     std::set<Addr> seen;
     for (const auto &node : arrayField(tree, "pcs")) {
@@ -387,7 +491,11 @@ HintIndirect::loadCandidates()
         require(seen.insert(pc).second, "duplicate candidate PC");
         candidates.push_back(pc);
     }
-    require(candidates.size() <= 20, "Hint collect supports at most 20 PCs");
+    require(config.ideal || candidates.size() <= 20,
+            "finite Hint collect supports at most 20 PCs");
+    if (config.ideal) {
+        candidateIndex.assign(seen.begin(), seen.end());
+    }
 }
 
 void
@@ -395,10 +503,15 @@ HintIndirect::loadMetadata()
 {
     const auto tree = readJson(config.metadataPath);
     require(stringField(tree, "format") == "h2p-hint" &&
-            integer(tree, "version") == 2 &&
+            integer(tree, "version") == (config.ideal ? 3 : 2) &&
             integer(tree, "hash_version") == 2 &&
             integer(tree, "ghr_bits") == 970,
-            "unknown Hint format, hash, or GHR version");
+            "Hint format/storage, hash, or GHR version mismatch");
+    if (config.ideal || tree.get_child_optional("storage")) {
+        require(stringField(tree, "storage") ==
+                (config.ideal ? "unlimited" : "finite"),
+                "metadata storage does not match Hint mode");
+    }
     const std::vector<std::string> expected =
         {"GHR", "GITHR", "LITHR", "Call", "Return"};
     std::vector<std::string> order;
@@ -416,17 +529,32 @@ HintIndirect::loadMetadata()
             "Hint history encoding mismatch");
     const auto &layout = tree.get_child("layout");
     checkObject(layout, "layout");
-    require(integer(layout, "cam_entries") == config.camEntries &&
-            integer(layout, "context_entries") == config.contextEntries &&
-            integer(layout, "ways") == config.ways &&
-            integer(layout, "slot_entries") == config.slotEntries &&
-            integer(layout, "conf_queue_depth") == config.confQueueDepth,
+    require(integer(layout, "conf_queue_depth") == config.confQueueDepth,
             "Hint metadata layout differs from configured hardware");
+    if (config.ideal) {
+        require(layout.size() == 1,
+                "unlimited Hint layout must contain only conf_queue_depth");
+        const auto &reference = tree.get_child("finite_reference");
+        checkObject(reference, "finite_reference");
+        require(reference.size() == 4 &&
+                integer(reference, "cam_entries") == 16 &&
+                integer(reference, "context_entries") == 4096 &&
+                integer(reference, "ways") == 2 &&
+                integer(reference, "slot_entries") == 32,
+                "unlimited Hint finite reference mismatch");
+    } else {
+        require(integer(layout, "cam_entries") == config.camEntries &&
+                integer(layout, "context_entries") == config.contextEntries &&
+                integer(layout, "ways") == config.ways &&
+                integer(layout, "slot_entries") == config.slotEntries,
+                "Hint metadata layout differs from configured hardware");
+    }
     checkObject(tree.get_child("source"), "source");
 
     std::set<Addr> seenPcs;
     const auto &camArray = arrayField(tree, "cam");
-    require(camArray.size() <= config.camEntries, "Hint CAM capacity exceeded");
+    require(config.ideal || camArray.size() <= config.camEntries,
+            "Hint CAM capacity exceeded");
     for (const auto &node : camArray) {
         checkObject(node.second, "CAM entry");
         const auto pc = address(stringField(node.second, "pc"));
@@ -447,8 +575,42 @@ HintIndirect::loadMetadata()
         require(seenTargets.insert(target).second, "duplicate shared target");
         slots.push_back(target);
     }
-    require(slots.size() <= config.slotEntries,
+    require(config.ideal || slots.size() <= config.slotEntries,
             "Hint shared target capacity exceeded");
+
+    if (config.ideal) {
+        const auto &array = arrayField(tree, "entries");
+        entries.reserve(array.size());
+        idealIndex.reserve(array.size());
+        std::set<uint32_t> keys;
+        for (const auto &node : array) {
+            const auto &value = node.second;
+            checkObject(value, "Context entry");
+            require(value.size() == 4,
+                    "unlimited Context entry requires valid/key/slot/conf");
+            const auto key = integer(value, "key");
+            const auto slot = integer(value, "slot");
+            const auto conf = integer(value, "conf");
+            const bool valid = boolean(value, "valid");
+            require(key <= HintHashMask, "Hint Context key exceeds 28 bits");
+            require(keys.insert(key).second, "duplicate Hint Context key");
+            require(slot <= std::numeric_limits<size_t>::max() && conf <= 3,
+                    "Hint Context slot/confidence is out of range");
+            if (valid) {
+                require(slot < slots.size(),
+                        "Hint entry references unloaded target");
+                require(conf == 3,
+                        "valid Hint entries must start at confidence 3");
+                idealIndex.emplace(key, entries.size());
+            }
+            // The immutable vector position is the prediction-time identity,
+            // including holes from invalid metadata rows.
+            entries.push_back({valid, static_cast<uint32_t>(key >> indexBits),
+                static_cast<uint32_t>(key), static_cast<size_t>(slot),
+                static_cast<unsigned>(conf)});
+        }
+        return;
+    }
 
     std::set<std::pair<unsigned, unsigned>> positions;
     std::set<std::pair<unsigned, uint32_t>> tags;
@@ -476,7 +638,9 @@ HintIndirect::loadMetadata()
                     "duplicate valid Hint tag in one set");
         }
         entries[set * config.ways + way] =
-            {valid, static_cast<uint32_t>(tag), static_cast<unsigned>(slot),
+            {valid, static_cast<uint32_t>(tag),
+             static_cast<uint32_t>((tag << indexBits) | set),
+             static_cast<size_t>(slot),
              static_cast<unsigned>(conf)};
     }
 }
@@ -517,15 +681,23 @@ HintIndirect::writeHeader()
 {
     std::ostringstream line;
     line << "{\"kind\":\"header\",\"format\":\"h2p-hint-profile\","
-         << "\"version\":2,\"hash_version\":2,\"ghr_bits\":970,"
+         << "\"version\":" << (config.ideal ? 3 : 2)
+         << ",\"hash_version\":2,\"ghr_bits\":970,"
          << "\"mask_order\":" << MaskOrderJson
-         << ",\"history\":" << HistoryJson
-         << ",\"layout\":{\"cam_entries\":" << config.camEntries
-         << ",\"context_entries\":" << config.contextEntries
-         << ",\"ways\":" << config.ways
-         << ",\"slot_entries\":" << config.slotEntries
-         << ",\"conf_queue_depth\":" << config.confQueueDepth << '}'
-         << ",\"clock_period\":" << config.clockPeriod << ",\"pcs\":[";
+         << ",\"history\":" << HistoryJson;
+    if (config.ideal) {
+        line << ",\"storage\":\"unlimited\",\"finite_reference\":"
+             << FiniteReferenceJson
+             << ",\"layout\":{\"conf_queue_depth\":"
+             << config.confQueueDepth << '}';
+    } else {
+        line << ",\"layout\":{\"cam_entries\":" << config.camEntries
+             << ",\"context_entries\":" << config.contextEntries
+             << ",\"ways\":" << config.ways
+             << ",\"slot_entries\":" << config.slotEntries
+             << ",\"conf_queue_depth\":" << config.confQueueDepth << '}';
+    }
+    line << ",\"clock_period\":" << config.clockPeriod << ",\"pcs\":[";
     for (size_t i = 0; i < candidates.size(); ++i) {
         if (i) {
             line << ',';
@@ -545,7 +717,6 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
     if (!enabled() || finished) {
         return nullptr;
     }
-    fatal_if(block_end < block_start, "Hint prediction block range wraps");
     fatal_if(lastQueryCycle && cycle <= *lastQueryCycle,
              "Hint permits at most one ordered block query per CPU cycle");
     lastQueryCycle = cycle;
@@ -563,10 +734,14 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
             ++stats->queries;
         }
     }
-    if (!snapshot) {
+    // BPU/BTB ranges are ordered half-open intervals, not circular ranges.
+    // A speculative target near the end of Addr can wrap the aligned block
+    // end; the BTBs then retain no PC satisfying start <= pc < end. Preserve
+    // that miss behavior, including the consumed query port and saved range.
+    if (!snapshot || block_end <= block_start) {
         return result;
     }
-    unsigned matches = 0;
+    size_t matches = 0;
     auto match = [&](Addr pc, unsigned mask) {
         if (pc >= block_start && pc < block_end) {
             ++matches;
@@ -577,7 +752,29 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
             }
         }
     };
-    if (isReplay()) {
+    if (config.ideal && isReplay()) {
+        const auto compare = [](const CamEntry &entry, Addr pc) {
+            return entry.pc < pc;
+        };
+        const auto first = std::lower_bound(cam.begin(), cam.end(),
+                                             block_start, compare);
+        const auto end = std::lower_bound(first, cam.end(), block_end, compare);
+        matches = end - first;
+        if (matches) {
+            result->hasCandidate = true;
+            result->pc = first->pc;
+            result->mask = first->mask;
+        }
+    } else if (config.ideal) {
+        const auto first = std::lower_bound(candidateIndex.begin(),
+                                             candidateIndex.end(), block_start);
+        const auto end = std::lower_bound(first, candidateIndex.end(), block_end);
+        matches = end - first;
+        if (matches) {
+            result->hasCandidate = true;
+            result->pc = *first;
+        }
+    } else if (isReplay()) {
         for (const auto &entry : cam) {
             match(entry.pc, entry.mask);
         }
@@ -599,14 +796,26 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
     result->key = hintHash(result->pc, snapshot->contextsFor(result->pc),
                            result->mask);
     result->set = result->key & (sets - 1);
-    const uint32_t tag = result->key >> indexBits;
-    for (unsigned way = 0; way < config.ways; ++way) {
-        const auto &entry = entries[result->set * config.ways + way];
-        if (!entry.valid || entry.tag != tag) {
-            continue;
+    if (config.ideal) {
+        const auto found = idealIndex.find(result->key);
+        if (found != idealIndex.end()) {
+            result->entryId = found->second;
         }
+    } else {
+        const uint32_t tag = result->key >> indexBits;
+        for (unsigned way = 0; way < config.ways; ++way) {
+            const size_t entry_id = result->set * config.ways + way;
+            const auto &entry = entries[entry_id];
+            if (entry.valid && entry.tag == tag) {
+                result->way = way;
+                result->entryId = entry_id;
+                break;
+            }
+        }
+    }
+    if (result->entryId != std::numeric_limits<size_t>::max()) {
+        const auto &entry = entries[result->entryId];
         result->tagHit = true;
-        result->way = way;
         result->slot = entry.slot;
         result->conf = entry.conf;
         result->hintTarget = slots[entry.slot];
@@ -614,7 +823,6 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
             ++queryStats.tagHits;
             queryStats.confEnabled += entry.conf > 0;
         }
-        break;
     }
     return result;
 }
@@ -636,8 +844,8 @@ HintIndirect::complete(const std::shared_ptr<HintQuery> &query,
     query->baselineReturn = is_return;
     query->btbIdentified = btb_identified;
     if (isCollect()) {
-        // Group-dependent CAM arbitration is replayed offline. Do not drop
-        // the second candidate merely because collect observes up to 20 PCs.
+        // CAM arbitration depends on the frozen image and is replayed offline.
+        // Preserve later candidates for rebuilding a different CAM selection.
         query->eligible = query->snapshot && taken && indirect &&
                           !is_return && btb_identified;
         return std::nullopt;
@@ -800,6 +1008,10 @@ HintIndirect::tick(uint64_t cycle)
     if (!measurementActive) {
         return;
     }
+    if (occupancyCycle) {
+        occupancyCycles += cycle - *occupancyCycle;
+    }
+    occupancyCycle = cycle;
     queueStats.occupancySamples += cycle - next_cycle + 1;
     // Sleeping CPUs need no extra clock event. Catch up their finite FIFO at
     // the next observation, preserving each write's actual cycle. The loop is
@@ -815,9 +1027,11 @@ HintIndirect::tick(uint64_t cycle)
         const auto update = updates.front();
         updates.pop_front();
         const auto &query = *update.query;
-        auto &entry = entries[query.set * config.ways + query.way];
+        fatal_if(query.entryId >= entries.size(),
+                 "Hint confidence update has no saved entry identity");
+        auto &entry = entries[query.entryId];
         fatal_if(!entry.valid || entry.slot != query.slot ||
-                 entry.tag != query.key >> indexBits,
+                 entry.key != query.key,
                  "Frozen Hint entry identity changed before confidence writeback");
         const unsigned old_conf = entry.conf;
         if (query.hintTarget == update.actual) {
@@ -862,8 +1076,12 @@ HintIndirect::writeConfZero(const Update &update, uint64_t cycle)
     writeContexts(line, query.snapshot->contextsFor(query.pc));
     line << ",\"history\":" << query.snapshot->historyJson(query.pc)
          << ",\"hash\":" << query.key << ",\"set\":" << query.set
-         << ",\"way\":" << query.way << ",\"slot\":" << query.slot
-         << ",\"predicted_target\":" << jsonString(hexAddress(query.hintTarget))
+         << ",\"way\":" << query.way << ",\"slot\":" << query.slot;
+    if (config.ideal) {
+        line << ",\"entry_id\":" << query.entryId
+             << ",\"key\":" << query.key;
+    }
+    line << ",\"predicted_target\":" << jsonString(hexAddress(query.hintTarget))
          << ",\"actual_target\":" << jsonString(hexAddress(update.actual))
          << ",\"query_cycle\":" << query.queryCycle
          << ",\"commit_cycle\":" << update.commitCycle
@@ -877,15 +1095,39 @@ HintIndirect::writeConfZero(const Update &update, uint64_t cycle)
 void
 HintIndirect::setMeasurementActive(bool active)
 {
+    setMeasurementActive(active, lastTick.value_or(0));
+}
+
+void
+HintIndirect::setMeasurementActive(bool active, uint64_t cycle)
+{
+    if (!enabled() || finished) {
+        return;
+    }
+    tick(cycle);
+    if (measurementActive == active) {
+        return;
+    }
     measurementActive = active;
+    occupancyCycle = active ? std::optional<uint64_t>(cycle) : std::nullopt;
 }
 
 void
 HintIndirect::resetStats()
 {
+    resetStats(lastTick.value_or(0));
+}
+
+void
+HintIndirect::resetStats(uint64_t cycle)
+{
     if (!enabled() || finished) {
         return;
     }
+    tick(cycle);
+    occupancyCycles = 0;
+    occupancyCycle = measurementActive ?
+        std::optional<uint64_t>(cycle) : std::nullopt;
     global = {};
     for (auto &[pc, counts] : perPc) {
         counts = {};
@@ -917,9 +1159,37 @@ HintIndirect::resetStats()
 unsigned
 HintIndirect::confidenceAt(unsigned set, unsigned way) const
 {
+    fatal_if(config.ideal,
+             "Ideal Hint confidence reads require a stable entry identity");
     fatal_if(set >= sets || way >= config.ways,
              "Hint confidence read position is out of range");
     return entries[set * config.ways + way].conf;
+}
+
+unsigned
+HintIndirect::confidenceAtEntry(size_t entry_id) const
+{
+    fatal_if(entry_id >= entries.size(), "Hint entry identity is out of range");
+    return entries[entry_id].conf;
+}
+
+HintIndirect::Occupancy
+HintIndirect::occupancy(Table table) const
+{
+    const auto index = static_cast<size_t>(table);
+    static constexpr std::array<uint64_t, 3> capacities = {16, 4096, 32};
+    fatal_if(index >= capacities.size(), "Unknown Hint occupancy table");
+    Occupancy result;
+    result.finiteCapacity = capacities[index];
+    if (isReplay()) {
+        result.residentEntries = residentEntries[index];
+        result.sampleCycles = occupancyCycles;
+        if (occupancyCycles) {
+            result.avgEntries = result.residentEntries;
+            result.peakEntries = result.residentEntries;
+        }
+    }
+    return result;
 }
 
 void
@@ -927,8 +1197,19 @@ HintIndirect::writeStats()
 {
     auto out = simout.create(outputName("hint-stats.json"), false, true);
     auto &line = *out->stream();
-    line << "{\"format\":\"h2p-hint-stats\",\"version\":2,\"mode\":"
-         << jsonString(config.mode) << ",\"global\":{";
+    line << std::setprecision(17)
+         << "{\"format\":\"h2p-hint-stats\",\"version\":"
+         << (config.ideal ? 3 : 2) << ",\"mode\":"
+         << jsonString(config.mode) << ",\"storage\":"
+         << jsonString(config.ideal ? "unlimited" : "finite")
+         << ",\"occupancy_applicable\":" << (isReplay() ? "true" : "false")
+         << ",\"occupancy\":{\"cam\":";
+    writeOccupancy(line, occupancy(Table::Cam));
+    line << ",\"context\":";
+    writeOccupancy(line, occupancy(Table::Context));
+    line << ",\"slots\":";
+    writeOccupancy(line, occupancy(Table::Slots));
+    line << "},\"global\":{";
     writeCounts(line, global);
     line << "},\"pcs\":[";
     bool first = true;

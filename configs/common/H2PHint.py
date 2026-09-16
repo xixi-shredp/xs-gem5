@@ -1,4 +1,4 @@
-"""Configuration of the finite, frozen H2P Hint predictor."""
+"""Configuration of finite and unlimited frozen H2P Hint predictors."""
 
 from pathlib import Path
 
@@ -13,22 +13,40 @@ GEOMETRY = {
 
 
 def add_h2p_hint_options(parser):
-    parser.add_argument("--h2p-hint-mode", choices=("off", "collect", "replay"),
-                        default="off")
-    parser.add_argument("--h2p-hint-candidates", default="",
-                        help="Version 2 ranked candidate JSON (at most 20 PCs)")
-    parser.add_argument("--h2p-hint-metadata", default="",
-                        help="Version 2 frozen table JSON for replay")
+    parser.add_argument(
+        "--h2p-hint-mode", choices=("off", "collect", "replay"), default="off"
+    )
+    parser.add_argument(
+        "--ideal-hint-ibp",
+        action="store_true",
+        help="Remove Hint table capacities; keep hash and timing",
+    )
+    parser.add_argument(
+        "--h2p-hint-candidates",
+        default="",
+        help="Ranked candidate JSON: finite v2 or unlimited v3",
+    )
+    parser.add_argument(
+        "--h2p-hint-metadata",
+        default="",
+        help="Frozen table JSON: finite v2 or unlimited v3",
+    )
     for name, (_, default) in GEOMETRY.items():
-        parser.add_argument("--h2p-hint-" + name.replace("_", "-"),
-                            type=int, default=default)
+        parser.add_argument(
+            "--h2p-hint-" + name.replace("_", "-"), type=int, default=default
+        )
 
 
 def validate_h2p_hint_config(args):
     mode = getattr(args, "h2p_hint_mode", "off")
+    ideal = getattr(args, "ideal_hint_ibp", False)
     candidates = getattr(args, "h2p_hint_candidates", "")
     metadata = getattr(args, "h2p_hint_metadata", "")
     if mode == "off":
+        if ideal:
+            return (
+                "--ideal-hint-ibp requires --h2p-hint-mode=collect or replay"
+            )
         if candidates or metadata:
             return "Hint candidate/metadata files require --h2p-hint-mode"
         return None
@@ -47,12 +65,22 @@ def validate_h2p_hint_config(args):
     for name, path in (("candidates", candidates), ("metadata", metadata)):
         if path and not Path(path).is_file():
             return f"Hint {name} file does not exist: {path}"
-    values = {name: getattr(args, "h2p_hint_" + name, default)
-              for name, (_, default) in GEOMETRY.items()}
+    values = {
+        name: getattr(args, "h2p_hint_" + name, default)
+        for name, (_, default) in GEOMETRY.items()
+    }
     if any(value < 1 for value in values.values()):
         return "Hint capacities and confidence queue depth must be positive"
+    if ideal:
+        for name, (_, default) in GEOMETRY.items():
+            if name != "conf_queue_depth" and values[name] != default:
+                option = "--h2p-hint-" + name.replace("_", "-")
+                return f"--ideal-hint-ibp does not accept changing {option}"
+        return None
     if values["cam_entries"] > 20:
-        return "Hint CAM capacity cannot exceed the 20-candidate profiling limit"
+        return (
+            "Hint CAM capacity cannot exceed the 20-candidate profiling limit"
+        )
     entries, ways = values["context_entries"], values["ways"]
     sets = entries // ways
     if entries % ways or not sets or sets & (sets - 1) or sets >= 1 << 28:
@@ -63,9 +91,14 @@ def validate_h2p_hint_config(args):
 def h2p_hint_params(args):
     params = {
         "hintMode": getattr(args, "h2p_hint_mode", "off"),
+        "idealHintIBP": getattr(args, "ideal_hint_ibp", False),
         "hintCandidates": getattr(args, "h2p_hint_candidates", ""),
         "hintMetadata": getattr(args, "h2p_hint_metadata", ""),
     }
-    params.update({param: getattr(args, "h2p_hint_" + name, default)
-                   for name, (param, default) in GEOMETRY.items()})
+    params.update(
+        {
+            param: getattr(args, "h2p_hint_" + name, default)
+            for name, (param, default) in GEOMETRY.items()
+        }
+    )
     return params

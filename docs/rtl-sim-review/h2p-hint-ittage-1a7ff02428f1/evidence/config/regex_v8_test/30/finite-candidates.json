@@ -1,0 +1,62 @@
+{
+  "format": "h2p-hint-candidates",
+  "pcs": [
+    "0x185eb0",
+    "0x25aa82",
+    "0x25d294",
+    "0x25b9cc",
+    "0x25c82a",
+    "0x25ab32",
+    "0x26485e",
+    "0x25a368",
+    "0x25d70e",
+    "0x25d7dc"
+  ],
+  "ranking": [
+    {
+      "miss": 705,
+      "pc": "0x185eb0"
+    },
+    {
+      "miss": 484,
+      "pc": "0x25aa82"
+    },
+    {
+      "miss": 52,
+      "pc": "0x25d294"
+    },
+    {
+      "miss": 49,
+      "pc": "0x25b9cc"
+    },
+    {
+      "miss": 47,
+      "pc": "0x25c82a"
+    },
+    {
+      "miss": 43,
+      "pc": "0x25ab32"
+    },
+    {
+      "miss": 12,
+      "pc": "0x26485e"
+    },
+    {
+      "miss": 8,
+      "pc": "0x25a368"
+    },
+    {
+      "miss": 5,
+      "pc": "0x25d70e"
+    },
+    {
+      "miss": 1,
+      "pc": "0x25d7dc"
+    }
+  ],
+  "source": {
+    "h2p_file": "/opt/data/labs/hint-indirect/results/stage1/regex_v8_test/30/h2p-indirect.txt",
+    "sha256": "5828aae13b82c84b58d71b23479c11f58c534fcd9194510b2c44574b3c15b9f1"
+  },
+  "version": 2
+}

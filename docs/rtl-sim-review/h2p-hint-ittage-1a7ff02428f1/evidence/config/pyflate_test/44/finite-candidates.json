@@ -1,0 +1,42 @@
+{
+  "format": "h2p-hint-candidates",
+  "pcs": [
+    "0x185eb0",
+    "0x1872d8",
+    "0xe5fac",
+    "0x1f2582",
+    "0x1f26d4",
+    "0x1f2858"
+  ],
+  "ranking": [
+    {
+      "miss": 144974,
+      "pc": "0x185eb0"
+    },
+    {
+      "miss": 988,
+      "pc": "0x1872d8"
+    },
+    {
+      "miss": 349,
+      "pc": "0xe5fac"
+    },
+    {
+      "miss": 2,
+      "pc": "0x1f2582"
+    },
+    {
+      "miss": 1,
+      "pc": "0x1f26d4"
+    },
+    {
+      "miss": 1,
+      "pc": "0x1f2858"
+    }
+  ],
+  "source": {
+    "h2p_file": "/opt/data/labs/hint-indirect/results/stage1/pyflate_test/44/h2p-indirect.txt",
+    "sha256": "00e46f94d3930bfc2b3f3afe5abe564eab24108873e75a7463dcea541e1a3172"
+  },
+  "version": 2
+}

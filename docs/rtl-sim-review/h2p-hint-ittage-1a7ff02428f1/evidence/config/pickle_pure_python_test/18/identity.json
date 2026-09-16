@@ -1,0 +1,156 @@
+{
+  "build_audit": {
+    "mtime_ns": 1789380823102942399,
+    "path": "/home/xuejing/sim/workbench/xs-gem5-hint-ideal-heavy-v2/results/h2p-hint-ideal-heavy-v2/build-2.json",
+    "sha256": "3e6a20b2bbac124897b4f28e05250fc50acb2487cf42187acdce3e3d787666d0",
+    "size": 1320
+  },
+  "candidate_sha256": "a14b0e2a162d291859173a9d9d52faeacd3d7c2d081925af6220e3fb1ccbe055",
+  "command_prefix": [
+    "/usr/bin/setarch",
+    "x86_64",
+    "-R"
+  ],
+  "config": {
+    "mtime_ns": 1788792809199110256,
+    "path": "/home/xuejing/sim/workbench/xs-gem5-hint-ideal-heavy-v2/configs/example/kmhv3.py",
+    "sha256": "319d2693c25a95ebb83bc11172a1cb71daf6c42359b65013c34a0f86b2b6f87a",
+    "size": 8565
+  },
+  "difftest": false,
+  "gem5": {
+    "mtime_ns": 1789380816980024226,
+    "path": "/home/xuejing/sim/workbench/xs-gem5-hint-ideal-heavy-v2/build/RISCV/gem5.opt",
+    "sha256": "b9d4c622aaea8e8631a13ef85559fa590677613af17e112452ba1ba629497d8b",
+    "size": 1024505698
+  },
+  "h2p_stat_interval": 1000000,
+  "ideal": false,
+  "library_path": "/home/xuejing/sim/workbench/xs-gem5-hint-ideal-heavy-v2/.build-deps/root/usr/lib/x86_64-linux-gnu",
+  "mask": null,
+  "measure_insts": 50000000,
+  "mem_type": "DDR4_2400_8x8",
+  "metadata_sha256": "29dd1cf6b78c625715bca215429f72f7bad55ca108a0a9adeb73164fbeda05c0",
+  "mode": "replay",
+  "old_complete_audit": {
+    "mtime_ns": 1789175454669289038,
+    "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/complete-audit.json",
+    "sha256": "e72ddbdc90ba4c4a6c9daf5b02a5d47d384a43692ac7d7af1bd840bc4e9c5b93",
+    "size": 37183
+  },
+  "source_manifest": {
+    "mtime_ns": 1789379385842062703,
+    "path": "/home/xuejing/sim/workbench/xs-gem5-hint-ideal-heavy-v2/results/h2p-hint-ideal-heavy-v2/source-manifest.json",
+    "sha256": "5be39be44760477fc47b608df5df76c4dc27669e0edac720b823224cc1a819de",
+    "size": 2267314
+  },
+  "source_root": "/home/xuejing/sim/workbench/xs-gem5-hint-ideal-heavy-v2",
+  "stage": "finite",
+  "task": {
+    "bench": "pickle_pure_python",
+    "checkpoint": {
+      "mtime_ns": 1787908562535914427,
+      "path": "/home/xuejing/sim/workloads/cpython/cpts/xsgem5/pickle_pure_python_test/18/_18_0.933333_memory_.zstd",
+      "sha256": "4adc2e2d8cf718758a4ce23238871411b654fc2544cd5df22c82fa4031aca633",
+      "size": 57666872
+    },
+    "checkpoint_id": "18",
+    "old": {
+      "cache": {
+        "cache.json": {
+          "mtime_ns": 1789120722496472435,
+          "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/profiles/pickle_pure_python_test/18/cache.json",
+          "sha256": "b87a3224e44d096753b15766064cf53eb23a5a459aacd4e6d3979207fa9b4c64",
+          "size": 1503
+        },
+        "hint-profile.jsonl.gz": {
+          "mtime_ns": 1789119881647342580,
+          "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/runs/collect/pickle_pure_python_test/18/hint-profile.jsonl.gz",
+          "sha256": "eee385fd41433d8735d9433f4a58d17438436faf33ffa4d22d22054605c07cb4",
+          "size": 30791648
+        },
+        "queries.bin": {
+          "mtime_ns": 1789120722495725813,
+          "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/profiles/pickle_pure_python_test/18/queries.bin",
+          "sha256": "872bee671c58dde03c909a71eb572a49cddef57ece05f817e66ac0c323690c59",
+          "size": 6165496
+        },
+        "records.bin": {
+          "mtime_ns": 1789120722495725813,
+          "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/profiles/pickle_pure_python_test/18/records.bin",
+          "sha256": "fcc7ae636201ff1abafc685ce5f6ba91e40aa491def4cc068247299ea7b48a1a",
+          "size": 74175264
+        }
+      },
+      "cache_directory": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/profiles/pickle_pure_python_test/18",
+      "candidates": {
+        "mtime_ns": 1789116771189522415,
+        "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/inputs/pickle_pure_python_test/18/candidates.json",
+        "sha256": "a14b0e2a162d291859173a9d9d52faeacd3d7c2d081925af6220e3fb1ccbe055",
+        "size": 1704
+      },
+      "collect_status": {
+        "mtime_ns": 1789120772510548842,
+        "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/runs/collect/pickle_pure_python_test/18/status.json",
+        "sha256": "78ab780838a7acf8ad0ae0ced7c6e048c227d4f42d91c3558934f01407b5cbd1",
+        "size": 22648
+      },
+      "image": {
+        "mtime_ns": 1789172325647005008,
+        "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/images/joint/pickle_pure_python_test/18/metadata.txt",
+        "sha256": "29dd1cf6b78c625715bca215429f72f7bad55ca108a0a9adeb73164fbeda05c0",
+        "size": 239815
+      },
+      "joint_audit": {
+        "mtime_ns": 1789175416909346290,
+        "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/final-audit/runs/joint/pickle_pure_python_test/18/audit.json",
+        "sha256": "1f34dddb539fb6a7e9beee3337d57f3a6a8f4ac797435545c47a8dce1159be6f",
+        "size": 14000
+      },
+      "joint_status": {
+        "mtime_ns": 1789175002106625701,
+        "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/runs/joint/pickle_pure_python_test/18/status.json",
+        "sha256": "4053229d95e05aa343fc18857dd1eb10bab6680088ace8d2b80d8d0b91bf9f89",
+        "size": 14800
+      },
+      "masks": {
+        "0x185eb0": 14
+      },
+      "profile_audit": {
+        "mtime_ns": 1789175443389476579,
+        "path": "/home/xuejing/sim/workbench/cpython/build/h2p-hint-heavy-v1/final-audit/profiles/pickle_pure_python_test/18/audit.json",
+        "sha256": "08f9c68be349389de2b83446b16df9b42520d0af24889537e41058a8a89886e0",
+        "size": 3829
+      }
+    },
+    "scale": "test"
+  },
+  "tools": {
+    "__init__.py": "f09335502803857841896b2aa45467630472fd71bf48b272d83c77d022d8442f",
+    "__main__.py": "6f9ae09a069dd57e28e54eb966a88b7de349612f027d25a0833f0e8c4be685b5",
+    "audit-h2p-hint-ideal.py": "a27e925284fb297e383bc3572981336e53fafe6d15997a3c650ef3edc94f8bd4",
+    "audit.py": "d27890b03b295455c6cf79f4d303506248ef1cfd63b9e57236843170c5165c4e",
+    "builder.py": "21d8c9d2ff82d1655284b66a47320dea29be9ea000a3eb0291cba9bfc26933a3",
+    "ideal_audit.py": "b85567fd5860e1a6f6fb53294b27a8ddd0d9b5c8052e6cd1dda47eec9b4a4cdd",
+    "ideal_report.py": "027faafb593e4aca706610d312ecf831e9443ba4dd9981e7e0df0b387ad0b626",
+    "ideal_runner.py": "3f4e4d5f63daa542098b17310622fbb5d537f40b829a2c08fe5cc33e807f1001",
+    "model.py": "ff4e4b9ce384c9b38976edaca766a47cb122c9b27421f662fc20d682103a5f30",
+    "profile.py": "e8c3662c75e7e1a5d5229a586d2b9bb75378c1579f72c8a877eba896b385e905",
+    "run-cpython-h2p.py": "f4d9e66ba40a5d3e54330c928b7c5e73171730a1e429f6733d6502b926e1df0f",
+    "run-h2p-hint-ideal.py": "c980fda2b5fbbd1f7392bb3fc096717403b506e3204288497bff16de5bae8520",
+    "runner.py": "c0cfcbbc6c5b9faaf1f2fb785915e6cf5db79522aa5ab3c7c1c44f1a6eab9c9e"
+  },
+  "validation_audit": {
+    "mtime_ns": 1789383645172346389,
+    "path": "/home/xuejing/sim/workbench/xs-gem5-hint-ideal-heavy-v2/results/h2p-hint-ideal-heavy-v2/validation-2/audit.json",
+    "sha256": "804c382d8344624f4ed4a2c55909568ff28c164ad077e2fbab4976faeb9ffa4a",
+    "size": 3324
+  },
+  "warmup_insts": 100000000,
+  "workload_list": {
+    "mtime_ns": 1789355452534880309,
+    "path": "/home/xuejing/sim/workbench/xs-gem5-hint-ideal-heavy-v2/results/h2p-hint-ideal-heavy-v2/inputs/heavy.json",
+    "sha256": "35cfd0de4a6a519c7bb6009688eb1642b73058acbb602079d119708970bf8dc7",
+    "size": 650
+  }
+}

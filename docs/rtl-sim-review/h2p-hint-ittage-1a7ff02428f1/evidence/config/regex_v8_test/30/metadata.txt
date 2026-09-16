@@ -1,0 +1,1145 @@
+{
+  "cam": [
+    {
+      "mask": 14,
+      "pc": "0x185eb0",
+      "valid": true
+    },
+    {
+      "mask": 22,
+      "pc": "0x25a368",
+      "valid": true
+    },
+    {
+      "mask": 18,
+      "pc": "0x25aa82",
+      "valid": true
+    },
+    {
+      "mask": 12,
+      "pc": "0x25ab32",
+      "valid": true
+    },
+    {
+      "mask": 8,
+      "pc": "0x25b9cc",
+      "valid": true
+    },
+    {
+      "mask": 2,
+      "pc": "0x25d70e",
+      "valid": true
+    }
+  ],
+  "entries": [
+    {
+      "conf": 3,
+      "set": 0,
+      "slot": 5,
+      "tag": 110454,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 34,
+      "slot": 9,
+      "tag": 42814,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 35,
+      "slot": 6,
+      "tag": 80162,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 40,
+      "slot": 29,
+      "tag": 50742,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 47,
+      "slot": 31,
+      "tag": 113379,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 51,
+      "slot": 20,
+      "tag": 47528,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 52,
+      "slot": 26,
+      "tag": 106903,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 75,
+      "slot": 0,
+      "tag": 23277,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 82,
+      "slot": 13,
+      "tag": 94096,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 87,
+      "slot": 24,
+      "tag": 51373,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 90,
+      "slot": 5,
+      "tag": 86367,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 93,
+      "slot": 24,
+      "tag": 39955,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 94,
+      "slot": 26,
+      "tag": 35849,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 95,
+      "slot": 25,
+      "tag": 96487,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 102,
+      "slot": 12,
+      "tag": 58186,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 103,
+      "slot": 2,
+      "tag": 53331,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 113,
+      "slot": 24,
+      "tag": 81678,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 115,
+      "slot": 29,
+      "tag": 45964,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 166,
+      "slot": 19,
+      "tag": 56017,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 172,
+      "slot": 26,
+      "tag": 36596,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 179,
+      "slot": 9,
+      "tag": 71667,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 192,
+      "slot": 8,
+      "tag": 35030,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 211,
+      "slot": 10,
+      "tag": 30014,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 214,
+      "slot": 14,
+      "tag": 107290,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 252,
+      "slot": 24,
+      "tag": 35751,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 283,
+      "slot": 4,
+      "tag": 8796,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 324,
+      "slot": 21,
+      "tag": 79427,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 330,
+      "slot": 30,
+      "tag": 30385,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 330,
+      "slot": 5,
+      "tag": 122046,
+      "valid": true,
+      "way": 1
+    },
+    {
+      "conf": 3,
+      "set": 350,
+      "slot": 5,
+      "tag": 89780,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 366,
+      "slot": 5,
+      "tag": 510,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 399,
+      "slot": 15,
+      "tag": 50743,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 455,
+      "slot": 12,
+      "tag": 124401,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 473,
+      "slot": 24,
+      "tag": 1619,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 473,
+      "slot": 26,
+      "tag": 47324,
+      "valid": true,
+      "way": 1
+    },
+    {
+      "conf": 3,
+      "set": 479,
+      "slot": 24,
+      "tag": 94553,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 517,
+      "slot": 9,
+      "tag": 55915,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 522,
+      "slot": 22,
+      "tag": 66134,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 599,
+      "slot": 27,
+      "tag": 78671,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 624,
+      "slot": 22,
+      "tag": 117244,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 639,
+      "slot": 26,
+      "tag": 24887,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 666,
+      "slot": 11,
+      "tag": 96328,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 672,
+      "slot": 5,
+      "tag": 108514,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 690,
+      "slot": 24,
+      "tag": 50670,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 695,
+      "slot": 9,
+      "tag": 10094,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 703,
+      "slot": 12,
+      "tag": 10518,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 711,
+      "slot": 9,
+      "tag": 90936,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 716,
+      "slot": 20,
+      "tag": 55533,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 723,
+      "slot": 5,
+      "tag": 64617,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 728,
+      "slot": 11,
+      "tag": 85410,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 730,
+      "slot": 20,
+      "tag": 94822,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 752,
+      "slot": 21,
+      "tag": 80220,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 758,
+      "slot": 19,
+      "tag": 27832,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 762,
+      "slot": 15,
+      "tag": 42779,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 790,
+      "slot": 26,
+      "tag": 85501,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 831,
+      "slot": 4,
+      "tag": 63069,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 876,
+      "slot": 17,
+      "tag": 110899,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 877,
+      "slot": 22,
+      "tag": 12909,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 908,
+      "slot": 9,
+      "tag": 92063,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 911,
+      "slot": 24,
+      "tag": 36659,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 912,
+      "slot": 3,
+      "tag": 43005,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 925,
+      "slot": 27,
+      "tag": 89966,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 960,
+      "slot": 21,
+      "tag": 57946,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 973,
+      "slot": 9,
+      "tag": 106400,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 990,
+      "slot": 15,
+      "tag": 38630,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 993,
+      "slot": 28,
+      "tag": 102577,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1001,
+      "slot": 16,
+      "tag": 80354,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1040,
+      "slot": 4,
+      "tag": 89633,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1058,
+      "slot": 25,
+      "tag": 56916,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1065,
+      "slot": 8,
+      "tag": 7585,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1084,
+      "slot": 18,
+      "tag": 110899,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1146,
+      "slot": 15,
+      "tag": 42779,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1148,
+      "slot": 13,
+      "tag": 67267,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1149,
+      "slot": 24,
+      "tag": 122150,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1168,
+      "slot": 28,
+      "tag": 100441,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1169,
+      "slot": 0,
+      "tag": 74864,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1183,
+      "slot": 24,
+      "tag": 41056,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1184,
+      "slot": 22,
+      "tag": 126265,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1189,
+      "slot": 28,
+      "tag": 3452,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1224,
+      "slot": 7,
+      "tag": 82948,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1226,
+      "slot": 7,
+      "tag": 6983,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1244,
+      "slot": 8,
+      "tag": 114587,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1268,
+      "slot": 24,
+      "tag": 10070,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1278,
+      "slot": 28,
+      "tag": 72996,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1284,
+      "slot": 9,
+      "tag": 93864,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1288,
+      "slot": 26,
+      "tag": 117904,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1291,
+      "slot": 7,
+      "tag": 27733,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1298,
+      "slot": 13,
+      "tag": 13323,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1305,
+      "slot": 14,
+      "tag": 17122,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1325,
+      "slot": 9,
+      "tag": 70216,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1346,
+      "slot": 24,
+      "tag": 61897,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1359,
+      "slot": 21,
+      "tag": 10050,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1491,
+      "slot": 24,
+      "tag": 116001,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1496,
+      "slot": 28,
+      "tag": 83216,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1502,
+      "slot": 8,
+      "tag": 25653,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1511,
+      "slot": 5,
+      "tag": 31123,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1520,
+      "slot": 9,
+      "tag": 63715,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1526,
+      "slot": 18,
+      "tag": 22754,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1532,
+      "slot": 26,
+      "tag": 59297,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1543,
+      "slot": 23,
+      "tag": 9790,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1611,
+      "slot": 9,
+      "tag": 60273,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1612,
+      "slot": 26,
+      "tag": 95857,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1620,
+      "slot": 3,
+      "tag": 75255,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1667,
+      "slot": 5,
+      "tag": 113406,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1674,
+      "slot": 1,
+      "tag": 98303,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1677,
+      "slot": 6,
+      "tag": 117568,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1678,
+      "slot": 17,
+      "tag": 89539,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1692,
+      "slot": 13,
+      "tag": 86020,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1721,
+      "slot": 5,
+      "tag": 59469,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1726,
+      "slot": 5,
+      "tag": 10800,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1750,
+      "slot": 29,
+      "tag": 129614,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1775,
+      "slot": 15,
+      "tag": 128989,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1785,
+      "slot": 13,
+      "tag": 13421,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1786,
+      "slot": 20,
+      "tag": 41769,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1797,
+      "slot": 26,
+      "tag": 103170,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1801,
+      "slot": 8,
+      "tag": 83958,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1810,
+      "slot": 24,
+      "tag": 82174,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1812,
+      "slot": 28,
+      "tag": 88807,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1827,
+      "slot": 26,
+      "tag": 26100,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1857,
+      "slot": 3,
+      "tag": 87601,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1879,
+      "slot": 9,
+      "tag": 93003,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1886,
+      "slot": 26,
+      "tag": 99250,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1900,
+      "slot": 14,
+      "tag": 109940,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1907,
+      "slot": 9,
+      "tag": 63990,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1932,
+      "slot": 2,
+      "tag": 29100,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1944,
+      "slot": 9,
+      "tag": 101845,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1946,
+      "slot": 9,
+      "tag": 74352,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 1993,
+      "slot": 9,
+      "tag": 61988,
+      "valid": true,
+      "way": 0
+    },
+    {
+      "conf": 3,
+      "set": 2017,
+      "slot": 9,
+      "tag": 66465,
+      "valid": true,
+      "way": 0
+    }
+  ],
+  "format": "h2p-hint",
+  "ghr_bits": 970,
+  "hash_version": 2,
+  "history": {
+    "call_pcs": 64,
+    "githr_targets": 64,
+    "lithr_targets": 4,
+    "return_pcs": 64,
+    "target_shift": 1
+  },
+  "layout": {
+    "cam_entries": 16,
+    "conf_queue_depth": 8,
+    "context_entries": 4096,
+    "slot_entries": 32,
+    "ways": 2
+  },
+  "mask_order": [
+    "GHR",
+    "GITHR",
+    "LITHR",
+    "Call",
+    "Return"
+  ],
+  "slots": [
+    "0x186690",
+    "0x1866d0",
+    "0x186e6c",
+    "0x18869a",
+    "0x188832",
+    "0x189214",
+    "0x189f3a",
+    "0x18a5e6",
+    "0x18a63c",
+    "0x18adb4",
+    "0x18bff8",
+    "0x18c4f0",
+    "0x18c7de",
+    "0x25a4c2",
+    "0x25ab34",
+    "0x25acce",
+    "0x25ae12",
+    "0x25b0e0",
+    "0x25b14a",
+    "0x25b240",
+    "0x25b25c",
+    "0x25b2ec",
+    "0x25b5d6",
+    "0x25b602",
+    "0x25b64a",
+    "0x25b670",
+    "0x25b6f4",
+    "0x25b808",
+    "0x25b9ae",
+    "0x25c13a",
+    "0x25c234",
+    "0x25d476"
+  ],
+  "source": {
+    "candidate_sha256": "c939ca60c50b2deadf4fa8b7798e92b17b23cd80e96dd978bc88406a75c7497d",
+    "fixed_mask": null,
+    "gem5_sha256": "4827a37391bb8b294ca93728447b545159832c578bcf1af375e599ea63ae5c7f",
+    "group": null,
+    "masks": {
+      "0x185eb0": 14,
+      "0x25a368": 22,
+      "0x25aa82": 18,
+      "0x25ab32": 12,
+      "0x25b9cc": 8,
+      "0x25d70e": 2,
+      "0x25d7dc": 16
+    },
+    "profile_sha256": "a129a549f250d775a62fb69749954e22bedde965a7151c6e06e364e3d903efd9",
+    "qualification": "same-slice offline specialization",
+    "source_manifest_sha256": "d878cb47ca2bae267cedd9cd6d647acba7f56ffa50b4049dcd1ae8ea55bc5ab6"
+  },
+  "version": 2
+}

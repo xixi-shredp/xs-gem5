@@ -2,6 +2,7 @@
 #define __CPU_PRED_BTB_HINT_HISTORY_HH__
 
 #include <array>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -32,12 +33,13 @@ struct HintPCWindow
     uint64_t atAge(unsigned age) const;
 };
 
-// All mutable history state has a fixed upper bound. The candidate layout is
-// immutable and shared across FTQ snapshots; values are copied at prediction.
+// Finite mode copies its fixed local-history array at prediction. Ideal mode
+// shares an immutable balanced index root and copies only an update's path;
+// neither snapshots nor rollback copy a candidate-sized mutable table.
 class HintHistory
 {
   public:
-    void configure(const std::vector<Addr> &pcs);
+    void configure(const std::vector<Addr> &pcs, bool ideal = false);
     void update(Addr pc, Addr target, bool indirect, bool call,
                 bool is_return, bool taken);
     void recoverForSquash(const FetchTarget &target, Addr squash_pc,
@@ -51,6 +53,20 @@ class HintHistory
     HintPCWindow returns;
     std::array<uint8_t, HintMaxProfilePCs> locals{};
     std::shared_ptr<const std::vector<Addr>> localPCs;
+
+  private:
+    struct LocalNode;
+    using LocalRoot = std::shared_ptr<const LocalNode>;
+
+    // Candidate rank determines a fixed balanced tree. A null subtree denotes
+    // all-zero histories, so configure() does not allocate per-PC tree nodes.
+    static uint8_t localValue(const LocalRoot &root, size_t first, size_t last,
+                             size_t index);
+    static LocalRoot appendLocal(const LocalRoot &root, size_t first,
+                                 size_t last, size_t index, uint8_t bits);
+
+    bool idealLocals = false;
+    LocalRoot localRoot;
 };
 
 // Shared only as const by queries and FTQ entries. This is the block-entry

@@ -1,0 +1,545 @@
+{
+  "algorithm": "rtl-sim-review/source-manifest/v1",
+  "revision_basis": "scoped_content_manifest",
+  "manifest_hash": "sha256:2cfd621a9329aece46e072654414fb14260e15beaa1b523d894be50dde009e25",
+  "git_head": "1a7ff02428f1914936ee3e640fe2006da0d1209b",
+  "target_revision": "4b9ddb8a6311bff6f5e29cb3722d1f4236d66292",
+  "files": [
+    {
+      "path": "configs/common/FSConfig.py",
+      "hash": "sha256:7e83dec435fff532884faa5f979dc4b49ef84b485be8d67e11eded384ef54dfc",
+      "bytes": 30176
+    },
+    {
+      "path": "configs/common/H2PHint.py",
+      "hash": "sha256:0730e1700f803ba6eb9bbb39c3ec9b1fa7eaf0a8f8a3eff79516a0a6097a0fef",
+      "bytes": 3945
+    },
+    {
+      "path": "configs/common/Options.py",
+      "hash": "sha256:844c24ed3d6a36655c44d1f95083ed2210abddd689fd686267322f84fa411e58",
+      "bytes": 36939
+    },
+    {
+      "path": "configs/common/Simulation.py",
+      "hash": "sha256:dd9183fd03f1dddd7fe2906695d121463be684305c2afaa539ee9a5192353ad9",
+      "bytes": 36455
+    },
+    {
+      "path": "configs/common/xiangshan.py",
+      "hash": "sha256:033117a9cbaac9ea0a9478d3907e022236a03e78a30e58b83ea3dc01cd4cad30",
+      "bytes": 40453
+    },
+    {
+      "path": "configs/example/kmhv3.py",
+      "hash": "sha256:319d2693c25a95ebb83bc11172a1cb71daf6c42359b65013c34a0f86b2b6f87a",
+      "bytes": 8565
+    },
+    {
+      "path": "docs/design-docs/frontend/h2p_hint_ideal_contract.md",
+      "hash": "sha256:ebaddd44953d3304673cf4b345ec138df860174fe597c6d90b10e2658f681e7a",
+      "bytes": 4014
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/BPU.scala",
+      "hash": "sha256:ceaf09af166d3cc104dd41c236ea19ac5b710464793838155e41478b975e18ef",
+      "bytes": 53563
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/Bundle.scala",
+      "hash": "sha256:3262890780ed549bdfded045606b10b792fff70e0e493e4f3e551ecadd05ad53",
+      "bytes": 26322
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/Composer.scala",
+      "hash": "sha256:9d82143a61ad9f45cb07d40ba38f1463ed7cae6e178a9a7176cbef2ee3de940c",
+      "bytes": 3265
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/Configs.scala",
+      "hash": "sha256:e2cdde361950be1bc64ccdf6cfd24794b1530cefd1d87b2d29ed7a6f6a13c9ae",
+      "bytes": 17213
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/FrontendBundle.scala",
+      "hash": "sha256:56d4568be20be34a059b3c11f8133dc650a2ebc101549f0336614ec14077c0ca",
+      "bytes": 33300
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/ITTAGE.scala",
+      "hash": "sha256:bf9e91f1088fe71550ac851a59cef13d0fed26a9271cbc1212d961257f4c65c8",
+      "bytes": 35179
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/NewFtq.scala",
+      "hash": "sha256:fda02a84bca883012ffb64ea005c015c99b607518694f5eb8ff88a6f3746b8f2",
+      "bytes": 83498
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/Parameters.scala",
+      "hash": "sha256:43230e11a398575e1abff3b340781071ad14c6eb8bb3a5459b52bb9c17d5749a",
+      "bytes": 36121
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/SRAMTemplate.scala",
+      "hash": "sha256:1c3ea866ce672913289554f9d6060b00669ba2d35e20f0086eb186645662e9d2",
+      "bytes": 14820
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/Tage.scala",
+      "hash": "sha256:d2cea7e8d386105a0c9eaf186511871337945d86b44ffab075fed9db9f039273",
+      "bytes": 42030
+    },
+    {
+      "path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/rtl/WrBypass.scala",
+      "hash": "sha256:6374df6eceb52974e10f1c76e5adefd152024f44c4587599499f413b3294c2f2",
+      "bytes": 6378
+    },
+    {
+      "path": "src/cpu/o3/BaseO3CPU.py",
+      "hash": "sha256:923febc65a957995d88f91b7315fb502ba16a1d9a4379b37c163b6e64d883baa",
+      "bytes": 18714
+    },
+    {
+      "path": "src/cpu/o3/commit.cc",
+      "hash": "sha256:59143a49f5451076c323650717f85b762b09831984eccc6946f931d838180182",
+      "bytes": 91911
+    },
+    {
+      "path": "src/cpu/o3/commit.hh",
+      "hash": "sha256:14de41ff0c217a329d43619479c48bf183c5e61f7eadab6f9cd3457bdd42f3cd",
+      "bytes": 24541
+    },
+    {
+      "path": "src/cpu/o3/cpu.cc",
+      "hash": "sha256:025bd3d6b6aef37d15c90e8c31c9980f5b66bd429e20a6cdb0f7e95fb91f0f51",
+      "bytes": 60623
+    },
+    {
+      "path": "src/cpu/o3/cpu.hh",
+      "hash": "sha256:bb4d9693f346956ba3b77b662c363cb0f5e23896c117fef72295c132991e4faa",
+      "bytes": 24693
+    },
+    {
+      "path": "src/cpu/o3/fetch.cc",
+      "hash": "sha256:0a60ab687375244c760611c9d177e3599a069408355071cc4895a5bdb33ab6c8",
+      "bytes": 95989
+    },
+    {
+      "path": "src/cpu/o3/fetch.hh",
+      "hash": "sha256:8946d8cec98fa8694b35283ea3c6d17d3b340c39111219c8fa283d7af41b39b7",
+      "bytes": 42194
+    },
+    {
+      "path": "src/cpu/o3/rob.cc",
+      "hash": "sha256:8cf7c85ba94be2af1087cb67d1e22dc1b251199649f27baae4db7645855c46fc",
+      "bytes": 27510
+    },
+    {
+      "path": "src/cpu/o3/rob.hh",
+      "hash": "sha256:fae4ca2f3bd49cecd4770fb8cc8ceca49a800552e717fb27783660f87bebfd30",
+      "bytes": 13428
+    },
+    {
+      "path": "src/cpu/pred/BranchPredictor.py",
+      "hash": "sha256:c84ad7ceb359af3a4015e64af1afe0ad3fa0c80945e04825ac343365373e1c15",
+      "bytes": 53648
+    },
+    {
+      "path": "src/cpu/pred/bpred_unit.cc",
+      "hash": "sha256:0a466658c602515413bb45f632a9feb8d1b4eb3db23bb22267e891b6d00aa03a",
+      "bytes": 22549
+    },
+    {
+      "path": "src/cpu/pred/bpred_unit.hh",
+      "hash": "sha256:09af5d3deb6008991a18985823a867e7d950320022501c5f1da3c603c27498dd",
+      "bytes": 13682
+    },
+    {
+      "path": "src/cpu/pred/btb/abtb.cc",
+      "hash": "sha256:11d3ce2aade9dc6ed3c288289d28b0cab02b850ce15c8e5bb980e04e58cb722b",
+      "bytes": 37833
+    },
+    {
+      "path": "src/cpu/pred/btb/abtb.hh",
+      "hash": "sha256:2461773c0802249f050761e5f4617199ce37a9da78eaa58bacdf2e06feeab5cc",
+      "bytes": 19083
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_ittage.cc",
+      "hash": "sha256:cbb2edf30a1c31f8b90c1ddf89538de980a0323f494d30e13dce8b8478d78649",
+      "bytes": 32687
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_ittage.hh",
+      "hash": "sha256:5b9f9d79dcd855c8fbbf5902bc50c37aa872be2acf2a78049bd163037a57ecb5",
+      "bytes": 9312
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_mgsc.cc",
+      "hash": "sha256:35cb2f2c934e29b970674332be8e83d397fb1e2aacc0e15f6599ab773855aea2",
+      "bytes": 62637
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_mgsc.hh",
+      "hash": "sha256:39598e089dfe2d395ff01d09a9db591174610a3ea306969bc0150f0540078d5a",
+      "bytes": 24264
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_sc.cc",
+      "hash": "sha256:d4e1dbdc8ce251cad431f0933d7818fd12c7d0ba0853f30e3becf0a7a3d84a01",
+      "bytes": 6164
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_sc.hh",
+      "hash": "sha256:c239e603c79b0d545f9fcd90fd382fc7e1102b410a5fa55ec59e9760c24b68f7",
+      "bytes": 3029
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_tage.cc",
+      "hash": "sha256:b65dd72ddd949d223058f26fe3ceb2e3c67f7e69feae526a5dadff89abb6718f",
+      "bytes": 62201
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_tage.hh",
+      "hash": "sha256:d32f276e43befb306995862f1683cf55c987b55e150c5661269c103a2fabeb12",
+      "bytes": 19673
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_tage_ub.cc",
+      "hash": "sha256:9c711382df3f06f41d95b2a2c1fb26d8bdb081e5c093d13f18ee2c00da18a598",
+      "bytes": 19615
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_tage_ub.hh",
+      "hash": "sha256:64f366b41d1466b152603a6a0ff0a28c5d108469f8ce1cb664a8f645a9004a7b",
+      "bytes": 6547
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_ubtb.cc",
+      "hash": "sha256:d3a4e95857001c0b61efb0d7b0811c4f3b6055f23916c5e77008a346b60d5578",
+      "bytes": 24669
+    },
+    {
+      "path": "src/cpu/pred/btb/btb_ubtb.hh",
+      "hash": "sha256:df704ff75a5db874a1734ac141f7f0f0f5ec7be8177efccbbae31926984afad2",
+      "bytes": 13247
+    },
+    {
+      "path": "src/cpu/pred/btb/common.hh",
+      "hash": "sha256:654dd7dc88bf99f93e24feac9a39b40cce477b152dec980bd8c7166a2e88e997",
+      "bytes": 29975
+    },
+    {
+      "path": "src/cpu/pred/btb/decoupled_bpred.cc",
+      "hash": "sha256:d1170959675dfb31ec589883308f396920fafd938919da0598b63a2d05e983de",
+      "bytes": 65929
+    },
+    {
+      "path": "src/cpu/pred/btb/decoupled_bpred.hh",
+      "hash": "sha256:937b02036020a7911aea2f43f446438d8e791a9fb088e04761e2c30deb929301",
+      "bytes": 35433
+    },
+    {
+      "path": "src/cpu/pred/btb/decoupled_bpred_stats.cc",
+      "hash": "sha256:f781ac3d3cb86911eb64cc250309b2e52aa326180bbab369c8e3a296d0c3736a",
+      "bytes": 45839
+    },
+    {
+      "path": "src/cpu/pred/btb/folded_hist.cc",
+      "hash": "sha256:1fe493bd109f96d7f552611aa1a290ef882c5a21947e08b7a85895ce7d1a982f",
+      "bytes": 8828
+    },
+    {
+      "path": "src/cpu/pred/btb/folded_hist.hh",
+      "hash": "sha256:fb1bbb4adc4b2616459e7d9e4ef3bf9608e54b45781c3ae15ef789f90e03274c",
+      "bytes": 7107
+    },
+    {
+      "path": "src/cpu/pred/btb/ftq.cc",
+      "hash": "sha256:8909cc01cc3ad139f1bb7b988d304ed047b13858f24322893b8210ec45716773",
+      "bytes": 3110
+    },
+    {
+      "path": "src/cpu/pred/btb/ftq.hh",
+      "hash": "sha256:3b1369f1b40a5b5c2f8fb7df5809769b8afdafb6d66a76af3e9f98118eeae6d7",
+      "bytes": 4118
+    },
+    {
+      "path": "src/cpu/pred/btb/h2p_indirect_stats.cc",
+      "hash": "sha256:5ac01db4442c692f2d6df67f0823ebff95991faa2ff434239eead656ca6b075e",
+      "bytes": 2043
+    },
+    {
+      "path": "src/cpu/pred/btb/h2p_indirect_stats.hh",
+      "hash": "sha256:b01f26e1ee665a7ee6783354a6d0a74bf3b68bcbaedcc454cd7158dab1cb1d8d",
+      "bytes": 3567
+    },
+    {
+      "path": "src/cpu/pred/btb/hint_history.cc",
+      "hash": "sha256:3864f48dbbcf7beafb769278a9e33d2556032ffa5b4f282442ada8da097a33f2",
+      "bytes": 8533
+    },
+    {
+      "path": "src/cpu/pred/btb/hint_history.hh",
+      "hash": "sha256:09e1d75e12ba3fc44ffcc442d19be2f065db4c16d04946aa1296d8ed3c591737",
+      "bytes": 2695
+    },
+    {
+      "path": "src/cpu/pred/btb/hint_indirect.cc",
+      "hash": "sha256:88ac8ffdfd4b0b739794ec9f21ce802fe851f100b6faf994f87b17d5a42c5e50",
+      "bytes": 47861
+    },
+    {
+      "path": "src/cpu/pred/btb/hint_indirect.hh",
+      "hash": "sha256:ced8effd21b66fa612dc18fcdda561d6d88e6fdc3cca8b1ac41145178d599cdc",
+      "bytes": 7195
+    },
+    {
+      "path": "src/cpu/pred/btb/hint_types.hh",
+      "hash": "sha256:929b3c59ad0c6b4b913df25e2d6dc6d3a3063beb4ad4b08405c7f64bfa035317",
+      "bytes": 1090
+    },
+    {
+      "path": "src/cpu/pred/btb/history_manager.hh",
+      "hash": "sha256:2c9e2aefc7b440aca3bf50a6aaaa32250815732fb06693a2e947977606b3494e",
+      "bytes": 13797
+    },
+    {
+      "path": "src/cpu/pred/btb/mbtb.cc",
+      "hash": "sha256:c863435a5799ba4e664c40368f127891ff49aea7c7885b429e242051ae5df3d9",
+      "bytes": 39499
+    },
+    {
+      "path": "src/cpu/pred/btb/mbtb.hh",
+      "hash": "sha256:2518f22d02e41bd995d3a84be0d11379ee0b49488787c2498cfeeff7e48c768d",
+      "bytes": 17478
+    },
+    {
+      "path": "src/cpu/pred/btb/microtage.cc",
+      "hash": "sha256:7d20f4047b8fbc821aa29272efd7ddb62558700676ee41ec41f67bcd7816d06f",
+      "bytes": 57318
+    },
+    {
+      "path": "src/cpu/pred/btb/microtage.hh",
+      "hash": "sha256:c6e6432eff12200698c0fe72a044a50d6af449362ff234a7be751dd6205194f0",
+      "bytes": 16507
+    },
+    {
+      "path": "src/cpu/pred/btb/pairtage.cc",
+      "hash": "sha256:50bd3da4cce90af7fbd68ab760b65382999f1932a56b046944c8f38613a5acca",
+      "bytes": 34277
+    },
+    {
+      "path": "src/cpu/pred/btb/pairtage.hh",
+      "hash": "sha256:629835b94dcab59afd7793eb36aefaccb2b47c832a389752f3d64a6a5a51f189",
+      "bytes": 12279
+    },
+    {
+      "path": "src/cpu/pred/btb/ras.cc",
+      "hash": "sha256:90529215a994bd4aaa05a42990004ea58a7b99ac12e13fa77efaea2f7f8d3681",
+      "bytes": 16358
+    },
+    {
+      "path": "src/cpu/pred/btb/ras.hh",
+      "hash": "sha256:6bfc2be8e2939b28ed6c2c5c542aa535d7347e0f3dab3962be85bb8215a158d9",
+      "bytes": 7123
+    },
+    {
+      "path": "src/cpu/pred/btb/test/H2PStatTest.py",
+      "hash": "sha256:e5037ebcfb5fb085a6dfb5552b8b25d910baa5548ea60ecd46722dc70e258da1",
+      "bytes": 284
+    },
+    {
+      "path": "src/cpu/pred/btb/test/HintIndirectTest.py",
+      "hash": "sha256:870d4172ea61c2dc57514310d372b9ff45790f4f43e24d73fccb33dc4fd6f56c",
+      "bytes": 692
+    },
+    {
+      "path": "src/cpu/pred/btb/test/abtb.test.cc",
+      "hash": "sha256:272fcd7d622e9b54b18d3f7bf95b488c49c27b1f6696050f258dbf52628905a7",
+      "bytes": 7169
+    },
+    {
+      "path": "src/cpu/pred/btb/test/btb.test.cc",
+      "hash": "sha256:ed6a25798f72a55f006f37850198afffaf64c210f82e3c9b17ded52d617a159a",
+      "bytes": 25032
+    },
+    {
+      "path": "src/cpu/pred/btb/test/btb_mgsc.test.cc",
+      "hash": "sha256:06464755acb2a456bd22f9e5639639ced2b2cc3a07cf2e120bbce24506ba0873",
+      "bytes": 33383
+    },
+    {
+      "path": "src/cpu/pred/btb/test/btb_tage.test.cc",
+      "hash": "sha256:841df2751924079a1c31e85ae7c2c3cab2290782a7c37e067d9155e28b5300ac",
+      "bytes": 53894
+    },
+    {
+      "path": "src/cpu/pred/btb/test/folded_hist.test.cc",
+      "hash": "sha256:8dc9a25ad87cb4cf42ccff9f13e607ce55ebde3aa3af88fea64601adad5f1f72",
+      "bytes": 11816
+    },
+    {
+      "path": "src/cpu/pred/btb/test/h2p_indirect_stats.test.cc",
+      "hash": "sha256:5442af0138a54f62adf4085fa3b9a6ab928866cacbab3a0e506d4773e23d8a2d",
+      "bytes": 4996
+    },
+    {
+      "path": "src/cpu/pred/btb/test/h2p_stat_test.cc",
+      "hash": "sha256:52739c5e26b0973eeff3d5ea6d9764b824146ca1a1116b48ba836ff9e0fad1ec",
+      "bytes": 4813
+    },
+    {
+      "path": "src/cpu/pred/btb/test/h2p_stat_test.hh",
+      "hash": "sha256:4197ca63735069a6f69a75a1b788d68f3edb62790ebc5de80e96c47a04c9365a",
+      "bytes": 415
+    },
+    {
+      "path": "src/cpu/pred/btb/test/hint_history_ideal_test.hh",
+      "hash": "sha256:f9a2ed35e6cb765f976638c247695c4c856040689ae6fa2113ed292e8574ccf6",
+      "bytes": 10960
+    },
+    {
+      "path": "src/cpu/pred/btb/test/hint_indirect_test.cc",
+      "hash": "sha256:46cfaa12db6aafb9cc1a8797613818146b073cb4c22edd55c9d6dad2ecd04f88",
+      "bytes": 67656
+    },
+    {
+      "path": "src/cpu/pred/btb/test/hint_indirect_test.hh",
+      "hash": "sha256:1a485e00804ad727d04f1ea17d12f59e15299cf36e251d92dfd2d58a4b92997f",
+      "bytes": 741
+    },
+    {
+      "path": "src/cpu/pred/btb/test/hint_indirect_test_config.py",
+      "hash": "sha256:74cd5de676419d9fee22ec906a62fa6a0b045f96ab60d7dc3879d7a8395abccb",
+      "bytes": 756
+    },
+    {
+      "path": "src/cpu/pred/btb/test/history_manager.test.cc",
+      "hash": "sha256:3b8fcb9e194880fd81aeee7a70a616cc259dd5ae9bb5959ac1c87116ce1e8ddb",
+      "bytes": 4484
+    },
+    {
+      "path": "src/cpu/pred/btb/test/microtage.test.cc",
+      "hash": "sha256:702e5b7adceb7d34b4ca9c31d8375b42dea4516721f3c8bf6004aa0ae5e44a09",
+      "bytes": 6832
+    },
+    {
+      "path": "src/cpu/pred/btb/test/mock_PCState.hh",
+      "hash": "sha256:6e95537f0cc412db4cb700da7b35365feb521480d22ac48e038a5f5c0b20abbd",
+      "bytes": 2067
+    },
+    {
+      "path": "src/cpu/pred/btb/test/ras_pop_push.test.cc",
+      "hash": "sha256:a908e086721e070b9f55ba350abae8269c95aabe2bd8415357d58202b301edba",
+      "bytes": 3279
+    },
+    {
+      "path": "src/cpu/pred/btb/test/ras_test.cc",
+      "hash": "sha256:70d32bcc2d832445cab61f2f7ade91a0b73cbc403232a0a4abe4359331fb5a6e",
+      "bytes": 18598
+    },
+    {
+      "path": "src/cpu/pred/btb/test/run_hint_input_tests.py",
+      "hash": "sha256:c9156ca9138e647c0da518d733028412c9bd51d4eaee3a1f29794ae3fae685ed",
+      "bytes": 11005
+    },
+    {
+      "path": "src/cpu/pred/btb/test/test_dprintf.hh",
+      "hash": "sha256:3baef650703e7185d63bc6387ef404dcf17896f86bc74a4d492be8c8858791e1",
+      "bytes": 1422
+    },
+    {
+      "path": "src/cpu/pred/btb/test/uras_test.cc",
+      "hash": "sha256:c5b290729976a8a71156c95051391a5a9c864e1e66c948db93c849488b28f6ab",
+      "bytes": 14860
+    },
+    {
+      "path": "src/cpu/pred/btb/test_stats.hh",
+      "hash": "sha256:756cfe30e5079b3543c139c396aedbab57413e6f63190348d6d8cc6f6d535181",
+      "bytes": 2710
+    },
+    {
+      "path": "src/cpu/pred/btb/timed_base_pred.cc",
+      "hash": "sha256:c1ee8c694e66593c4a79d974b5adeb49b16555dd5dab45d6e62462a6e98d1711",
+      "bytes": 752
+    },
+    {
+      "path": "src/cpu/pred/btb/timed_base_pred.hh",
+      "hash": "sha256:4e4f4985f027b77ff60253da18294ba320f51231c3bb3f9f109378e56c0bdcf7",
+      "bytes": 5423
+    },
+    {
+      "path": "src/cpu/pred/btb/uras.cc",
+      "hash": "sha256:75a9c601880067d72e14340b5e5fc0cc186757090ad90fb4614caab1172e6789",
+      "bytes": 7917
+    },
+    {
+      "path": "src/cpu/pred/btb/uras.hh",
+      "hash": "sha256:55355aa5d922dcbb0f83bf5603169f367c0f5eddf99354f210d5ce6421833e12",
+      "bytes": 4358
+    },
+    {
+      "path": "tests/gem5/h2p_hint/ideal_pipeline_driver.py",
+      "hash": "sha256:e637dddb07d6c7632a15b81eaefc467dacf2ba0e700bbb7df964a4f645729bec",
+      "bytes": 34311
+    },
+    {
+      "path": "tests/gem5/h2p_hint/ideal_tools_test.py",
+      "hash": "sha256:38b2f9f2edfc82d48109899ad5e1565593c16caf0cc2de937277e647ad1ce21d",
+      "bytes": 21114
+    },
+    {
+      "path": "util/h2p_hint/__init__.py",
+      "hash": "sha256:f09335502803857841896b2aa45467630472fd71bf48b272d83c77d022d8442f",
+      "bytes": 84
+    },
+    {
+      "path": "util/h2p_hint/__main__.py",
+      "hash": "sha256:6f9ae09a069dd57e28e54eb966a88b7de349612f027d25a0833f0e8c4be685b5",
+      "bytes": 4072
+    },
+    {
+      "path": "util/h2p_hint/audit.py",
+      "hash": "sha256:d27890b03b295455c6cf79f4d303506248ef1cfd63b9e57236843170c5165c4e",
+      "bytes": 11358
+    },
+    {
+      "path": "util/h2p_hint/builder.py",
+      "hash": "sha256:21d8c9d2ff82d1655284b66a47320dea29be9ea000a3eb0291cba9bfc26933a3",
+      "bytes": 13733
+    },
+    {
+      "path": "util/h2p_hint/ideal_audit.py",
+      "hash": "sha256:b85567fd5860e1a6f6fb53294b27a8ddd0d9b5c8052e6cd1dda47eec9b4a4cdd",
+      "bytes": 28973
+    },
+    {
+      "path": "util/h2p_hint/ideal_report.py",
+      "hash": "sha256:027faafb593e4aca706610d312ecf831e9443ba4dd9981e7e0df0b387ad0b626",
+      "bytes": 14275
+    },
+    {
+      "path": "util/h2p_hint/ideal_runner.py",
+      "hash": "sha256:3f4e4d5f63daa542098b17310622fbb5d537f40b829a2c08fe5cc33e807f1001",
+      "bytes": 32658
+    },
+    {
+      "path": "util/h2p_hint/model.py",
+      "hash": "sha256:ff4e4b9ce384c9b38976edaca766a47cb122c9b27421f662fc20d682103a5f30",
+      "bytes": 25859
+    },
+    {
+      "path": "util/h2p_hint/profile.py",
+      "hash": "sha256:e8c3662c75e7e1a5d5229a586d2b9bb75378c1579f72c8a877eba896b385e905",
+      "bytes": 8955
+    },
+    {
+      "path": "util/h2p_hint/runner.py",
+      "hash": "sha256:c0cfcbbc6c5b9faaf1f2fb785915e6cf5db79522aa5ab3c7c1c44f1a6eab9c9e",
+      "bytes": 30038
+    }
+  ],
+  "note": "Current worktree bytes are authoritative. Functional/config/test paths match the formal v2 build2 source manifest; ROB sources are included because commit-width grouping is part of the recovered bound. Remote RTL snapshots are included as evidence."
+}

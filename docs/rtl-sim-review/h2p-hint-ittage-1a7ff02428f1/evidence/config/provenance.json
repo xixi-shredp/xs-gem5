@@ -1,0 +1,157 @@
+{
+  "inputs": [
+    {
+      "kind": "config",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/deltablue_test/44/config.ini",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/deltablue_test/44/config.ini",
+      "sha256": "f9a6384ec7e1df8445a8e672e3dd3c326fd78ef3b848e9324f94da68dfe6aa02",
+      "identity_matches": null
+    },
+    {
+      "kind": "identity",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/deltablue_test/44/identity.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/deltablue_test/44/identity.json",
+      "sha256": "00d5ad74c4b60a9d7e92235b3cb6203876de7d79c5c8d4f6f4c9697446415950",
+      "identity_matches": null
+    },
+    {
+      "kind": "metadata",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/images/finite/deltablue_test/44/metadata.txt",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/deltablue_test/44/metadata.txt",
+      "sha256": "8bb4a9599d7099782730535c67987b59f11e647679791d411dcf84b66099f365",
+      "identity_matches": true
+    },
+    {
+      "kind": "candidates",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/inputs/deltablue_test/44/finite-candidates.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/deltablue_test/44/finite-candidates.json",
+      "sha256": "b5cca35d564dff18b6c1cf75791bfaeddff1ecd9226bdd8ef10113c01989c123",
+      "identity_matches": null
+    },
+    {
+      "kind": "config",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/pickle_pure_python_test/18/config.ini",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/pickle_pure_python_test/18/config.ini",
+      "sha256": "53c6d6646dcd5d677ea3c683fc2ac37c05458a19b509dca439bd470e4a6ddc6c",
+      "identity_matches": null
+    },
+    {
+      "kind": "identity",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/pickle_pure_python_test/18/identity.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/pickle_pure_python_test/18/identity.json",
+      "sha256": "8d1de6e194e79b2ab1b4ca0df0ed2ef2c68bf4974ed4ef0b9636e5041f6ab0a4",
+      "identity_matches": null
+    },
+    {
+      "kind": "metadata",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/images/finite/pickle_pure_python_test/18/metadata.txt",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/pickle_pure_python_test/18/metadata.txt",
+      "sha256": "29dd1cf6b78c625715bca215429f72f7bad55ca108a0a9adeb73164fbeda05c0",
+      "identity_matches": true
+    },
+    {
+      "kind": "candidates",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/inputs/pickle_pure_python_test/18/finite-candidates.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/pickle_pure_python_test/18/finite-candidates.json",
+      "sha256": "a14b0e2a162d291859173a9d9d52faeacd3d7c2d081925af6220e3fb1ccbe055",
+      "identity_matches": null
+    },
+    {
+      "kind": "config",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/pyflate_test/44/config.ini",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/pyflate_test/44/config.ini",
+      "sha256": "334ac42da643647f722d5ad93cbefab1635591fc3fef9311e6184fd02f400286",
+      "identity_matches": null
+    },
+    {
+      "kind": "identity",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/pyflate_test/44/identity.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/pyflate_test/44/identity.json",
+      "sha256": "0acab3e8a5cab10881319dbd2554e32fbeb09f188458b9fa0a5857438d001982",
+      "identity_matches": null
+    },
+    {
+      "kind": "metadata",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/images/finite/pyflate_test/44/metadata.txt",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/pyflate_test/44/metadata.txt",
+      "sha256": "35991b1cf31ef40330729c0d49477c0267dc3761c785299fd337df000c62ba07",
+      "identity_matches": true
+    },
+    {
+      "kind": "candidates",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/inputs/pyflate_test/44/finite-candidates.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/pyflate_test/44/finite-candidates.json",
+      "sha256": "18e67f1c38b8ffdf331745a885d0670042ec3cf41ded9f6560e0f597ef57503e",
+      "identity_matches": null
+    },
+    {
+      "kind": "config",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/regex_v8_test/30/config.ini",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/regex_v8_test/30/config.ini",
+      "sha256": "cc98c8b2a1e6b57e8fa5854f65562275c1cacaf1693bf05d437c0a3ad3050e99",
+      "identity_matches": null
+    },
+    {
+      "kind": "identity",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/regex_v8_test/30/identity.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/regex_v8_test/30/identity.json",
+      "sha256": "98f7ab62b5b2487e32e7e1529303cdad33a64b44946758ee37548cf7e8a38ec4",
+      "identity_matches": null
+    },
+    {
+      "kind": "metadata",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/images/finite/regex_v8_test/30/metadata.txt",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/regex_v8_test/30/metadata.txt",
+      "sha256": "53fb26da7bbf8945066995e9b4a29945eeac4e9573f902dedd8e0d563741f9f5",
+      "identity_matches": true
+    },
+    {
+      "kind": "candidates",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/inputs/regex_v8_test/30/finite-candidates.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/regex_v8_test/30/finite-candidates.json",
+      "sha256": "c939ca60c50b2deadf4fa8b7798e92b17b23cd80e96dd978bc88406a75c7497d",
+      "identity_matches": null
+    },
+    {
+      "kind": "config",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/scimark_fft_test/26/config.ini",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/scimark_fft_test/26/config.ini",
+      "sha256": "ae9f112696d6f3d584c7e83fe80a7428db965ccd6399ab5d36bacd705b241abe",
+      "identity_matches": null
+    },
+    {
+      "kind": "identity",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/runs/finite/scimark_fft_test/26/identity.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/scimark_fft_test/26/identity.json",
+      "sha256": "e702ca1c0e53d1f98b747259359628998a19fe742a80e6cffe8b4c5e29106613",
+      "identity_matches": null
+    },
+    {
+      "kind": "metadata",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/images/finite/scimark_fft_test/26/metadata.txt",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/scimark_fft_test/26/metadata.txt",
+      "sha256": "2a968cfd2f0ed74b1ed28fa9fa9756dc688a52971184fd1730579cb3802b74ad",
+      "identity_matches": true
+    },
+    {
+      "kind": "candidates",
+      "source_path": "results/h2p-hint-ideal-heavy-v2/formal/inputs/scimark_fft_test/26/finite-candidates.json",
+      "snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/scimark_fft_test/26/finite-candidates.json",
+      "sha256": "b5c09e574f83d461cfdb5f18dd04868bea500d24873e630f1460558f2944e6b3",
+      "identity_matches": null
+    }
+  ],
+  "source_manifest_path": "results/h2p-hint-ideal-heavy-v2/formal/source-manifest.json",
+  "source_manifest_sha256": "5be39be44760477fc47b608df5df76c4dc27669e0edac720b823224cc1a819de",
+  "anchor": "pickle_pure_python_test/18/config.ini",
+  "geometry": {
+    "cam_entries": 16,
+    "context_entries": 4096,
+    "sets": 2048,
+    "ways": 2,
+    "slot_entries": 32,
+    "fifo_depth": 8
+  },
+  "scope": "All legal finite metadata at configured capacity, five images provide provenance rather than capacity specialization.",
+  "source_manifest_snapshot_path": "docs/rtl-sim-review/h2p-hint-ittage-1a7ff02428f1/evidence/config/formal-source-manifest.json"
+}

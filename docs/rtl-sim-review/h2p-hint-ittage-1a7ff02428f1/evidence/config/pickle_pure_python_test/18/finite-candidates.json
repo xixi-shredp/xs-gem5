@@ -1,0 +1,112 @@
+{
+  "format": "h2p-hint-candidates",
+  "pcs": [
+    "0x185eb0",
+    "0xf1b54",
+    "0x7fffbe0dff48",
+    "0x18d344",
+    "0x61f30",
+    "0x18848a",
+    "0xe6b2a",
+    "0xce1ce",
+    "0x2537f2",
+    "0x1896ea",
+    "0xa98ce",
+    "0x1895e6",
+    "0x2549b8",
+    "0x189864",
+    "0x7d344",
+    "0x18d44c",
+    "0xb7950",
+    "0x25381a",
+    "0x245366",
+    "0x2454f0"
+  ],
+  "ranking": [
+    {
+      "miss": 72073,
+      "pc": "0x185eb0"
+    },
+    {
+      "miss": 693,
+      "pc": "0xf1b54"
+    },
+    {
+      "miss": 548,
+      "pc": "0x7fffbe0dff48"
+    },
+    {
+      "miss": 332,
+      "pc": "0x18d344"
+    },
+    {
+      "miss": 215,
+      "pc": "0x61f30"
+    },
+    {
+      "miss": 197,
+      "pc": "0x18848a"
+    },
+    {
+      "miss": 177,
+      "pc": "0xe6b2a"
+    },
+    {
+      "miss": 115,
+      "pc": "0xce1ce"
+    },
+    {
+      "miss": 103,
+      "pc": "0x2537f2"
+    },
+    {
+      "miss": 81,
+      "pc": "0x1896ea"
+    },
+    {
+      "miss": 79,
+      "pc": "0xa98ce"
+    },
+    {
+      "miss": 62,
+      "pc": "0x1895e6"
+    },
+    {
+      "miss": 62,
+      "pc": "0x2549b8"
+    },
+    {
+      "miss": 61,
+      "pc": "0x189864"
+    },
+    {
+      "miss": 58,
+      "pc": "0x7d344"
+    },
+    {
+      "miss": 51,
+      "pc": "0x18d44c"
+    },
+    {
+      "miss": 46,
+      "pc": "0xb7950"
+    },
+    {
+      "miss": 44,
+      "pc": "0x25381a"
+    },
+    {
+      "miss": 42,
+      "pc": "0x245366"
+    },
+    {
+      "miss": 42,
+      "pc": "0x2454f0"
+    }
+  ],
+  "source": {
+    "h2p_file": "/opt/data/labs/hint-indirect/results/stage1/pickle_pure_python_test/18/h2p-indirect.txt",
+    "sha256": "cf24353c836e3cba369e4c6cfa75e8aad38b99f4926e36862758a4b8251ce262"
+  },
+  "version": 2
+}

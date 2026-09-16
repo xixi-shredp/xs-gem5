@@ -1243,6 +1243,9 @@ class DecoupledBPUWithBTB(BranchPredictor):
         0, "Measured instructions per H2P window; zero disables",
     )
     hintMode = Param.String("off", "H2P Hint mode: off, collect, or replay")
+    idealHintIBP = Param.Bool(
+        False, "Remove Hint table capacity limits while retaining hash and timing",
+    )
     hintCandidates = Param.String("", "Ranked Hint candidate JSON file")
     hintMetadata = Param.String("", "Frozen Hint metadata JSON file")
     hintCamEntries = Param.Unsigned(16, "H2P Hint CAM capacity")

@@ -6,12 +6,14 @@ import math
 from pathlib import Path
 import re
 
-from .model import address, empty_counters
+from .model import address, empty_counters, validate_metadata
 
 
 def legacy():
     spec = importlib.util.spec_from_file_location(
-        "h2p_detection_runner", Path(__file__).resolve().parents[1] / "run-cpython-h2p.py")
+        "h2p_detection_runner",
+        Path(__file__).resolve().parents[1] / "run-cpython-h2p.py",
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -41,34 +43,65 @@ def stats_values(path):
     return values
 
 
-def compare_observer(baseline, observed):
-    left, right = stats_values(Path(baseline) / "stats.txt"), stats_values(Path(observed) / "stats.txt")
-    differences = [{"stat": name, "off": left.get(name), "collect": right.get(name)}
-                   for name in sorted(left.keys() | right.keys())
-                   if left.get(name) != right.get(name)]
-    h2p_equal = ((Path(baseline) / "h2p-indirect.txt").read_bytes() ==
-                 (Path(observed) / "h2p-indirect.txt").read_bytes())
-    return {"pass": not differences and h2p_equal,
-            "numeric_statistics": len(left), "differences": differences,
-            "h2p_aggregate_equal": h2p_equal}
+def compare_observer(baseline, observed, check_windows=False):
+    left, right = stats_values(Path(baseline) / "stats.txt"), stats_values(
+        Path(observed) / "stats.txt"
+    )
+    differences = [
+        {"stat": name, "off": left.get(name), "collect": right.get(name)}
+        for name in sorted(left.keys() | right.keys())
+        if left.get(name) != right.get(name)
+    ]
+    h2p_equal = (Path(baseline) / "h2p-indirect.txt").read_bytes() == (
+        Path(observed) / "h2p-indirect.txt"
+    ).read_bytes()
+    different_windows = []
+    if check_windows:
+        for offset in range(0, 50_000_000, 1_000_000):
+            name = f"{offset}.txt"
+            if (Path(baseline) / "h2p-indirec" / name).read_bytes() != (
+                Path(observed) / "h2p-indirec" / name
+            ).read_bytes():
+                different_windows.append(name)
+    return {
+        "pass": not differences and h2p_equal and not different_windows,
+        "numeric_statistics": len(left),
+        "differences": differences,
+        "h2p_aggregate_equal": h2p_equal,
+        "checked_windows": 50 if check_windows else 0,
+        "different_windows": different_windows,
+    }
 
 
-def validate_hint_stats(data, total_misses, mode, candidates):
-    if (data.get("format") != "h2p-hint-stats" or data.get("version") != 2 or
-            data.get("mode") != mode):
+def validate_hint_stats(data, total_misses, mode, candidates, ideal=False):
+    if (
+        data.get("format") != "h2p-hint-stats"
+        or data.get("version") != (3 if ideal else 2)
+        or data.get("mode") != mode
+    ):
         raise ValueError("invalid Hint statistics identity")
     rows = [data["global"], *data["pcs"]]
     for row in rows:
         for name in empty_counters():
             if type(row.get(name)) is not int or row[name] < 0:
                 raise ValueError(f"invalid Hint counter {name}")
-        if (row["baseline_misses"] - row["final_misses"] !=
-                row["corrected"] - row["harmed"]):
+        if (
+            row["baseline_misses"] - row["final_misses"]
+            != row["corrected"] - row["harmed"]
+        ):
             raise ValueError("Hint corrected/harmed conservation failed")
-        if not (row["overrides"] <= row["conf_enabled"] <= row["tag_hits"] <=
-                row["eligible"] <= row["executions"]):
+        if not (
+            row["overrides"]
+            <= row["conf_enabled"]
+            <= row["tag_hits"]
+            <= row["eligible"]
+            <= row["executions"]
+        ):
             raise ValueError("Hint coverage counters are inconsistent")
-        if max(row["baseline_misses"], row["final_misses"]) > row["executions"]:
+        if (
+            max(row["baseline_misses"], row["final_misses"])
+            > row["executions"]
+        ):
             raise ValueError("Hint misses exceed executions")
     pcs = [address(row["pc"]) for row in data["pcs"]]
     if len(pcs) != len(set(pcs)) or not set(candidates) <= set(pcs):
@@ -76,40 +109,155 @@ def validate_hint_stats(data, total_misses, mode, candidates):
     if data["global"]["final_misses"] != total_misses:
         raise ValueError("global Hint final misses differ from H2P aggregate")
     queue = data["queue"]
-    for name in ("enqueued", "applied", "dropped", "pending", "carried_in",
-                 "zero_transitions", "recoveries", "max_occupancy"):
+    for name in (
+        "enqueued",
+        "applied",
+        "dropped",
+        "pending",
+        "carried_in",
+        "zero_transitions",
+        "recoveries",
+        "max_occupancy",
+    ):
         if type(queue.get(name, 0)) is not int or queue.get(name, 0) < 0:
             raise ValueError("invalid confidence queue counter")
-    if queue.get("carried_in", 0) + queue["enqueued"] != queue["applied"] + queue["pending"]:
+    if (
+        queue.get("carried_in", 0) + queue["enqueued"]
+        != queue["applied"] + queue["pending"]
+    ):
         raise ValueError("confidence queue conservation failed")
+    if queue["enqueued"] + queue["dropped"] != data["global"]["tag_hits"]:
+        raise ValueError(
+            "not every committed tag hit scored or dropped exactly one update"
+        )
     return data
 
 
-def audit_run(output, returncode, warmup, measure, interval, mode, candidates):
+def validate_occupancy(data, mode, metadata=None, sample_cycles=None):
+    """Frozen valid rows occupy storage even while confidence is zero."""
+    if mode == "replay":
+        validate_metadata(metadata)
+        residents = {
+            "cam": sum(row["valid"] for row in metadata["cam"]),
+            "context": sum(row["valid"] for row in metadata["entries"]),
+            "slots": len(metadata["slots"]),
+        }
+    else:
+        residents = dict.fromkeys(("cam", "context", "slots"), 0)
+    if data.get("occupancy_applicable") is not (mode == "replay"):
+        raise ValueError(
+            "collect hardware occupancy must be marked inapplicable"
+        )
+    for table, capacity in (("cam", 16), ("context", 4096), ("slots", 32)):
+        row = data["occupancy"][table]
+        cycles = row["sample_cycles"]
+        if type(cycles) is not int or cycles < 0:
+            raise ValueError("invalid occupancy sample cycle count")
+        expected_cycles = sample_cycles if mode == "replay" else 0
+        if expected_cycles is not None and cycles != expected_cycles:
+            raise ValueError(
+                f"{table} occupancy cycles differ from measure boundaries: {cycles} != {expected_cycles}"
+            )
+        expected = {
+            "resident_entries": residents[table],
+            "finite_capacity": capacity,
+            "avg_entries": residents[table] if cycles else 0,
+            "peak_entries": residents[table] if cycles else 0,
+        }
+        expected.update(
+            {
+                field + "_multiple": expected[field + "_entries"] / capacity
+                for field in ("resident", "avg", "peak")
+            }
+        )
+        for field, value in expected.items():
+            if not math.isclose(
+                row[field], value, rel_tol=1e-5, abs_tol=1e-10
+            ):
+                raise ValueError(
+                    f"{table}.{field} differs from resident metadata"
+                )
+    return data["occupancy"]
+
+
+def audit_run(
+    output,
+    returncode,
+    warmup,
+    measure,
+    interval,
+    mode,
+    candidates,
+    ideal=False,
+    metadata=None,
+    check_occupancy=False,
+):
     output = Path(output)
     checker = legacy()
-    errors, sim_insts, records = checker.validate(output, returncode, warmup, measure, interval)
+    errors, sim_insts, records = checker.validate(
+        output, returncode, warmup, measure, interval
+    )
     stats = None
     total = 0
     try:
         parsed = checker.parse_h2p_output(output / "h2p-indirect.txt")
         total = sum(row[0] for row in parsed.values())
         if mode != "off":
-            stats = validate_hint_stats(json.loads((output / "hint-stats.json").read_text()),
-                                        total, mode, candidates)
+            stats = validate_hint_stats(
+                json.loads((output / "hint-stats.json").read_text()),
+                total,
+                mode,
+                candidates,
+                ideal,
+            )
+            for row in stats["pcs"]:
+                if (
+                    row["final_misses"]
+                    != parsed.get(address(row["pc"]), (0,))[0]
+                ):
+                    raise ValueError(
+                        "Hint per-PC final misses differ from H2P aggregate"
+                    )
             if not (output / "conf0.txt").is_file():
                 raise ValueError("missing conf0.txt")
-            transitions = sum(bool(line.strip()) for line in
-                              (output / "conf0.txt").read_text().splitlines())
+            transitions = sum(
+                bool(line.strip())
+                for line in (output / "conf0.txt").read_text().splitlines()
+            )
             if transitions != stats["queue"]["zero_transitions"]:
-                raise ValueError("conf0 lines differ from actual confidence transitions")
-        if mode == "collect" and not (output / "hint-profile.jsonl.gz").is_file():
+                raise ValueError(
+                    "conf0 lines differ from actual confidence transitions"
+                )
+        if (
+            mode == "collect"
+            and not (output / "hint-profile.jsonl.gz").is_file()
+        ):
             raise ValueError("missing collect profile")
         config = (output / "config.ini").read_text()
         if f"hintMode={mode}\n" not in config:
             raise ValueError("Hint configuration mode mismatch")
+        if ideal and "idealHintIBP=true\n" not in config:
+            raise ValueError("unlimited Hint flag is not enabled")
+        if not ideal and "idealHintIBP=true\n" in config:
+            raise ValueError(
+                "finite/off run unexpectedly enables unlimited Hint"
+            )
+        if stats is not None:
+            depth = int(
+                re.search(r"^hintConfQueueDepth=(\d+)$", config, re.M).group(1)
+            )
+            if (
+                max(stats["queue"]["pending"], stats["queue"]["max_occupancy"])
+                > depth
+            ):
+                raise ValueError(
+                    "confidence queue exceeds configured capacity"
+                )
         command = (output / "cmd.txt").read_text()
-        if "enable_difftest=true" in config or "--mem-type=DDR4_2400_8x8" not in command:
+        if (
+            "enable_difftest=true" in config
+            or "--mem-type=DDR4_2400_8x8" not in command
+        ):
             raise ValueError("difftest or memory configuration differs")
         if "--raw-cpt" in command:
             raise ValueError("zstd checkpoint was run as raw memory")
@@ -117,15 +265,44 @@ def audit_run(output, returncode, warmup, measure, interval, mode, candidates):
         errors.append(str(error))
     phases = {}
     try:
-        phases = checker.read_phases((output / "stdout.log").read_text() +
-                                     (output / "stderr.log").read_text())
+        phases = checker.read_phases(
+            (output / "stdout.log").read_text()
+            + (output / "stderr.log").read_text()
+        )
     except (OSError, ValueError) as error:
         errors.append(str(error))
-    numeric = stats_values(output / "stats.txt") if (output / "stats.txt").exists() else {}
-    return {"result": "pass" if not errors else "fail", "errors": errors,
-            "returncode": returncode, "sim_insts": sim_insts,
-            "h2p_pc_count": records, "final_misses": total,
-            "window_count": len(range(0, measure, interval)) if interval else 0,
-            "phases": phases, "sim_ticks": numeric.get("simTicks", [None])[0],
-            "ipc": numeric.get("system.cpu.ipc", [None])[0],
-            "hint": stats}
+    if check_occupancy and stats is not None:
+        try:
+            clock = re.search(
+                r"\[system\.cpu_clk_domain\][^\[]*\nclock=(\d+)", config
+            )
+            if not clock:
+                raise ValueError("CPU clock period is absent from config")
+            period = int(clock.group(1))
+            cycles = (
+                phases["measure_complete"]["tick"] // period
+                - phases["warmup_complete"]["tick"] // period
+            )
+            validate_occupancy(stats, mode, metadata, cycles)
+            if stats.get("storage") != ("unlimited" if ideal else "finite"):
+                raise ValueError("Hint stats storage flag differs")
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            errors.append(str(error))
+    numeric = (
+        stats_values(output / "stats.txt")
+        if (output / "stats.txt").exists()
+        else {}
+    )
+    return {
+        "result": "pass" if not errors else "fail",
+        "errors": errors,
+        "returncode": returncode,
+        "sim_insts": sim_insts,
+        "h2p_pc_count": records,
+        "final_misses": total,
+        "window_count": len(range(0, measure, interval)) if interval else 0,
+        "phases": phases,
+        "sim_ticks": numeric.get("simTicks", [None])[0],
+        "ipc": numeric.get("system.cpu.ipc", [None])[0],
+        "hint": stats,
+    }

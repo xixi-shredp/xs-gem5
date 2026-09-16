@@ -1,0 +1,1240 @@
+schema_version: "1.0"
+registry_id: rtl-sim-review-asic-heuristics-v1
+policy_kind: organizational_qualitative_heuristic
+
+non_signoff:
+  fixed: true
+  classification: organizational_heuristic
+  threshold_authority: user_approved_policy
+  physical_fact: false
+  signoff_qualified: false
+  replaces_sta: false
+  replaces_physical_design: false
+  requires_library_pvt_parasitic_signoff: true
+
+selection_policy:
+  selector_key: node_nm
+  match_mode: exact
+  supported_node_nm: [28, 22, 16, 14, 12, 7, 6, 5, 4, 3]
+  require_one_profile_per_selector: true
+  reject_overlapping_selectors: true
+  allow_fallback: false
+  allow_process_node_scaling: false
+  allow_interpolation: false
+  allow_extrapolation: false
+  allow_nearest_neighbor: false
+  unsupported_selector_result: NEEDS_INPUT
+
+decision_semantics:
+  pass_comparator: less_than_or_equal
+  exceeded_result: FAIL
+  unknown_observation_result: NEEDS_INPUT
+  blocked_observation_result: BLOCKED
+  aggregate_precedence: [FAIL, BLOCKED, NEEDS_INPUT, PASS]
+
+machine_field_contract:
+  strict: true
+  unknown_fields_allowed: false
+  whole_registry_validation:
+    before_profile_selection: true
+    any_semantic_or_contract_error_invalidates_registry_artifact: true
+    malformed_registry_may_be_substituted_with_needs_input: false
+    exact_root_fields:
+      - schema_version
+      - registry_id
+      - policy_kind
+      - non_signoff
+      - selection_policy
+      - decision_semantics
+      - machine_field_contract
+      - resource_accounting
+      - metric_accounting
+      - period_validation
+      - period_bands
+      - profile_expansion
+      - profile_defaults
+      - profiles
+      - custom_profile_contract
+    profile_entry_exact_fields:
+      - profile_id
+      - selector
+      - supported_period_bands
+      - profile_defaults_ref
+    profile_selector_exact_fields: [node_nm]
+    profile_selector_node_nm_type: positive_integer_not_boolean
+    profile_defaults_exact_fields:
+      - period_band_thresholds
+      - memory_policy
+      - logic_complexity_points
+      - non_signoff
+      - source
+      - calibration
+    selection_policy_exact_fields:
+      - selector_key
+      - match_mode
+      - supported_node_nm
+      - require_one_profile_per_selector
+      - reject_overlapping_selectors
+      - allow_fallback
+      - allow_process_node_scaling
+      - allow_interpolation
+      - allow_extrapolation
+      - allow_nearest_neighbor
+      - unsupported_selector_result
+    decision_semantics_exact_fields:
+      - pass_comparator
+      - exceeded_result
+      - unknown_observation_result
+      - blocked_observation_result
+      - aggregate_precedence
+    profile_id_globally_unique: true
+    profile_id_type: substantive_nonempty_string
+    selector_node_nm_globally_unique: true
+    supported_nodes_source: selection_policy.supported_node_nm
+    require_supported_nodes_bijective_with_profile_selectors: true
+    require_every_profile_defaults_ref_to_resolve: true
+    require_whole_object_defaults_expansion: true
+    require_profile_supported_period_bands_exact: [tightest, tight, normal, relaxed]
+    fixed_global_paths:
+      - selection_policy
+      - decision_semantics
+      - non_signoff
+      - period_validation
+      - period_bands
+      - machine_field_contract.memory_policy_scope
+      - machine_field_contract.generic_port_model_contract
+      - machine_field_contract.fixed_memory_gate_routing
+      - machine_field_contract.integer_semantics
+      - machine_field_contract.decimal_token_safety
+      - machine_field_contract.profile_validation_outcomes
+      - machine_field_contract.profile_content_identity
+      - machine_field_contract.non_signoff_enforcement
+      - resource_accounting
+      - metric_accounting
+      - profile_expansion
+      - custom_profile_contract
+    validate_fixed_global_paths_for_every_profile: true
+  schema_version:
+    type: string
+    exact_value: "1.0"
+    applies_to: [registry_root, custom_profile_root]
+    numeric_coercion_allowed: false
+  status:
+    type: enum_string
+    allowed_values: [PASS, FAIL, BLOCKED, NEEDS_INPUT]
+  period_input_unit:
+    path: period_validation.input_unit
+    type: string
+    exact_value: ns
+    owner: evaluator
+    custom_profile_field_allowed: false
+    meaning: target period and frequency reciprocal are normalized to nanoseconds before conservative band selection
+  integer_semantics:
+    applies_to: every_machine_field_declared_as_integer
+    representation: yaml_integer
+    precision: arbitrary
+    boolean_allowed: false
+    float_allowed: false
+    numeric_string_allowed: false
+  decimal_token_safety:
+    applies_to: every_token_or_string_subtoken_that_a_machine_contract_parses_as_a_decimal
+    includes_builtin_registry_and_custom_profile_decimals: true
+    applies_to_yaml_integer_tokens: false
+    integer_semantics_ref: machine_field_contract.integer_semantics
+    lexical_tuple_must_be_derived_before_numeric_materialization: true
+    decimal_tuple_definition:
+      coefficient: decimal_digits_with_leading_zeroes_removed_but_trailing_zeroes_preserved
+      all_zero_coefficient: single_zero_digit
+      coefficient_digits: number_of_digits_in_coefficient
+      q: explicit_base10_exponent_or_zero_minus_fractional_digit_count
+      adjusted_exponent: q_plus_coefficient_digits_minus_one
+    inclusive_bounds:
+      q: [-10000, 10000]
+      adjusted_exponent: [-10000, 10000]
+    both_bounds_must_pass: true
+    check_before:
+      - Decimal_construction
+      - Fraction_construction
+      - power_of_ten_materialization
+      - reciprocal_or_arithmetic_evaluation
+    exponent_bounds_must_be_checked_lexically_without_materializing_power_of_ten: true
+    coefficient_digit_count_has_independent_cap: false
+    out_of_range_handling: controlled_invalid_artifact_or_profile
+    uncaught_numeric_exception_allowed: false
+  profile_validation_outcomes:
+    semantic_malformed_registry_or_profile:
+      artifact_valid: false
+      profile_resolution_must_stop: true
+      verdict_status_emitted: false
+      needs_input_substitution_allowed: false
+      includes_rule_domain_overlap_or_ambiguity: true
+      includes_duplicate_or_overlapping_selectors: true
+      includes_supplied_profile_contract_violation: true
+    missing_profile_input_or_no_exact_selector_match:
+      artifact_valid: true
+      profile_resolution: unresolved
+      result: NEEDS_INPUT
+  logic_complexity_unit:
+    path: profile.logic_complexity_points.unit
+    type: string
+    exact_value: points
+    meaning: organizational logic-complexity points, not gates or physical area
+  profile_content_identity:
+    result_path: target.profile_hash
+    field_required: true
+    nullable_only_when_profile_unresolved: true
+    algorithm: sha256
+    format: "sha256:<64-lowercase-hex>"
+    bytes: exact_complete_loaded_profile_file
+    built_in_file_scope: complete_registry_yaml_file
+    custom_file_scope: complete_custom_profile_yaml_file
+    pass_requires_exact_hash_match: true
+    hash_mismatch_handling: invalid_artifact
+    hash_mismatch_may_be_substituted_with_needs_input: false
+  memory_policy_scope:
+    generic_memory_applies_to_storage_kinds: [sram, register]
+    generic_memory_excluded_storage_kinds: [cam]
+    cam_applies_to_storage_kinds: [cam]
+    cam_is_generic_memory_exception: true
+    fixed_for_built_in_and_custom_profiles: true
+    fixed_cam_semantics:
+      generic_async_read_prohibition_applies: false
+      required_profile_thresholds: [cam_parallel_entries, cam_compare_bits]
+      require_all_other_applicable_cone_thresholds: true
+      require_explicit_lookup_update_collision_semantics: true
+      require_accesses_within_declared_ports: true
+      allow_same_cycle_dependent_secondary_lookup: false
+      threshold_exceeded_result: FAIL
+      missing_observation_result: NEEDS_INPUT
+  generic_port_model_contract:
+    canonical_id_source: mapping.storage[].ports
+    search_ports_must_equal: 0
+    shared_read_write_only_formula: "<read_write_count>RW"
+    dedicated_read_write_formula: "<read_count>R<write_count>W"
+    dedicated_read_only_formula: "<read_count>R"
+    dedicated_write_only_formula: "<write_count>W"
+    canonical_id_regexes:
+      shared_read_write_only: '^[1-9][0-9]*RW$'
+      dedicated_read_write: '^[1-9][0-9]*R[1-9][0-9]*W$'
+      dedicated_read_only: '^[1-9][0-9]*R$'
+      dedicated_write_only: '^[1-9][0-9]*W$'
+    counts_are_positive_base10_integers_without_leading_zeroes: true
+    mixed_shared_and_dedicated_ports_have_canonical_id: false
+    compare_canonical_id_exactly_against_allowed_port_models: true
+    built_in_allowed_port_models_exact: [1RW, 1R1W]
+    custom_may_add_canonical_models: true
+    allowed_port_models_type: unique_nonempty_string_list
+    port_limits_keys_must_exactly_equal_allowed_port_models: true
+    port_limit_exact_fields:
+      - max_reads_per_cycle
+      - max_writes_per_cycle
+      - max_total_accesses_per_cycle
+    port_limit_field_type: nonnegative_integer_not_boolean
+    declared_capacity_formulas:
+      max_reads_per_cycle: count(read) + count(read_write)
+      max_writes_per_cycle: count(write) + count(read_write)
+      max_total_accesses_per_cycle: count(read) + count(write) + count(read_write)
+    port_limits_must_not_exceed_canonical_topology_capacity: true
+    require_demand_within_declared_and_profile_limits: true
+    minimum_read_latency_cycles_minimum: 1
+    fixed_generic_semantics:
+      require_accesses_within_port_limits: true
+      require_explicit_collision_semantics: true
+      allow_same_cycle_dependent_secondary_lookup: false
+      missing_observation_result: NEEDS_INPUT
+  known_fail_conditions:
+    path: profile.memory_policy.generic_memory.known_fail_conditions
+    type: unique_nonempty_string_list
+    required_values:
+      - port_model_outside_allowed_set
+      - asynchronous_or_below_minimum_read_latency
+      - concurrent_accesses_exceed_declared_or_profile_limits
+      - undefined_or_incompatible_collision_semantics
+      - same_cycle_dependent_secondary_lookup
+    allow_unknown_values: false
+    meaning: any evidenced condition on an applicable SRAM/register row causes FAIL
+  fixed_memory_gate_routing:
+    type: exact_condition_to_gate_set
+    condition_gate_map:
+      port_model_outside_allowed_set: [area]
+      concurrent_accesses_exceed_declared_or_profile_limits: [timing, area]
+      asynchronous_or_below_minimum_read_latency: [timing]
+      same_cycle_dependent_secondary_lookup: [timing]
+      undefined_or_incompatible_collision_semantics: [function]
+      cam_aggregate_threshold_exceeded: [timing]
+    missing_required_memory_observation_result: NEEDS_INPUT
+    applies_to_all_verdicts: true
+  non_signoff_enforcement:
+    exact_value_source: non_signoff
+    applies_to_verdicts: [PASS, FAIL, BLOCKED, NEEDS_INPUT]
+    allow_status_conditioned_override: false
+  needs_input_conditions:
+    path: profile.logic_complexity_points.needs_input_conditions
+    type: mapping
+    exact_fields:
+      - classification_width_bits_above
+      - operation_classes
+      - invalid_or_unknown_width
+      - result
+    fields:
+      classification_width_bits_above:
+        type: positive_integer
+        boolean_allowed: false
+      operation_classes:
+        type: unique_nonempty_string_list
+      invalid_or_unknown_width:
+        type: boolean
+      result:
+        type: enum_string
+        exact_value: NEEDS_INPUT
+    class_disjointness:
+      scored_classes_source: union(profile.logic_complexity_points.rules[].match.operation_classes)
+      zero_classes_source: profile.logic_complexity_points.zero_point_operation_classes
+      needs_input_classes_source: profile.logic_complexity_points.needs_input_conditions.operation_classes
+      require_pairwise_disjoint: true
+  zero_point_classification_width_bits:
+    path: profile.logic_complexity_points.zero_point_classification_width_bits
+    type: mapping
+    exact_fields: [min_inclusive, max_inclusive]
+    fields:
+      min_inclusive:
+        type: nonnegative_integer
+        boolean_allowed: false
+      max_inclusive:
+        type: nonnegative_integer
+        boolean_allowed: false
+    require_min_lte_max: true
+    require_max_lte_needs_input_width_above: true
+    needs_input_width_predicate: strictly_greater_than
+
+resource_accounting:
+  fixed: true
+  authority: references/result-schema.md#mappingstorage
+  custom_profile_override_allowed: false
+  storage_item:
+    allowed_kinds: [sram, register, cam]
+    exactly_one_kind_per_item: true
+    every_storage_bit_exactly_one_kind: true
+    depth_semantics: entries_per_bank
+    banks_semantics: physical_bank_count
+    replicas_semantics: physical_content_copy_count
+    required_positive_integer_fields: [depth, banks, replicas]
+    bits_per_entry_fields:
+      - payload
+      - tag
+      - metadata
+      - valid
+      - ecc
+      - replacement
+      - overhead
+    bits_per_entry_field_type: nonnegative_integer
+    fixed_overhead_bits_per_bank:
+      required: true
+      type: nonnegative_integer
+      no_overhead_value: 0
+      multiplied_by_banks_and_replicas: true
+    entry_bits_formula: payload + tag + metadata + valid + ecc + replacement + overhead
+    total_bits_formula: replicas * banks * (depth * entry_bits + fixed_overhead_bits_per_bank)
+    aggregate_formulas:
+      sram_bits: sum(total_bits where kind == sram)
+      register_bits: sum(total_bits where kind == register)
+      cam_bits: sum(total_bits where kind == cam)
+    aggregate_units:
+      sram_bits: bits
+      register_bits: bits
+      cam_bits: bits
+    port_replication_must_increment_replicas: true
+    allow_cross_kind_double_count: false
+    allow_storage_and_logic_double_count: false
+    unknown_shape_or_multiplicity_result: NEEDS_INPUT
+
+metric_accounting:
+  fixed: true
+  authority: references/asic-heuristic-profiles.yaml#metric_accounting
+  evaluator: scripts/validate_review.py
+  custom_profile_override_allowed: false
+  timing_dag:
+    source: mapping.timing.cones
+    timing_exact_fields: [model, clock_id, active_edge, coverage, cones]
+    node_exact_fields: [id, operation_id, instance_index, timing_class, mux_inputs, priority_entries]
+    dependency_exact_fields: [id, signal_id, from, to, sink_port, sink_role, control_sink_bits]
+    operation_class_projection_source: profile.logic_complexity_points.timing_class_projection
+    node_timing_class_must_belong_to_projected_allowed_set: true
+    required_model_for_pass: single_clock_edge_to_edge_v1
+    require_single_clock_domain: true
+    require_same_active_edge: true
+    path_budget: full_effective_period
+    unsplit_multi_clock_result: NEEDS_INPUT
+    unsplit_multi_phase_result: NEEDS_INPUT
+    dependency_edges_in_longest_path: [data, nonclock_control]
+    timing_class_allowed_values:
+      - wiring
+      - non_arithmetic
+      - arithmetic
+      - mux
+      - priority
+      - host
+      - unbounded
+      - external
+      - unknown
+    finite_implementable_timing_classes: [wiring, non_arithmetic, arithmetic, mux, priority]
+    require_every_operation_instance_exactly_once_when_coverage_complete: true
+    wiring_node_weight: 0
+    serial_operation_node_weight_for_nonwiring_finite_class: 1
+    serial_operation_node_weight_for_special_class: 0
+    boundary_node_weight: 0
+    arithmetic_timing_classes: [arithmetic]
+    arithmetic_node_weight_when_matched: 1
+    selection_timing_classes: [mux, priority]
+    selection_node_weight_when_matched: 1
+    mux_inputs_required_positive_integer_for: [mux, priority]
+    priority_entries_required_positive_integer_for: [priority]
+    nonapplicable_mux_or_priority_field_value: null
+    host_or_unbounded_node_result:
+      gates: [timing, area, function]
+      status: FAIL
+    external_or_unknown_node_result:
+      gates: [timing, area, function]
+      status: NEEDS_INPUT
+    external_or_unknown_forbids_complete_coverage: true
+    combinational_cycle_result:
+      gates: [timing, function]
+      status: FAIL
+    dynamic_programming_recurrence: "D_kind[v] = weight_kind(v) + max(D_kind[p] for every dependency p -> v)"
+    serial_op_nodes_formula: "max(D_op[capture] across every cone and capture boundary)"
+    serial_arithmetic_nodes_formula: "max(D_arithmetic[capture] across every cone and capture boundary)"
+    mux_serial_levels_formula: "max(D_mux[capture] across every cone and capture boundary)"
+    mux_max_inputs_formula: "max(node.mux_inputs across every timing node; null contributes 0)"
+    priority_max_entries_formula: "max(node.priority_entries across every timing node; null contributes 0)"
+    fanout_nonclock_control_sinks_formula: "max(sum(edge.control_sink_bits for unique terminal (signal_id, to, sink_port) edges where sink_role == nonclock_control), grouped by signal_id; empty is 0)"
+    require_acyclic_graph_for_longest_path: true
+    recomputed_metrics:
+      - serial_op_nodes
+      - serial_arithmetic_nodes
+      - mux_max_inputs
+      - mux_serial_levels
+      - priority_max_entries
+      - fanout_nonclock_control_sinks
+    observation_must_equal_recomputed_integer: true
+  cam:
+    mode: conservative_cycle_aggregate
+    row_scope: every_mapping_storage_item_where_kind_is_cam
+    max_searches_field: access_demand.max_searches_per_cycle
+    key_width_field: bits_per_entry.tag
+    parallel_entries_per_row_formula: depth * banks * max_searches_per_cycle
+    compare_bits_per_row_formula: depth * banks * max_searches_per_cycle * bits_per_entry.tag
+    aggregate_parallel_entries_formula: sum(parallel_entries_per_row across all CAM rows)
+    aggregate_compare_bits_formula: sum(compare_bits_per_row across all CAM rows)
+    assume_cross_row_mutual_exclusion: false
+    include_replicas_multiplier: false
+    compare_against_selected_period_band_pass_max: true
+    threshold_comparator: less_than_or_equal
+    physical_fact: false
+    invalid_or_unknown_operand_result: NEEDS_INPUT
+
+period_validation:
+  fixed: true
+  owner: evaluator
+  custom_profile_field_allowed: false
+  decimal_token_safety_ref: machine_field_contract.decimal_token_safety
+  decimal_lexical_safety_check_precedes_numeric_materialization_and_semantic_checks: true
+  input_unit: ns
+  period_path: target.clock.period_ns
+  frequency_path: target.clock.frequency_mhz
+  require_period_and_frequency: true
+  require_finite: true
+  require_greater_than: 0.0
+  frequency_reciprocal_period_ns_formula: "1000 / frequency_mhz"
+  consistency_relative_error_formula: "abs(frequency_mhz - 1000 / period_ns) / (1000 / period_ns)"
+  consistency_relative_tolerance_inclusive: 0.001
+  tolerance_use: input_consistency_only
+  inconsistent_result: NEEDS_INPUT
+  effective_period_ns_formula: "min(period_ns, 1000 / frequency_mhz)"
+  band_selection_input: effective_period_ns
+  allow_rounding_or_snapping_at_band_boundaries: false
+  invalid_or_unknown_result: NEEDS_INPUT
+  invalid_or_unknown_result_applies_only_after_decimal_lexical_safety_passes: true
+
+period_bands:
+  tightest:
+    lower_bound_ns: 0.0
+    lower_inclusive: false
+    upper_bound_ns: 0.5
+    upper_inclusive: false
+  tight:
+    lower_bound_ns: 0.5
+    lower_inclusive: true
+    upper_bound_ns: 1.0
+    upper_inclusive: false
+  normal:
+    lower_bound_ns: 1.0
+    lower_inclusive: true
+    upper_bound_ns: 2.0
+    upper_inclusive: false
+  relaxed:
+    lower_bound_ns: 2.0
+    lower_inclusive: true
+    upper_bound_ns: null
+    upper_inclusive: false
+
+profile_expansion:
+  reference_key: profile_defaults_ref
+  expansion_mode: whole_defaults_object
+  allow_profile_local_policy_overrides: false
+  allow_partial_merge: false
+  allow_recursive_references: false
+  copied_registry_fields: [period_bands]
+
+profile_defaults:
+  asic-generic-v1:
+    period_band_thresholds:
+      tightest:
+        pass_max:
+          serial_op_nodes: 2
+          serial_arithmetic_nodes: 1
+          mux_max_inputs: 4
+          mux_serial_levels: 1
+          priority_max_entries: 4
+          cam_parallel_entries: 4
+          cam_compare_bits: 128
+          fanout_nonclock_control_sinks: 8
+      tight:
+        pass_max:
+          serial_op_nodes: 3
+          serial_arithmetic_nodes: 1
+          mux_max_inputs: 4
+          mux_serial_levels: 2
+          priority_max_entries: 4
+          cam_parallel_entries: 8
+          cam_compare_bits: 256
+          fanout_nonclock_control_sinks: 16
+      normal:
+        pass_max:
+          serial_op_nodes: 5
+          serial_arithmetic_nodes: 2
+          mux_max_inputs: 8
+          mux_serial_levels: 3
+          priority_max_entries: 8
+          cam_parallel_entries: 16
+          cam_compare_bits: 512
+          fanout_nonclock_control_sinks: 32
+      relaxed:
+        pass_max:
+          serial_op_nodes: 7
+          serial_arithmetic_nodes: 3
+          mux_max_inputs: 16
+          mux_serial_levels: 4
+          priority_max_entries: 16
+          cam_parallel_entries: 32
+          cam_compare_bits: 1024
+          fanout_nonclock_control_sinks: 64
+
+    memory_policy:
+      policy_id: generic-memory-v1
+      generic_memory:
+        applies_to_storage_kinds: [sram, register]
+        excluded_storage_kinds: [cam]
+        allowed_port_models: [1RW, 1R1W]
+        port_limits:
+          1RW:
+            max_reads_per_cycle: 1
+            max_writes_per_cycle: 1
+            max_total_accesses_per_cycle: 1
+          1R1W:
+            max_reads_per_cycle: 1
+            max_writes_per_cycle: 1
+            max_total_accesses_per_cycle: 2
+        minimum_read_latency_cycles: 1
+        require_accesses_within_port_limits: true
+        require_explicit_collision_semantics: true
+        allow_same_cycle_dependent_secondary_lookup: false
+        known_fail_conditions:
+          - port_model_outside_allowed_set
+          - asynchronous_or_below_minimum_read_latency
+          - concurrent_accesses_exceed_declared_or_profile_limits
+          - undefined_or_incompatible_collision_semantics
+          - same_cycle_dependent_secondary_lookup
+        missing_observation_result: NEEDS_INPUT
+      cam:
+        applies_to_storage_kinds: [cam]
+        is_generic_memory_exception: true
+        generic_async_read_prohibition_applies: false
+        required_profile_thresholds:
+          - cam_parallel_entries
+          - cam_compare_bits
+        require_all_other_applicable_cone_thresholds: true
+        require_explicit_lookup_update_collision_semantics: true
+        require_accesses_within_declared_ports: true
+        allow_same_cycle_dependent_secondary_lookup: false
+        threshold_exceeded_result: FAIL
+        missing_observation_result: NEEDS_INPUT
+
+    logic_complexity_points:
+      policy_id: logic-complexity-points-v1
+      unit: points
+      accumulation: sum_points_per_elaborated_operation_instance
+      fixed_wiring_points: 0
+      timing_class_projection:
+        - operation_classes:
+            - constant
+            - rename
+            - bit_slice
+            - concatenate
+            - static_cast
+            - fixed_shift
+          allowed_timing_classes: [wiring]
+        - operation_classes: [boolean, reduction, compare]
+          allowed_timing_classes: [non_arithmetic]
+        - operation_classes: [mux]
+          allowed_timing_classes: [mux, priority]
+        - operation_classes: [add, sub, variable_shift, mul]
+          allowed_timing_classes: [arithmetic]
+      rules:
+        - rule_id: boolean-like-1-to-32
+          match:
+            operation_classes: [boolean, reduction, compare, mux]
+            classification_width_bits:
+              min_inclusive: 1
+              max_inclusive: 32
+          points: 1
+        - rule_id: add-sub-1-to-32
+          match:
+            operation_classes: [add, sub]
+            classification_width_bits:
+              min_inclusive: 1
+              max_inclusive: 32
+          points: 2
+        - rule_id: boolean-like-33-to-64
+          match:
+            operation_classes: [boolean, reduction, compare, mux]
+            classification_width_bits:
+              min_inclusive: 33
+              max_inclusive: 64
+          points: 2
+        - rule_id: add-sub-33-to-64
+          match:
+            operation_classes: [add, sub]
+            classification_width_bits:
+              min_inclusive: 33
+              max_inclusive: 64
+          points: 4
+        - rule_id: variable-shift-1-to-32
+          match:
+            operation_classes: [variable_shift]
+            classification_width_bits:
+              min_inclusive: 1
+              max_inclusive: 32
+          points: 4
+        - rule_id: variable-shift-33-to-64
+          match:
+            operation_classes: [variable_shift]
+            classification_width_bits:
+              min_inclusive: 33
+              max_inclusive: 64
+          points: 8
+        - rule_id: multiply-up-to-16x16
+          match:
+            operation_classes: [mul]
+            max_operand_width_bits:
+              min_inclusive: 1
+              max_inclusive: 16
+          points: 8
+        - rule_id: multiply-17-to-32
+          match:
+            operation_classes: [mul]
+            max_operand_width_bits:
+              min_inclusive: 17
+              max_inclusive: 32
+          points: 16
+        - rule_id: multiply-33-to-64
+          match:
+            operation_classes: [mul]
+            max_operand_width_bits:
+              min_inclusive: 33
+              max_inclusive: 64
+          points: 32
+      zero_point_operation_classes:
+        - constant
+        - rename
+        - bit_slice
+        - concatenate
+        - static_cast
+        - fixed_shift
+      zero_point_classification_width_bits:
+        min_inclusive: 0
+        max_inclusive: 64
+      needs_input_conditions:
+        classification_width_bits_above: 64
+        operation_classes: [div, mod, floating_point, transcendental, unclassified]
+        invalid_or_unknown_width: true
+        result: NEEDS_INPUT
+
+    non_signoff:
+      fixed: true
+      classification: organizational_heuristic
+      threshold_authority: user_approved_policy
+      physical_fact: false
+      signoff_qualified: false
+      replaces_sta: false
+      replaces_physical_design: false
+      requires_library_pvt_parasitic_signoff: true
+
+    source:
+      owner: rtl-sim-review-policy-owners
+      document: references/heuristic-policy.md
+      revision: v1
+      approval_basis: user-approved-fixed-policy
+
+    calibration:
+      method: fixed-qualitative-structural-bands
+      evidence: user-approved-v1-threshold-table
+      pvt_assumptions: none-not-pvt-calibrated
+      library_or_macro_assumptions: none-generic-policy
+      validated_on: "2026-09-02"
+
+profiles:
+  - profile_id: asic-generic-28nm-v1
+    selector: {node_nm: 28}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-22nm-v1
+    selector: {node_nm: 22}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-16nm-v1
+    selector: {node_nm: 16}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-14nm-v1
+    selector: {node_nm: 14}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-12nm-v1
+    selector: {node_nm: 12}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-7nm-v1
+    selector: {node_nm: 7}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-6nm-v1
+    selector: {node_nm: 6}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-5nm-v1
+    selector: {node_nm: 5}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-4nm-v1
+    selector: {node_nm: 4}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+  - profile_id: asic-generic-3nm-v1
+    selector: {node_nm: 3}
+    supported_period_bands: [tightest, tight, normal, relaxed]
+    profile_defaults_ref: asic-generic-v1
+
+custom_profile_contract:
+  schema_id: rtl-sim-review-full-inline-asic-profile-v1
+  file_shape:
+    exact_root_fields: [schema_version, profile]
+    profile_container_key: profile
+    unknown_root_fields_allowed: false
+  required_schema_version:
+    type: string
+    exact_value: "1.0"
+  whole_profile_replacement: true
+  partial_profile_resolution_allowed: false
+  allow_references: false
+  allow_inheritance: false
+  allow_yaml_merge_keys: false
+  unknown_fields_allowed: false
+  disallowed_profile_fields:
+    - profile_defaults_ref
+    - threshold_set
+    - extends
+    - resource_accounting
+    - metric_accounting
+    - machine_field_contract
+    - period_validation
+    - profile_expansion
+    - custom_profile_contract
+    - "$ref"
+    - "<<"
+  exact_profile_fields:
+    - profile_id
+    - selector
+    - supported_period_bands
+    - period_bands
+    - period_band_thresholds
+    - memory_policy
+    - logic_complexity_points
+    - non_signoff
+    - source
+    - calibration
+  exact_mapping_fields:
+    selector: [node_nm]
+    period_band: [lower_bound_ns, lower_inclusive, upper_bound_ns, upper_inclusive]
+    period_band_threshold: [pass_max]
+    pass_max:
+      - serial_op_nodes
+      - serial_arithmetic_nodes
+      - mux_max_inputs
+      - mux_serial_levels
+      - priority_max_entries
+      - cam_parallel_entries
+      - cam_compare_bits
+      - fanout_nonclock_control_sinks
+    memory_policy: [policy_id, generic_memory, cam]
+    generic_memory:
+      - applies_to_storage_kinds
+      - excluded_storage_kinds
+      - allowed_port_models
+      - port_limits
+      - minimum_read_latency_cycles
+      - require_accesses_within_port_limits
+      - require_explicit_collision_semantics
+      - allow_same_cycle_dependent_secondary_lookup
+      - known_fail_conditions
+      - missing_observation_result
+    port_limit:
+      - max_reads_per_cycle
+      - max_writes_per_cycle
+      - max_total_accesses_per_cycle
+    cam:
+      - applies_to_storage_kinds
+      - is_generic_memory_exception
+      - generic_async_read_prohibition_applies
+      - required_profile_thresholds
+      - require_all_other_applicable_cone_thresholds
+      - require_explicit_lookup_update_collision_semantics
+      - require_accesses_within_declared_ports
+      - allow_same_cycle_dependent_secondary_lookup
+      - threshold_exceeded_result
+      - missing_observation_result
+    logic_complexity_points:
+      - policy_id
+      - unit
+      - accumulation
+      - fixed_wiring_points
+      - timing_class_projection
+      - rules
+      - zero_point_operation_classes
+      - zero_point_classification_width_bits
+      - needs_input_conditions
+    logic_rule: [rule_id, match, points]
+    timing_class_projection_record: [operation_classes, allowed_timing_classes]
+    logic_rule_match_required_fields: [operation_classes]
+    logic_rule_match_allowed_range_fields:
+      - classification_width_bits
+      - max_operand_width_bits
+    logic_width_range: [min_inclusive, max_inclusive]
+    zero_point_classification_width_bits: [min_inclusive, max_inclusive]
+    needs_input_conditions:
+      - classification_width_bits_above
+      - operation_classes
+      - invalid_or_unknown_width
+      - result
+    non_signoff:
+      - fixed
+      - classification
+      - threshold_authority
+      - physical_fact
+      - signoff_qualified
+      - replaces_sta
+      - replaces_physical_design
+      - requires_library_pvt_parasitic_signoff
+    source: [owner, document, revision, approval_basis]
+    calibration:
+      - method
+      - evidence
+      - pvt_assumptions
+      - library_or_macro_assumptions
+      - validated_on
+  selector_contract:
+    exact_fields: [node_nm]
+    node_nm_type: positive_integer_not_boolean
+    match_mode: exact
+    fallback_allowed: false
+    interpolation_allowed: false
+  period_contract:
+    required_period_bands: [tightest, tight, normal, relaxed]
+    supported_period_bands_exact: [tightest, tight, normal, relaxed]
+    custom_period_bands_must_exactly_equal_registry_period_bands: true
+    period_normalization_owner: evaluator
+    custom_period_validation_field_allowed: false
+  threshold_contract:
+    required_metrics:
+      - serial_op_nodes
+      - serial_arithmetic_nodes
+      - mux_max_inputs
+      - mux_serial_levels
+      - priority_max_entries
+      - cam_parallel_entries
+      - cam_compare_bits
+      - fanout_nonclock_control_sinks
+    value_type: nonnegative_integer_not_boolean
+    arbitrary_precision: true
+  required_memory_policy_paths:
+    - policy_id
+    - generic_memory.applies_to_storage_kinds
+    - generic_memory.excluded_storage_kinds
+    - generic_memory.allowed_port_models
+    - generic_memory.port_limits
+    - generic_memory.minimum_read_latency_cycles
+    - generic_memory.require_accesses_within_port_limits
+    - generic_memory.require_explicit_collision_semantics
+    - generic_memory.allow_same_cycle_dependent_secondary_lookup
+    - generic_memory.known_fail_conditions
+    - generic_memory.missing_observation_result
+    - cam.applies_to_storage_kinds
+    - cam.is_generic_memory_exception
+    - cam.generic_async_read_prohibition_applies
+    - cam.required_profile_thresholds
+    - cam.require_all_other_applicable_cone_thresholds
+    - cam.require_explicit_lookup_update_collision_semantics
+    - cam.require_accesses_within_declared_ports
+    - cam.allow_same_cycle_dependent_secondary_lookup
+    - cam.threshold_exceeded_result
+    - cam.missing_observation_result
+  generic_port_models_contract:
+    canonicalization_ref: machine_field_contract.generic_port_model_contract
+    built_in_allowed_port_models_exact: [1RW, 1R1W]
+    custom_allowed_port_models_type: unique_nonempty_canonical_model_id_list
+    custom_may_add_models_such_as: [2R1W]
+    port_limits_keys_must_exactly_equal_allowed_port_models: true
+    port_limit_exact_fields:
+      - max_reads_per_cycle
+      - max_writes_per_cycle
+      - max_total_accesses_per_cycle
+    port_limit_field_type: nonnegative_integer_not_boolean
+    minimum_read_latency_cycles_type: positive_integer_not_boolean
+    require_fixed_generic_semantics_ref: machine_field_contract.generic_port_model_contract.fixed_generic_semantics
+    additional_model_calibration:
+      trigger: any_allowed_port_model_not_in_built_in_allowed_port_models_exact
+      require_calibration_method: true
+      require_calibration_evidence_covering_each_additional_model: true
+      require_explicit_pvt_assumptions: true
+      require_library_or_macro_assumptions_covering_each_additional_model: true
+      generic_or_no_macro_assumption_is_sufficient: false
+      strict_calibration_support_contract_ref: custom_profile_contract.strict_calibration_support_contract
+  required_logic_complexity_paths:
+    - policy_id
+    - unit
+    - accumulation
+    - fixed_wiring_points
+    - timing_class_projection
+    - rules
+    - zero_point_operation_classes
+    - zero_point_classification_width_bits
+    - needs_input_conditions
+  logic_rule_contract:
+    rule_ids_globally_unique_within_profile: true
+    each_match_has_exactly_one_width_range: true
+    width_range_fields: [classification_width_bits, max_operand_width_bits]
+    width_range_endpoints_type: positive_integer_not_boolean
+    width_ranges_are_closed: true
+    same_class_must_use_same_width_range_field: true
+    same_class_closed_intervals_must_be_pairwise_disjoint: true
+    shared_endpoint_counts_as_overlap: true
+    overlap_or_ambiguous_match_semantics: semantic_malformed_profile_artifact
+    overlap_or_ambiguity_may_be_substituted_with_needs_input: false
+    points_type: nonnegative_integer_not_boolean
+    operation_classes_type: unique_nonempty_substantive_string_list
+  timing_class_projection_contract:
+    type: nonempty_sequence
+    record_exact_fields: [operation_classes, allowed_timing_classes]
+    operation_classes_type: unique_nonempty_substantive_string_list
+    allowed_timing_classes_type: unique_nonempty_enum_string_list
+    timing_class_allowed_values: [wiring, non_arithmetic, arithmetic, mux, priority]
+    classes_must_be_unique_across_records: true
+    duplicate_or_ambiguous_class_projection_semantics: semantic_malformed_profile_artifact
+    classes_must_exactly_cover_scored_union_zero_point_classes: true
+    zero_point_classes_allowed_set_exact: [wiring]
+    scored_classes_may_include_wiring: false
+    fixed_builtin_class_projection:
+      constant: [wiring]
+      rename: [wiring]
+      bit_slice: [wiring]
+      concatenate: [wiring]
+      static_cast: [wiring]
+      fixed_shift: [wiring]
+      boolean: [non_arithmetic]
+      reduction: [non_arithmetic]
+      compare: [non_arithmetic]
+      mux: [mux, priority]
+      add: [arithmetic]
+      sub: [arithmetic]
+      variable_shift: [arithmetic]
+      mul: [arithmetic]
+      div: [arithmetic]
+      mod: [arithmetic]
+      floating_point: [arithmetic]
+      transcendental: [arithmetic]
+    fixed_builtin_projection_applies_when_class_is_present: true
+    fixed_builtin_allowed_timing_classes_match_mode: exact_set_equality_per_operation_class
+    custom_may_override_fixed_builtin_class_projection: false
+    custom_may_narrow_or_widen_fixed_builtin_allowed_set: false
+    multiple_builtin_classes_may_share_a_record_only_when_their_fixed_sets_are_equal: true
+    mux_to_priority_is_selection_refinement: true
+    priority_refinement_requires_positive_fields: [mux_inputs, priority_entries]
+    custom_only_class_requires_substantive_calibration_evidence: true
+    custom_only_class_requires_library_or_macro_assumption: true
+    custom_only_class_strict_calibration_support_contract_ref: custom_profile_contract.strict_calibration_support_contract
+  strict_calibration_support_contract:
+    trigger_sets:
+      additional_port_models: set_difference(profile.memory_policy.generic_memory.allowed_port_models,[1RW,1R1W])
+      custom_only_operation_classes: set_difference(union(profile.logic_complexity_points.timing_class_projection[].operation_classes),keys(custom_profile_contract.timing_class_projection_contract.fixed_builtin_class_projection))
+    applies_when_either_trigger_set_is_nonempty: true
+    no_trigger_means_structured_string_contract_not_required: true
+    strict_field_rules_apply_to_exact_paths:
+      - profile.calibration.evidence
+      - profile.calibration.library_or_macro_assumptions
+    required_subjects_definition:
+      additional_port_model_item: "port:<exact-additional-port-model-id>"
+      custom_only_operation_class_item: "operation:<exact-custom-only-operation-class>"
+      required_set: union(all_additional_port_model_items,all_custom_only_operation_class_items)
+      evidence_and_assumptions_subjects_must_each_exactly_equal_required_set: true
+    placeholder_scan:
+      normalization_steps_in_order:
+        - unicode_nfkc
+        - remove_all_unicode_general_category_Cf_codepoints
+        - unicode_default_casefold
+        - replace_each_maximal_run_of_non_L_or_N_unicode_categories_with_one_ascii_space
+        - trim_and_collapse_ascii_spaces
+      letter_or_number_definition: unicode_general_category_starts_with_L_or_N
+      match_mode: contiguous_complete_normalized_tokens_anywhere
+      reject_match_even_when_surrounded_by_negation_or_disclaimer: true
+      banned_single_tokens:
+        - generic
+        - placeholder
+        - template
+        - dummy
+        - example
+        - sample
+        - none
+        - unknown
+        - tbd
+        - tbc
+        - todo
+        - fixme
+        - pending
+        - unspecified
+        - undecided
+        - blocked
+        - unbounded
+        - uncalibrated
+      banned_token_sequences:
+        - needs input
+        - not applicable
+        - n a
+        - no calibration
+        - without calibration
+        - missing calibration
+        - calibration unavailable
+        - no characterization
+        - without characterization
+        - missing characterization
+        - characterization unavailable
+        - no evidence
+        - without evidence
+        - missing evidence
+        - evidence unavailable
+        - no macro
+        - no macros
+        - without macro
+        - without macros
+        - missing macro
+        - missing macros
+        - macro unavailable
+        - macros unavailable
+        - no library
+        - no libraries
+        - without library
+        - without libraries
+        - missing library
+        - missing libraries
+        - library unavailable
+        - libraries unavailable
+        - no assumption
+        - no assumptions
+        - without assumption
+        - without assumptions
+        - missing assumption
+        - missing assumptions
+        - assumption unavailable
+        - assumptions unavailable
+        - no pvt
+        - without pvt
+        - missing pvt
+        - pvt unavailable
+        - not calibrated
+        - same as builtin
+        - same as built in
+        - same as default
+        - use builtin
+        - use built in
+        - use default
+        - to be determined
+        - to be confirmed
+        - not known
+    structured_string_common_contract:
+      clause_separator: ";"
+      key_value_separator: "="
+      split_each_clause_at_first_key_value_separator: true
+      trim_unicode_whitespace_around_clauses_keys_and_values: true
+      reject_empty_clause_key_or_value: true
+      keys_are_case_sensitive_ascii_literals: true
+      values_may_contain_clause_separator: false
+      duplicate_keys_allowed: false
+      unknown_keys_allowed: false
+      key_order_significant: false
+    subjects_value_contract:
+      encoding: comma_delimited_subject_items
+      trim_unicode_whitespace_around_items: true
+      empty_items_allowed: false
+      duplicate_items_allowed: false
+      split_each_item_at_first_colon: true
+      allowed_prefixes_exact: [port, operation]
+      port_suffix_must_be_exact_additional_port_model: true
+      port_suffix_canonical_id_regexes_ref: machine_field_contract.generic_port_model_contract.canonical_id_regexes
+      operation_suffix_must_be_exact_custom_only_operation_class: true
+      custom_only_operation_class_suffix_regex: '^[A-Za-z0-9][A-Za-z0-9._:/@+#-]{2,}$'
+      comparison_mode: exact_case_sensitive_string
+      item_set_must_exactly_equal_required_subjects: true
+    stable_locator_contract:
+      regex: '^[A-Za-z0-9][A-Za-z0-9._:/@+#-]{2,}$'
+      minimum_codepoints_after_trim: 3
+    pinned_revision_contract:
+      regex: '^[A-Za-z0-9][A-Za-z0-9._+-]{1,}$'
+      minimum_codepoints_after_trim: 2
+      comparison_normalization: unicode_nfkc_then_unicode_default_casefold_then_trim
+      forbidden_moving_aliases: [head, latest, current, main, master, trunk, tip, default]
+    evidence_field_contract:
+      exact_keys: [artifact, revision, subjects, timing_basis, area_basis]
+      artifact_value_contract_ref: stable_locator_contract
+      revision_value_contract_ref: pinned_revision_contract
+      subjects_value_contract_ref: subjects_value_contract
+      measurement_normalization: unicode_nfkc_then_unicode_default_casefold
+      measurement_decimal_safety_ref: machine_field_contract.decimal_token_safety
+      timing_basis_positive_measurement_regex: '(^|[^-+−0-9A-Za-z.])([-+−]?[0-9]+(?:\.[0-9]+)?)[ \t]*(ps|ns|mhz|ghz)($|[^0-9A-Za-z.])'
+      area_basis_positive_measurement_regex: '(^|[^-+−0-9A-Za-z.])([-+−]?[0-9]+(?:\.[0-9]+)?)[ \t]*(um(?:\^?2)|μm(?:\^?2)|mm(?:\^?2)|cells?|gates?)($|[^0-9A-Za-z.])'
+      unicode_minus_sign_is_parsed_as_ascii_minus_before_decimal_comparison: true
+      matched_decimal_must_be_strictly_greater_than_zero: true
+    library_or_macro_assumptions_field_contract:
+      exact_keys: [provider, implementation, revision, subjects, timing_model, area_model]
+      provider_minimum_codepoints_after_trim: 3
+      provider_must_contain_unicode_letter_or_number: true
+      implementation_value_contract_ref: stable_locator_contract
+      revision_value_contract_ref: pinned_revision_contract
+      subjects_value_contract_ref: subjects_value_contract
+      timing_model_value_contract_ref: stable_locator_contract
+      area_model_value_contract_ref: stable_locator_contract
+  needs_input_conditions_contract:
+    type: mapping
+    exact_fields:
+      - classification_width_bits_above
+      - operation_classes
+      - invalid_or_unknown_width
+      - result
+    classification_width_bits_above_type: positive_integer_not_boolean
+    operation_classes_type: unique_nonempty_substantive_string_list
+    invalid_or_unknown_width_type: boolean
+    result_exact_value: NEEDS_INPUT
+    require_disjoint_from_scored_classes: true
+    require_disjoint_from_zero_point_classes: true
+  zero_point_classification_width_bits_contract:
+    type: mapping
+    exact_fields: [min_inclusive, max_inclusive]
+    min_inclusive_type: nonnegative_integer_not_boolean
+    max_inclusive_type: nonnegative_integer_not_boolean
+    require_min_lte_max: true
+    require_max_lte_needs_input_classification_width_bits_above: true
+    needs_input_width_predicate: strictly_greater_than
+  known_fail_conditions_contract:
+    type: unique_nonempty_string_list
+    allowed_values:
+      - port_model_outside_allowed_set
+      - asynchronous_or_below_minimum_read_latency
+      - concurrent_accesses_exceed_declared_or_profile_limits
+      - undefined_or_incompatible_collision_semantics
+      - same_cycle_dependent_secondary_lookup
+    require_all_allowed_values: true
+    allow_unknown_values: false
+    any_evidenced_condition_causes: FAIL
+    gate_routing_ref: machine_field_contract.fixed_memory_gate_routing
+  memory_scope_contract:
+    generic_memory.applies_to_storage_kinds: [sram, register]
+    generic_memory.excluded_storage_kinds: [cam]
+    cam.applies_to_storage_kinds: [cam]
+    cam.is_generic_memory_exception: true
+    cam.generic_async_read_prohibition_applies: false
+  cam_contract:
+    required_profile_thresholds_exact: [cam_parallel_entries, cam_compare_bits]
+    fixed_semantics_ref: machine_field_contract.memory_policy_scope.fixed_cam_semantics
+    fixed_metric_accounting_ref: metric_accounting.cam
+    custom_metric_accounting_allowed: false
+  unit_contracts:
+    logic_complexity_points.unit: points
+  required_non_signoff_fixed_values:
+    fixed: true
+    classification: organizational_heuristic
+    threshold_authority: user_approved_policy
+    physical_fact: false
+    signoff_qualified: false
+    replaces_sta: false
+    replaces_physical_design: false
+    requires_library_pvt_parasitic_signoff: true
+  provenance_contract:
+    exact_source_fields: [owner, document, revision, approval_basis]
+    exact_calibration_fields:
+      - method
+      - evidence
+      - pvt_assumptions
+      - library_or_macro_assumptions
+      - validated_on
+    all_nine_fields_type: substantive_nonempty_string
+    reserved_tokens_after_trim_and_unicode_casefold:
+      - UNKNOWN
+      - NONE
+      - N/A
+      - NA
+      - TBD
+      - TBC
+      - TODO
+      - FIXME
+      - PENDING
+      - UNSPECIFIED
+      - UNDECIDED
+      - NEEDS_INPUT
+      - BLOCKED
+      - UNBOUNDED
+      - NOT_APPLICABLE
+      - PLACEHOLDER
+      - TEMPLATE
+      - DUMMY
+      - EXAMPLE
+      - SAMPLE
+    template_marker_regex_case_insensitive: '\{\{[\s\S]*?\}\}|<required[^>]*(?:>|\Z)'
+    reject_reserved_or_template_marker_in_every_field: true
+  content_identity_contract_ref: machine_field_contract.profile_content_identity
+  integer_semantics_ref: machine_field_contract.integer_semantics
+  fixed_global_semantics_refs:
+    - selection_policy
+    - decision_semantics
+    - non_signoff
+    - period_validation
+    - period_bands
+    - machine_field_contract.memory_policy_scope
+    - machine_field_contract.fixed_memory_gate_routing
+    - machine_field_contract.decimal_token_safety
+    - machine_field_contract.profile_validation_outcomes
+    - resource_accounting
+    - metric_accounting
+  on_any_contract_violation:
+    semantic_classification: malformed_profile
+    artifact_valid: false
+    profile_resolution_must_stop: true
+    verdict_status_emitted: false
+    needs_input_substitution_allowed: false
+    allow_valid_subsection_reuse: false

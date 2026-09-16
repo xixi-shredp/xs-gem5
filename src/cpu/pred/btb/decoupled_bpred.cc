@@ -92,6 +92,7 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
       dbpBtbStats(this, p.numStages, p.fsq_size, maxInstsNum, p.numThreads)
 {
     hintConfig.mode = p.hintMode;
+    hintConfig.ideal = p.idealHintIBP;
     hintConfig.candidatePath = p.hintCandidates;
     hintConfig.metadataPath = p.hintMetadata;
     hintConfig.camEntries = p.hintCamEntries;
@@ -99,6 +100,8 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
     hintConfig.ways = p.hintWays;
     hintConfig.slotEntries = p.hintSlotEntries;
     hintConfig.confQueueDepth = p.hintConfQueueDepth;
+    fatal_if(p.idealHintIBP && p.hintMode == "off",
+             "idealHintIBP requires Hint collect or replay mode");
     fatal_if(p.hintMode != "off" &&
              (numThreads != 1 || numPredictingThreads != 1 ||
               idealTwoTaken || pairtage->isEnabled()),
@@ -221,7 +224,7 @@ DecoupledBPUWithBTB::setCpu(CPU *_cpu)
     fatal_if(hint, "Hint predictor cannot be attached to a CPU twice");
     hintConfig.clockPeriod = cpu->clockPeriod();
     hint = std::make_unique<HintIndirect>(hintConfig, this);
-    threads[0].hintHistory.configure(hint->historyPCs());
+    threads[0].hintHistory.configure(hint->historyPCs(), hint->isIdeal());
 }
 
 void
@@ -238,7 +241,7 @@ DecoupledBPUWithBTB::resetStats()
         hint->tick(cpu->curCycle());
     BPredUnit::resetStats();
     if (hint)
-        hint->resetStats();
+        hint->resetStats(cpu->curCycle());
 }
 
 void
@@ -247,7 +250,7 @@ DecoupledBPUWithBTB::h2pSetMeasurementActive(bool active)
     ittage->h2pSetMeasurementActive(active);
     if (hint) {
         hint->tick(cpu->curCycle());
-        hint->setMeasurementActive(active);
+        hint->setMeasurementActive(active, cpu->curCycle());
     }
 }
 

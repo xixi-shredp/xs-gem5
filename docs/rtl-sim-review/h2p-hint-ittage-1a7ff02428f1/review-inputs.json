@@ -1,0 +1,18 @@
+{
+  "request": "Review current xs-gem5-hint-ittage finite replay for a new Hint RTL integration into ICT186 XiangShan-kmhv2",
+  "source_root": "/opt/data/simulator/xs-gem5-hint-ittage",
+  "target_host": "ICT186",
+  "target_root": "/home/xuejing/rtl/XiangShan-kmhv2",
+  "primary_mode": "finite replay",
+  "ideal_mode": "Separate boundary discussion, excluded from primary gates",
+  "metadata_scope": "All legal finite images at CAM16, Context4096 total with 2048 sets and 2 ways, Slot32, FIFO8",
+  "allowed_functional_or_cycle_differences": [],
+  "process_node_nm": null,
+  "clock_period_ns": null,
+  "clock_frequency_mhz": null,
+  "profile": null,
+  "resource_budgets": {"sram_bits": null, "register_bits": null, "cam_bits": null, "logic_complexity_points": null},
+  "missing_input_policy": "User chose to leave missing ASIC constraints explicitly unresolved; no simulator clock or technology inference",
+  "authorized_actions": ["Read source/configuration/existing evidence", "Read selected remote RTL", "Write review artifacts and plan checklist", "Run artifact validators"],
+  "excluded_actions": ["Modify simulator/RTL/config/tests", "Build", "Simulate", "Install dependencies", "Commit or publish"]
+}

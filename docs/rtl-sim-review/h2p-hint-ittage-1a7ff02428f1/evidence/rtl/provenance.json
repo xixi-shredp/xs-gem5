@@ -1,0 +1,99 @@
+{
+  "host": "ICT186",
+  "root": "/home/xuejing/rtl/XiangShan-kmhv2",
+  "head": "4b9ddb8a6311bff6f5e29cb3722d1f4236d66292",
+  "status": "",
+  "utility_head": "6ed7394ef85887ea360f33b3be97bb13fb31e57c",
+  "files": [
+    {
+      "path": "src/main/scala/xiangshan/frontend/ITTAGE.scala",
+      "basename": "ITTAGE.scala",
+      "sha256": "bf9e91f1088fe71550ac851a59cef13d0fed26a9271cbc1212d961257f4c65c8",
+      "bytes": 35179
+    },
+    {
+      "path": "src/main/scala/xiangshan/frontend/BPU.scala",
+      "basename": "BPU.scala",
+      "sha256": "ceaf09af166d3cc104dd41c236ea19ac5b710464793838155e41478b975e18ef",
+      "bytes": 53563
+    },
+    {
+      "path": "src/main/scala/xiangshan/frontend/FrontendBundle.scala",
+      "basename": "FrontendBundle.scala",
+      "sha256": "56d4568be20be34a059b3c11f8133dc650a2ebc101549f0336614ec14077c0ca",
+      "bytes": 33300
+    },
+    {
+      "path": "src/main/scala/xiangshan/frontend/NewFtq.scala",
+      "basename": "NewFtq.scala",
+      "sha256": "fda02a84bca883012ffb64ea005c015c99b607518694f5eb8ff88a6f3746b8f2",
+      "bytes": 83498
+    },
+    {
+      "path": "src/main/scala/xiangshan/Parameters.scala",
+      "basename": "Parameters.scala",
+      "sha256": "43230e11a398575e1abff3b340781071ad14c6eb8bb3a5459b52bb9c17d5749a",
+      "bytes": 36121
+    },
+    {
+      "path": "src/main/scala/top/Configs.scala",
+      "basename": "Configs.scala",
+      "sha256": "e2cdde361950be1bc64ccdf6cfd24794b1530cefd1d87b2d29ed7a6f6a13c9ae",
+      "bytes": 17213
+    },
+    {
+      "path": "src/main/scala/xiangshan/frontend/Composer.scala",
+      "basename": "Composer.scala",
+      "sha256": "9d82143a61ad9f45cb07d40ba38f1463ed7cae6e178a9a7176cbef2ee3de940c",
+      "bytes": 3265
+    },
+    {
+      "path": "src/main/scala/xiangshan/frontend/WrBypass.scala",
+      "basename": "WrBypass.scala",
+      "sha256": "6374df6eceb52974e10f1c76e5adefd152024f44c4587599499f413b3294c2f2",
+      "bytes": 6378
+    },
+    {
+      "path": "src/main/scala/xiangshan/frontend/Tage.scala",
+      "basename": "Tage.scala",
+      "sha256": "d2cea7e8d386105a0c9eaf186511871337945d86b44ffab075fed9db9f039273",
+      "bytes": 42030
+    },
+    {
+      "path": "src/main/scala/xiangshan/Bundle.scala",
+      "basename": "Bundle.scala",
+      "sha256": "3262890780ed549bdfded045606b10b792fff70e0e493e4f3e551ecadd05ad53",
+      "bytes": 26322
+    },
+    {
+      "path": "utility/src/main/scala/utility/SRAMTemplate.scala",
+      "basename": "SRAMTemplate.scala",
+      "sha256": "1c3ea866ce672913289554f9d6060b00669ba2d35e20f0086eb186645662e9d2",
+      "bytes": 14820
+    },
+    {
+      "path": "build/rtl/ITTage.sv",
+      "basename": "ITTage.sv",
+      "sha256": "24f40f841be4912a9d64b67ac90f2b648dc0810f50c75b5292a6fe97e6b1899b",
+      "bytes": 99264
+    },
+    {
+      "path": "build/rtl/ITTageTable.sv",
+      "basename": "ITTageTable.sv",
+      "sha256": "908bb1cf952869b869d76a18c94cc897cfd3d42ab85c7058eb3bda7ffe8f195e",
+      "bytes": 8670
+    },
+    {
+      "path": "build/VERILOG_BUILD.md",
+      "basename": "VERILOG_BUILD.md",
+      "sha256": "d074c706cf40aa25d26313031b74eb808d76646dda6a7e72cf865e972bda8381",
+      "bytes": 2306
+    },
+    {
+      "path": ".git/codex-kmhv2/rtl-manifest.json",
+      "basename": "rtl-manifest.json",
+      "sha256": "bae54734788ea1b37d36c86c5ec50c842988afbf4d1e9362887cc6d49cf29d7c",
+      "bytes": 274826
+    }
+  ]
+}

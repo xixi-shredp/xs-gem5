@@ -4,6 +4,7 @@
 #include <cassert>
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 #include "base/logging.hh"
 #include "cpu/pred/btb/common.hh"
@@ -65,10 +66,60 @@ HintPCWindow::push(Addr pc)
     folded ^= hintFold28(words[head]);
 }
 
-void
-HintHistory::configure(const std::vector<Addr> &pcs)
+struct HintHistory::LocalNode
 {
-    fatal_if(pcs.size() > HintMaxProfilePCs,
+    LocalNode(LocalRoot left, LocalRoot right, uint8_t value = 0)
+        : left(std::move(left)), right(std::move(right)), value(value)
+    {}
+
+    const LocalRoot left;
+    const LocalRoot right;
+    const uint8_t value;
+};
+
+uint8_t
+HintHistory::localValue(const LocalRoot &root, size_t first, size_t last,
+                       size_t index)
+{
+    if (!root)
+        return 0;
+    if (last - first == 1)
+        return root->value;
+    const auto middle = first + (last - first) / 2;
+    return index < middle ? localValue(root->left, first, middle, index) :
+                            localValue(root->right, middle, last, index);
+}
+
+HintHistory::LocalRoot
+HintHistory::appendLocal(const LocalRoot &root, size_t first, size_t last,
+                        size_t index, uint8_t bits)
+{
+    if (last - first == 1) {
+        const uint8_t old_value = root ? root->value : 0;
+        const uint8_t value = (old_value << 2) | bits;
+        if (value == old_value)
+            return root;
+        return value ? std::make_shared<const LocalNode>(nullptr, nullptr,
+                                                        value) : nullptr;
+    }
+    auto left = root ? root->left : nullptr;
+    auto right = root ? root->right : nullptr;
+    const auto middle = first + (last - first) / 2;
+    if (index < middle)
+        left = appendLocal(left, first, middle, index, bits);
+    else
+        right = appendLocal(right, middle, last, index, bits);
+    if (root && left == root->left && right == root->right)
+        return root;
+    if (!left && !right)
+        return nullptr;
+    return std::make_shared<const LocalNode>(std::move(left), std::move(right));
+}
+
+void
+HintHistory::configure(const std::vector<Addr> &pcs, bool ideal)
+{
+    fatal_if(!ideal && pcs.size() > HintMaxProfilePCs,
              "Hint local history supports at most %u PCs",
              HintMaxProfilePCs);
     auto sorted = pcs;
@@ -77,6 +128,8 @@ HintHistory::configure(const std::vector<Addr> &pcs)
              "Duplicate Hint local-history PC");
     localPCs = std::make_shared<const std::vector<Addr>>(std::move(sorted));
     locals.fill(0);
+    idealLocals = ideal;
+    localRoot.reset();
 }
 
 uint8_t
@@ -87,7 +140,9 @@ HintHistory::local(Addr pc) const
     const auto it = std::lower_bound(localPCs->begin(), localPCs->end(), pc);
     if (it == localPCs->end() || *it != pc)
         return 0;
-    return locals[it - localPCs->begin()];
+    const size_t index = it - localPCs->begin();
+    return idealLocals ? localValue(localRoot, 0, localPCs->size(), index) :
+                         locals[index];
 }
 
 uint32_t
@@ -116,8 +171,14 @@ HintHistory::update(Addr pc, Addr target, bool indirect, bool call,
     if (localPCs) {
         const auto it = std::lower_bound(localPCs->begin(), localPCs->end(), pc);
         if (it != localPCs->end() && *it == pc) {
-            auto &value = locals[it - localPCs->begin()];
-            value = (value << 2) | bits;
+            const size_t index = it - localPCs->begin();
+            if (idealLocals) {
+                localRoot = appendLocal(localRoot, 0, localPCs->size(),
+                                        index, bits);
+            } else {
+                auto &value = locals[index];
+                value = (value << 2) | bits;
+            }
         }
     }
 }

@@ -1,0 +1,112 @@
+{
+  "format": "h2p-hint-candidates",
+  "pcs": [
+    "0x185eb0",
+    "0x18d344",
+    "0x7d344",
+    "0x7fffb16c0f48",
+    "0x18ac80",
+    "0xce1ce",
+    "0xced1c",
+    "0x1f1b48",
+    "0xc02aa",
+    "0xf1b44",
+    "0xf3ad6",
+    "0xf1b54",
+    "0xcef88",
+    "0xf360c",
+    "0x1f0fa8",
+    "0x33ca8",
+    "0xa2ba0",
+    "0x10b8ae",
+    "0x7cc46",
+    "0xa356a"
+  ],
+  "ranking": [
+    {
+      "miss": 124104,
+      "pc": "0x185eb0"
+    },
+    {
+      "miss": 2214,
+      "pc": "0x18d344"
+    },
+    {
+      "miss": 815,
+      "pc": "0x7d344"
+    },
+    {
+      "miss": 625,
+      "pc": "0x7fffb16c0f48"
+    },
+    {
+      "miss": 26,
+      "pc": "0x18ac80"
+    },
+    {
+      "miss": 18,
+      "pc": "0xce1ce"
+    },
+    {
+      "miss": 13,
+      "pc": "0xced1c"
+    },
+    {
+      "miss": 10,
+      "pc": "0x1f1b48"
+    },
+    {
+      "miss": 8,
+      "pc": "0xc02aa"
+    },
+    {
+      "miss": 8,
+      "pc": "0xf1b44"
+    },
+    {
+      "miss": 5,
+      "pc": "0xf3ad6"
+    },
+    {
+      "miss": 4,
+      "pc": "0xf1b54"
+    },
+    {
+      "miss": 3,
+      "pc": "0xcef88"
+    },
+    {
+      "miss": 3,
+      "pc": "0xf360c"
+    },
+    {
+      "miss": 3,
+      "pc": "0x1f0fa8"
+    },
+    {
+      "miss": 2,
+      "pc": "0x33ca8"
+    },
+    {
+      "miss": 2,
+      "pc": "0xa2ba0"
+    },
+    {
+      "miss": 2,
+      "pc": "0x10b8ae"
+    },
+    {
+      "miss": 1,
+      "pc": "0x7cc46"
+    },
+    {
+      "miss": 1,
+      "pc": "0xa356a"
+    }
+  ],
+  "source": {
+    "h2p_file": "/opt/data/labs/hint-indirect/results/stage1/deltablue_test/44/h2p-indirect.txt",
+    "sha256": "90e1d229cd25b4b070fcd0938748405acea5ba484e26f22fcba74aa8dee27541"
+  },
+  "version": 2
+}

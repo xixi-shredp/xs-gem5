@@ -1,4 +1,4 @@
-"""Independent reference for the version 2 Hint encoding and finite hardware.
+"""Independent reference for finite v2 and unlimited v3 Hint storage.
 
 The trace reference keeps the original prediction-time contexts and cycles. It
 does not predict changes in speculative history or timing caused by replay.
@@ -20,10 +20,23 @@ MASK28 = (1 << BITS) - 1
 MASK47 = (1 << 47) - 1
 MASK64 = (1 << 64) - 1
 MASK_ORDER = ["GHR", "GITHR", "LITHR", "Call", "Return"]
-HISTORY = {"githr_targets": 64, "lithr_targets": 4, "call_pcs": 64,
-           "return_pcs": 64, "target_shift": 1}
-LAYOUT = {"cam_entries": 16, "context_entries": 4096, "ways": 2,
-          "slot_entries": 32, "conf_queue_depth": 8}
+HISTORY = {
+    "githr_targets": 64,
+    "lithr_targets": 4,
+    "call_pcs": 64,
+    "return_pcs": 64,
+    "target_shift": 1,
+}
+LAYOUT = {
+    "cam_entries": 16,
+    "context_entries": 4096,
+    "ways": 2,
+    "slot_entries": 32,
+    "conf_queue_depth": 8,
+}
+FINITE_REFERENCE = {
+    name: value for name, value in LAYOUT.items() if name != "conf_queue_depth"
+}
 
 
 def integer(value):
@@ -39,7 +52,9 @@ def address(value):
     low = value & ((1 << 48) - 1)
     canonical = low | (MASK64 ^ ((1 << 48) - 1)) if low >> 47 else low
     if value != canonical:
-        raise ValueError(f"address cannot reconstruct from bits [47:1]: {value:#x}")
+        raise ValueError(
+            f"address cannot reconstruct from bits [47:1]: {value:#x}"
+        )
     return value
 
 
@@ -47,12 +62,16 @@ def prediction_target(value):
     """Keep all raw predictor bits, including wrong odd/noncanonical targets."""
     value = integer(value)
     if not 0 <= value <= MASK64:
-        raise ValueError(f"prediction target is not an unsigned 64-bit value: {value}")
+        raise ValueError(
+            f"prediction target is not an unsigned 64-bit value: {value}"
+        )
     return value
 
 
 def json_address(value):
-    if not isinstance(value, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", value):
+    if not isinstance(value, str) or not re.fullmatch(
+        r"0x[0-9a-fA-F]{1,16}", value
+    ):
         raise ValueError("address must be a hexadecimal JSON string")
     return address(value)
 
@@ -65,6 +84,7 @@ def json_loads(text):
                 raise ValueError(f"duplicate JSON field {key}")
             result[key] = value
         return result
+
     return json.loads(text, object_pairs_hook=unique_object)
 
 
@@ -120,24 +140,87 @@ class History:
     lithr: dict = field(default_factory=dict)
     calls: deque = field(default_factory=lambda: deque(maxlen=64))
     returns: deque = field(default_factory=lambda: deque(maxlen=64))
+    ideal: bool = False
+    _local_root: object = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
-        if len(set(self.pcs)) != len(self.pcs) or len(self.pcs) > 20:
+        if (
+            len(set(self.pcs)) != len(self.pcs)
+            or not self.ideal
+            and len(self.pcs) > 20
+        ):
             raise ValueError("history needs at most 20 distinct PCs")
+        self.pcs = tuple(sorted(self.pcs))
+        if self.ideal:
+            initial = self.lithr
+            self.lithr = {}
+            for pc, value in initial.items():
+                self._set_local(pc, value)
+            return
         self.lithr = {pc: self.lithr.get(pc, 0) for pc in self.pcs}
 
+    def _local(self, pc):
+        if not self.ideal:
+            return self.lithr.get(pc, 0)
+        index = bisect_left(self.pcs, pc)
+        if index == len(self.pcs) or self.pcs[index] != pc:
+            return 0
+        node, lo, hi = self._local_root, 0, len(self.pcs)
+        while node is not None and hi - lo > 1:
+            mid = (lo + hi) // 2
+            if index < mid:
+                node, hi = node[0], mid
+            else:
+                node, lo = node[1], mid
+        return node if node is not None else 0
+
+    def _set_local(self, pc, value):
+        index = bisect_left(self.pcs, pc)
+        if index == len(self.pcs) or self.pcs[index] != pc:
+            return
+
+        def update(node, lo, hi):
+            if hi - lo == 1:
+                return value
+            mid = (lo + hi) // 2
+            left, right = node if node is not None else (None, None)
+            return (
+                (update(left, lo, mid), right)
+                if index < mid
+                else (left, update(right, mid, hi))
+            )
+
+        self._local_root = update(self._local_root, 0, len(self.pcs))
+
     def snapshot(self):
-        return (self.ghr, self.githr, dict(self.lithr),
-                tuple(self.calls), tuple(self.returns))
+        return (
+            self.ghr,
+            self.githr,
+            self._local_root if self.ideal else dict(self.lithr),
+            tuple(self.calls),
+            tuple(self.returns),
+        )
 
     def restore(self, snapshot):
         self.ghr, self.githr, lithr, calls, returns = snapshot
-        self.lithr = dict(lithr)
+        if self.ideal:
+            self._local_root = lithr
+        else:
+            self.lithr = dict(lithr)
         self.calls = deque(calls, maxlen=64)
         self.returns = deque(returns, maxlen=64)
 
-    def update(self, pc, target, *, taken, conditional=False,
-               indirect=False, call=False, ret=False):
+    def update(
+        self,
+        pc,
+        target,
+        *,
+        taken,
+        conditional=False,
+        indirect=False,
+        call=False,
+        ret=False,
+    ):
         if conditional:
             self.ghr = ((self.ghr << 1) | bool(taken)) & ((1 << 970) - 1)
         if not taken:
@@ -145,7 +228,9 @@ class History:
         if indirect and not ret:
             code = (target >> 1) & 3
             self.githr = ((self.githr << 2) | code) & ((1 << 128) - 1)
-            if pc in self.lithr:
+            if self.ideal:
+                self._set_local(pc, ((self._local(pc) << 2) | code) & 255)
+            elif pc in self.lithr:
                 self.lithr[pc] = ((self.lithr[pc] << 2) | code) & 255
         if call:
             self.calls.appendleft((pc >> 1) & MASK47)
@@ -158,15 +243,27 @@ class History:
             for age, historical_pc in enumerate(pcs):
                 value ^= rotl28(fold28(historical_pc), age)
             return value
-        return (fold28(self.ghr), fold28(self.githr),
-                fold28(self.lithr.get(pc, 0)), fold_pcs(self.calls),
-                fold_pcs(self.returns))
+
+        return (
+            fold28(self.ghr),
+            fold28(self.githr),
+            fold28(self._local(pc)),
+            fold_pcs(self.calls),
+            fold_pcs(self.returns),
+        )
 
 
-def validate_contract(data):
+def validate_contract(data, ideal=None):
     if not isinstance(data, dict):
         raise ValueError("Hint JSON root must be an object")
-    for key, expected in (("version", 2), ("hash_version", 2), ("ghr_bits", 970)):
+    unlimited = data.get("version") == 3
+    if ideal is not None and unlimited != ideal:
+        raise ValueError("Hint mode and input storage version differ")
+    for key, expected in (
+        ("version", 3 if unlimited else 2),
+        ("hash_version", 2),
+        ("ghr_bits", 970),
+    ):
         if type(data.get(key)) is not int or data[key] != expected:
             raise ValueError(f"incompatible {key}: {data.get(key)!r}")
     for key, expected in (("mask_order", MASK_ORDER),):
@@ -174,12 +271,38 @@ def validate_contract(data):
             raise ValueError(f"incompatible {key}: {data.get(key)!r}")
     history = data.get("history")
     if not isinstance(history, dict) or any(
-            type(history.get(key)) is not int or history[key] != value
-            for key, value in HISTORY.items()):
+        type(history.get(key)) is not int or history[key] != value
+        for key, value in HISTORY.items()
+    ):
         raise ValueError("incompatible history encoding")
     layout = data.get("layout", {})
+    if unlimited:
+        if (
+            data.get("storage") != "unlimited"
+            or data.get("finite_reference") != FINITE_REFERENCE
+            or any(
+                type(data["finite_reference"].get(key)) is not int
+                for key in FINITE_REFERENCE
+            )
+        ):
+            raise ValueError(
+                "incompatible unlimited storage or finite reference"
+            )
+        if (
+            not isinstance(layout, dict)
+            or set(layout) != {"conf_queue_depth"}
+            or type(layout["conf_queue_depth"]) is not int
+            or layout["conf_queue_depth"] <= 0
+        ):
+            raise ValueError(
+                "unlimited layout contains only positive conf_queue_depth"
+            )
+        return layout
+    if data.get("storage", "finite") != "finite":
+        raise ValueError("finite version 2 input has incompatible storage")
     if not isinstance(layout, dict) or any(
-            type(layout.get(key)) is not int or layout[key] < 1 for key in LAYOUT):
+        type(layout.get(key)) is not int or layout[key] < 1 for key in LAYOUT
+    ):
         raise ValueError("invalid finite hardware layout")
     entries, ways = layout["context_entries"], layout["ways"]
     sets = entries // ways
@@ -190,26 +313,46 @@ def validate_contract(data):
     return layout
 
 
-def contract(layout=None):
-    return {"version": 2, "hash_version": 2, "ghr_bits": 970,
-            "mask_order": MASK_ORDER, "history": dict(HISTORY),
-            "layout": dict(layout or LAYOUT)}
+def contract(layout=None, *, ideal=False):
+    result = {
+        "version": 3 if ideal else 2,
+        "hash_version": 2,
+        "ghr_bits": 970,
+        "mask_order": MASK_ORDER,
+        "history": dict(HISTORY),
+        "layout": dict(layout or LAYOUT),
+    }
+    if ideal:
+        if layout is not None and set(layout) != {"conf_queue_depth"}:
+            raise ValueError("ideal layout must contain only conf_queue_depth")
+        result.update(
+            storage="unlimited",
+            finite_reference=dict(FINITE_REFERENCE),
+            layout=dict(layout or {"conf_queue_depth": 8}),
+        )
+    return result
 
 
-def validate_metadata(data):
+def validate_metadata(data, ideal=None):
     if not isinstance(data, dict) or data.get("format") != "h2p-hint":
         raise ValueError("not a Hint metadata image")
-    layout = validate_contract(data)
+    layout = validate_contract(data, ideal)
+    unlimited = data["version"] == 3
     if not isinstance(data.get("source"), dict):
         raise ValueError("metadata source must be a JSON object")
-    sets = layout["context_entries"] // layout["ways"]
+    sets = 2048 if unlimited else layout["context_entries"] // layout["ways"]
     tag_limit = 1 << (BITS - (sets.bit_length() - 1))
     cam = data.get("cam", [])
     slots = data.get("slots", [])
     entries = data.get("entries", [])
-    if any(not isinstance(data.get(name), list) for name in ("cam", "slots", "entries")):
+    if any(
+        not isinstance(data.get(name), list)
+        for name in ("cam", "slots", "entries")
+    ):
         raise ValueError("cam, slots, and entries must be JSON arrays")
-    if len(cam) > layout["cam_entries"] or len(slots) > layout["slot_entries"]:
+    if not unlimited and (
+        len(cam) > layout["cam_entries"] or len(slots) > layout["slot_entries"]
+    ):
         raise ValueError("CAM or target slot capacity exceeded")
     pcs = set()
     for row in cam:
@@ -226,9 +369,42 @@ def validate_metadata(data):
         raise ValueError("shared target slots contain duplicate targets")
     locations, keys = set(), set()
     for row in entries:
-        if not isinstance(row, dict) or any(type(row.get(name)) is not int for name in
-                                           ("set", "way", "tag", "slot", "conf")):
-            raise ValueError("context entry must contain integer position/tag/slot/confidence")
+        if unlimited:
+            if (
+                not isinstance(row, dict)
+                or set(row) != {"valid", "key", "slot", "conf"}
+                or any(
+                    type(row.get(name)) is not int
+                    for name in ("key", "slot", "conf")
+                )
+                or type(row.get("valid")) is not bool
+            ):
+                raise ValueError(
+                    "unlimited context needs integer key/slot/conf and boolean valid"
+                )
+            if row["key"] in keys:
+                raise ValueError(
+                    "duplicate unlimited key, including invalid rows"
+                )
+            keys.add(row["key"])
+            if (
+                not 0 <= row["key"] <= MASK28
+                or not 0 <= row["slot"] <= MASK64
+                or not 0 <= row["conf"] <= 3
+                or row["valid"]
+                and (row["conf"] != 3 or row["slot"] >= len(slots))
+            ):
+                raise ValueError(
+                    "invalid unlimited key, pointer, or initial confidence"
+                )
+            continue
+        if not isinstance(row, dict) or any(
+            type(row.get(name)) is not int
+            for name in ("set", "way", "tag", "slot", "conf")
+        ):
+            raise ValueError(
+                "context entry must contain integer position/tag/slot/confidence"
+            )
         if type(row.get("valid")) is not bool:
             raise ValueError("entry validity must be a JSON boolean")
         location = (row["set"], row["way"])
@@ -238,30 +414,42 @@ def validate_metadata(data):
         locations.add(location)
         if row["valid"]:
             keys.add(key)
-        if (not 0 <= row["set"] < sets or
-                not 0 <= row["way"] < layout["ways"] or
-                not 0 <= row["tag"] < tag_limit or not 0 <= row["conf"] <= 3 or
-                not 0 <= row["slot"] < layout["slot_entries"] or
-                row["valid"] and (row["conf"] != 3 or row["slot"] >= len(slots))):
-            raise ValueError("invalid SRAM entry, pointer, or initial confidence")
+        if (
+            not 0 <= row["set"] < sets
+            or not 0 <= row["way"] < layout["ways"]
+            or not 0 <= row["tag"] < tag_limit
+            or not 0 <= row["conf"] <= 3
+            or not 0 <= row["slot"] < layout["slot_entries"]
+            or row["valid"]
+            and (row["conf"] != 3 or row["slot"] >= len(slots))
+        ):
+            raise ValueError(
+                "invalid SRAM entry, pointer, or initial confidence"
+            )
     return data
 
 
-def load_metadata(path):
-    return validate_metadata(json_loads(Path(path).read_text()))
+def load_metadata(path, ideal=None):
+    return validate_metadata(json_loads(Path(path).read_text()), ideal)
 
 
-def load_candidates(path):
+def load_candidates(path, ideal=False):
     data = json_loads(Path(path).read_text())
-    if (not isinstance(data, dict) or data.get("format") != "h2p-hint-candidates" or
-            type(data.get("version")) is not int or data["version"] != 2):
+    if (
+        not isinstance(data, dict)
+        or data.get("format") != "h2p-hint-candidates"
+        or type(data.get("version")) is not int
+        or data["version"] != (3 if ideal else 2)
+        or data.get("storage", "finite")
+        != ("unlimited" if ideal else "finite")
+    ):
         raise ValueError("incompatible candidate file")
     if not isinstance(data.get("source"), dict):
         raise ValueError("candidate source must be a JSON object")
     if not isinstance(data.get("pcs"), list):
         raise ValueError("candidate pcs must be a JSON array")
     pcs = [json_address(pc) for pc in data["pcs"]]
-    if len(pcs) > 20 or len(set(pcs)) != len(pcs):
+    if not ideal and len(pcs) > 20 or len(set(pcs)) != len(pcs):
         raise ValueError("candidate file needs at most 20 unique PCs")
     return pcs
 
@@ -270,11 +458,16 @@ def read_profile(path):
     """Read and validate the gzip JSONL format, including correct instances."""
     with gzip.open(path, "rt") as source:
         header = json_loads(next(source))
-        if (header.get("kind") != "header" or
-                header.get("format") != "h2p-hint-profile"):
+        if (
+            header.get("kind") != "header"
+            or header.get("format") != "h2p-hint-profile"
+        ):
             raise ValueError("invalid profile header")
         validate_contract(header)
-        if type(header.get("clock_period")) is not int or header["clock_period"] <= 0:
+        if (
+            type(header.get("clock_period")) is not int
+            or header["clock_period"] <= 0
+        ):
             raise ValueError("profile needs a positive CPU clock period")
         yield header
         previous_seq, previous_commit = -1, -1
@@ -283,25 +476,43 @@ def read_profile(path):
             row = json_loads(line)
             if row.get("kind") != "branch":
                 raise ValueError(f"profile line {number}: expected branch")
-            for key in ("pc", "actual", "baseline_pc",
-                        "block_start", "block_end"):
+            for key in (
+                "pc",
+                "actual",
+                "baseline_pc",
+                "block_start",
+                "block_end",
+            ):
                 row[key] = address(row[key])
             # A wrong baseline target is an observation of the existing BPU,
             # not an address being installed into the finite Hint tables.
             row["baseline_target"] = prediction_target(row["baseline_target"])
             if row["pc"] not in candidates:
                 raise ValueError(f"profile line {number}: non-candidate PC")
-            if row["seq"] <= previous_seq or row["commit_cycle"] < previous_commit:
-                raise ValueError("profile is not in committed instruction order")
+            if (
+                row["seq"] <= previous_seq
+                or row["commit_cycle"] < previous_commit
+            ):
+                raise ValueError(
+                    "profile is not in committed instruction order"
+                )
             previous_seq, previous_commit = row["seq"], row["commit_cycle"]
-            if type(row["eligible"]) is not bool or type(row["baseline_valid"]) is not bool:
+            if (
+                type(row["eligible"]) is not bool
+                or type(row["baseline_valid"]) is not bool
+            ):
                 raise ValueError("profile validity fields must be booleans")
             if row["eligible"]:
-                if (row["contexts"] is None or not row["baseline_valid"] or
-                        row["baseline_pc"] != row["pc"] or
-                        row["query_cycle"] > row["commit_cycle"] or
-                        not row["block_start"] <= row["pc"] < row["block_end"]):
-                    raise ValueError("eligible sample lacks a valid query snapshot")
+                if (
+                    row["contexts"] is None
+                    or not row["baseline_valid"]
+                    or row["baseline_pc"] != row["pc"]
+                    or row["query_cycle"] > row["commit_cycle"]
+                    or not row["block_start"] <= row["pc"] < row["block_end"]
+                ):
+                    raise ValueError(
+                        "eligible sample lacks a valid query snapshot"
+                    )
                 context_key(row["pc"], row["contexts"], 31)
             elif row["contexts"] is not None:
                 context_key(row["pc"], row["contexts"], 31)
@@ -311,8 +522,11 @@ def read_profile(path):
 def selected_pc(row, cam_pcs):
     ordered = cam_pcs if isinstance(cam_pcs, tuple) else tuple(sorted(cam_pcs))
     position = bisect_left(ordered, row["block_start"])
-    return (ordered[position] if position < len(ordered) and
-            ordered[position] < row["block_end"] else None)
+    return (
+        ordered[position]
+        if position < len(ordered) and ordered[position] < row["block_end"]
+        else None
+    )
 
 
 def query_eligible(row, cam_pcs):
@@ -324,9 +538,20 @@ def baseline_miss(row):
 
 
 def empty_counters():
-    return dict.fromkeys(("executions", "baseline_misses", "final_misses",
-                          "corrected", "harmed", "eligible", "tag_hits",
-                          "conf_enabled", "overrides"), 0)
+    return dict.fromkeys(
+        (
+            "executions",
+            "baseline_misses",
+            "final_misses",
+            "corrected",
+            "harmed",
+            "eligible",
+            "tag_hits",
+            "conf_enabled",
+            "overrides",
+        ),
+        0,
+    )
 
 
 class Reference:
@@ -334,22 +559,51 @@ class Reference:
 
     def __init__(self, metadata):
         validate_metadata(metadata)
+        self.ideal = metadata["version"] == 3
+        self.metadata = metadata
         self.layout = metadata["layout"]
-        self.sets = self.layout["context_entries"] // self.layout["ways"]
+        self.sets = (
+            2048
+            if self.ideal
+            else self.layout["context_entries"] // self.layout["ways"]
+        )
         self.index_bits = self.sets.bit_length() - 1
-        self.cam = {address(row["pc"]): row["mask"] for row in metadata["cam"]
-                    if row["valid"]}
+        self.cam = {
+            address(row["pc"]): row["mask"]
+            for row in metadata["cam"]
+            if row["valid"]
+        }
         self.ordered_cam = tuple(sorted(self.cam))
         self.slots = [address(value) for value in metadata["slots"]]
-        self.entries = {(row["set"], row["tag"]): dict(row)
-                        for row in metadata["entries"] if row["valid"]}
+        self.entries = {
+            (row["key"] if self.ideal else (row["set"], row["tag"])): {
+                **row,
+                "entry_id": (
+                    index
+                    if self.ideal
+                    else row["set"] * self.layout["ways"] + row["way"]
+                ),
+            }
+            for index, row in enumerate(metadata["entries"])
+            if row["valid"]
+        }
         self.pending = deque()
         self.snapshots = {}
         self.last_write = -1
         self.last_cycle = -1
-        self.queue_stats = dict.fromkeys(("enqueued", "applied", "dropped",
-                                         "pending", "carried_in", "zero_transitions",
-                                         "recoveries", "max_occupancy"), 0)
+        self.queue_stats = dict.fromkeys(
+            (
+                "enqueued",
+                "applied",
+                "dropped",
+                "pending",
+                "carried_in",
+                "zero_transitions",
+                "recoveries",
+                "max_occupancy",
+            ),
+            0,
+        )
         self.pcs = {}
         self.transitions = []
 
@@ -376,9 +630,14 @@ class Reference:
             self.queue_stats["applied"] += 1
             if old == 1 and entry["conf"] == 0:
                 self.queue_stats["zero_transitions"] += 1
-                self.transitions.append({"pc": hex(row["pc"]), "seq": row["seq"],
-                                         "commit_cycle": row["commit_cycle"],
-                                         "write_cycle": write_cycle})
+                self.transitions.append(
+                    {
+                        "pc": hex(row["pc"]),
+                        "seq": row["seq"],
+                        "commit_cycle": row["commit_cycle"],
+                        "write_cycle": write_cycle,
+                    }
+                )
             if old == 0 and entry["conf"] == 1:
                 self.queue_stats["recoveries"] += 1
         self.last_cycle = cycle
@@ -388,10 +647,17 @@ class Reference:
         if not query_eligible(row, self.ordered_cam):
             return
         key = context_key(row["pc"], row["contexts"], self.cam[row["pc"]])
-        entry = self.entries.get((key & (self.sets - 1), key >> self.index_bits))
+        entry = self.entries.get(
+            key
+            if self.ideal
+            else (key & (self.sets - 1), key >> self.index_bits)
+        )
         target = self.slots[entry["slot"]] if entry else None
-        self.snapshots[row["seq"]] = (entry, target,
-                                      entry["conf"] > 0 if entry else False)
+        self.snapshots[row["seq"]] = (
+            entry,
+            target,
+            entry["conf"] > 0 if entry else False,
+        )
 
     def commit(self, row):
         self.advance(row["commit_cycle"])
@@ -413,11 +679,18 @@ class Reference:
                 if len(self.pending) == self.layout["conf_queue_depth"]:
                     self.queue_stats["dropped"] += 1
                 else:
-                    self.pending.append((row["commit_cycle"] + 1, entry,
-                                         target == row["actual"], row))
+                    self.pending.append(
+                        (
+                            row["commit_cycle"] + 1,
+                            entry,
+                            target == row["actual"],
+                            row,
+                        )
+                    )
                     self.queue_stats["enqueued"] += 1
                     self.queue_stats["max_occupancy"] = max(
-                        self.queue_stats["max_occupancy"], len(self.pending))
+                        self.queue_stats["max_occupancy"], len(self.pending)
+                    )
         counters["final_misses"] += final_miss
         counters["corrected"] += base_miss and not final_miss
         counters["harmed"] += not base_miss and final_miss
@@ -426,27 +699,37 @@ class Reference:
         if cycle is not None:
             self.advance(cycle)
         self.queue_stats["pending"] = len(self.pending)
-        if (self.queue_stats["carried_in"] + self.queue_stats["enqueued"] !=
-                self.queue_stats["applied"] + len(self.pending)):
+        if self.queue_stats["carried_in"] + self.queue_stats[
+            "enqueued"
+        ] != self.queue_stats["applied"] + len(self.pending):
             raise AssertionError("reference confidence queue lost an update")
         total = empty_counters()
         for counters in self.pcs.values():
             for key, value in counters.items():
                 total[key] += value
-        return {"format": "h2p-hint-reference", "version": 2,
-                "qualification": "fixed collect contexts and cycles; not a timing prediction",
-                "global": total, "queue": dict(self.queue_stats),
-                "pcs": [{"pc": hex(pc), **counters}
-                        for pc, counters in sorted(self.pcs.items())],
-                "conf0": self.transitions}
+        return {
+            "format": "h2p-hint-reference",
+            "version": 3 if self.ideal else 2,
+            "qualification": "fixed collect contexts and cycles; not a timing prediction",
+            "global": total,
+            "queue": dict(self.queue_stats),
+            "pcs": [
+                {"pc": hex(pc), **counters}
+                for pc, counters in sorted(self.pcs.items())
+            ],
+            "conf0": self.transitions,
+        }
 
 
 def replay_reference(rows, metadata, finish_cycle=None):
     """Convenience driver for short traces; production uses streamed disk data."""
     rows = list(rows)
     events = [(row["commit_cycle"], 1, row["seq"], row) for row in rows]
-    events.extend((row["query_cycle"], 0, row["seq"], row)
-                  for row in rows if row["eligible"])
+    events.extend(
+        (row["query_cycle"], 0, row["seq"], row)
+        for row in rows
+        if row["eligible"]
+    )
     model = Reference(metadata)
     for _, phase, _, row in sorted(events):
         (model.commit if phase else model.query)(row)

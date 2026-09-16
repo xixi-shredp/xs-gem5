@@ -1,0 +1,42 @@
+{
+  "format": "h2p-hint-candidates",
+  "pcs": [
+    "0x185eb0",
+    "0x1872d8",
+    "0xce1ce",
+    "0x18ce44",
+    "0x63fc6",
+    "0x1f2582"
+  ],
+  "ranking": [
+    {
+      "miss": 166599,
+      "pc": "0x185eb0"
+    },
+    {
+      "miss": 2656,
+      "pc": "0x1872d8"
+    },
+    {
+      "miss": 6,
+      "pc": "0xce1ce"
+    },
+    {
+      "miss": 3,
+      "pc": "0x18ce44"
+    },
+    {
+      "miss": 1,
+      "pc": "0x63fc6"
+    },
+    {
+      "miss": 1,
+      "pc": "0x1f2582"
+    }
+  ],
+  "source": {
+    "h2p_file": "/opt/data/labs/hint-indirect/results/stage1/scimark_fft_test/26/h2p-indirect.txt",
+    "sha256": "896042a8fcac784928a5bbbf338072b62043363a31eae8acad403311ef6c31e9"
+  },
+  "version": 2
+}
