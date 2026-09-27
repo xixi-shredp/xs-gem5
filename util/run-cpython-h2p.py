@@ -130,7 +130,7 @@ def load_tasks(workload_list, common_identity):
     tasks = []
     for group in specification["cpts"]:
         bench = group["bench"]
-        scale = group["scale"]
+        scale = group.get("scale", "test")
         for raw_id in group["cpt_list"]:
             checkpoint_id = str(raw_id)
             checkpoint = checkpoint_for(

@@ -11,6 +11,8 @@ class HintIndirectTest(SimObject):
     candidates = Param.String(
         "", "Optional external candidate validation case"
     )
+    vectors = Param.String("../manifest/hint-v3-vectors.json",
+                           "Shared finite v3 golden vector file")
     ideal = Param.Bool(False, "Validate an unlimited Hint metadata image")
     range_port_reuse = Param.Bool(
         False, "Negative test: retry a wrapped-range query in the same cycle"

@@ -1,4 +1,4 @@
-"""Persistent 239-run heavy-workload experiment with a shared process budget."""
+"""Persistent finite Hint heavy-workload experiment with a shared process budget."""
 
 import argparse
 import concurrent.futures as futures
@@ -281,7 +281,8 @@ def execute_stage(args, jobs, label=None):
                 "stage_total": len(jobs), "active_slots": len(active),
                 "failed": sum(row["result"] != "pass" for row in results),
                 "started_utc": started, "updated_utc": now(), "runner_pid": os.getpid(),
-                "last_result": results[-1], "full_run_target": 239})
+                "last_result": results[-1],
+                "full_run_target": sum(args.run_counts.values())})
     write_json(args.output_root / f"{label}-audit.json", {
         "result": "fail" if failed else "pass", "completed": completed,
         "total": len(jobs), "results": results, "finished_utc": now()})
@@ -316,9 +317,12 @@ def mask_jobs(tasks):
             for mask in range(32):
                 jobs.append({"stage": "masks", "task": task, "group": group, "mask": mask,
                              "masks": {pc: mask for pc in pcs[start:start + 16]}})
-    if len(jobs) != 224:
-        raise ValueError(f"accepted heavy candidate groups must produce 224 mask runs, got {len(jobs)}")
     return jobs
+
+
+def planned_run_counts(tasks, masks):
+    return {"baseline": len(tasks), "collect": len(tasks),
+            "masks": len(masks), "joint": len(tasks)}
 
 
 def joint_jobs(args, tasks, masks):
@@ -342,6 +346,8 @@ def joint_jobs(args, tasks, masks):
 
 
 def final_report(args, tasks):
+    masks = mask_jobs(tasks)
+    expected_runs = sum(args.run_counts.values())
     rows = []
     for task in tasks:
         baseline, joint = (ensure_pass(args, task, stage) for stage in ("baseline", "joint"))
@@ -365,8 +371,8 @@ def final_report(args, tasks):
                      "entries": len(metadata["entries"])})
     completed = list((args.output_root / "runs").rglob("status.json"))
     statuses = [json.loads(path.read_text()) for path in completed]
-    if len(statuses) != 239 or any(row.get("result") != "pass" for row in statuses):
-        raise ValueError("final audit requires all 239 successful full runs")
+    if len(statuses) != expected_runs or any(row.get("result") != "pass" for row in statuses):
+        raise ValueError(f"final audit requires all {expected_runs} successful full runs")
     summary = {"format": "h2p-hint-experiment-summary", "version": 2,
                "qualification": "same-slice offline specialization",
                "full_runs": len(statuses), "pass": len(statuses), "fail": 0,
@@ -382,7 +388,7 @@ def final_report(args, tasks):
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         for task in tasks:
-            for job in mask_jobs(tasks):
+            for job in masks:
                 if tag(job["task"]) != tag(task):
                     continue
                 status = json.loads((run_path(args, task, "masks", job["group"], job["mask"]) /
@@ -414,19 +420,23 @@ def final_report(args, tasks):
                 for pc in sorted(base.keys() | joint.keys()):
                     before, after = base.get(pc, (0,))[0], joint.get(pc, (0,))[0]
                     writer.writerow([tag(task), offset, hex(pc), before, after, before - after])
+    warmup_m = args.warmup_insts // 1_000_000
+    measure_m = args.measure_insts // 1_000_000
+    interval_m = args.h2p_stat_interval // 1_000_000
+    mask_count = len({job["mask"] for job in masks})
     lines = ["# H2P Hint 第二轮 profiling\n",
-             "本轮为同片离线特化：restore 完成后 100M warm-up，reset 后 50M measure；",
-             "interval=1M，difftest 关闭，DDR4_2400_8x8。239 次完整运行及窗口审计通过。\n",
+             f"本轮为同片离线特化：restore 完成后 {warmup_m}M warm-up，reset 后 {measure_m}M measure；",
+             f"interval={interval_m}M，difftest 关闭，DDR4_2400_8x8。{expected_runs} 次完整运行及窗口审计通过。\n",
              "| 切片 | baseline miss | joint miss | miss 减少 | baseline IPC | joint IPC | 推荐 |",
              "|---|---:|---:|---:|---:|---:|---|"]
     for row in rows:
         lines.append(f"| {row['task']} | {row['baseline_misses']} | {row['joint_misses']} | "
                      f"{row['net_miss_reduction']} | {row['baseline_ipc']} | {row['joint_ipc']} | "
                      f"{row['recommended']} |")
-    lines += ["", "每 PC 的 32-mask 真实重放、参考模型差异、查询覆盖和队列丢弃见 `sweep.csv`。",
+    lines += ["", f"每 PC 的 {mask_count}-mask 真实重放、参考模型差异、查询覆盖和队列丢弃见 `sweep.csv`。",
               "每片最佳 mask 与联合选入原因见 `inputs/<slice>/best-masks.json`；",
               "联合容量、target 共享、硬件别名与失败原因见 `images/joint/<slice>/builder.json` 和 `hard-pred.txt`。",
-              "逐 PC 的 1M miss 趋势见 `joint-window-trends.csv`；全部 target/计数仍保留在原始运行目录。",
+              f"逐 PC 的 {interval_m}M miss 趋势见 `joint-window-trends.csv`；全部 target/计数仍保留在原始运行目录。",
               "reference 使用 collect 的上下文与周期，不预测 Hint 改变后的错误路径与性能。",
               "推荐仅按总最终 miss 判定，IPC 单独展示；disabled 推荐不会删除已完成的退化实验。"]
     (args.output_root / "report.md").write_text("\n".join(lines) + "\n")
@@ -455,9 +465,10 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if not 1 <= args.jobs <= 25:
         parser.error("--jobs must be between 1 and the authorized 25-slot limit")
-    if (args.warmup_insts, args.measure_insts, args.h2p_stat_interval) != (
-            100_000_000, 50_000_000, 1_000_000):
-        parser.error("formal heavy runs require 100M warmup, 50M measure, interval 1M")
+    if (args.warmup_insts, args.measure_insts, args.h2p_stat_interval) not in (
+            (100_000_000, 50_000_000, 1_000_000),
+            (1_000_000, 1_000_000, 1_000_000)):
+        parser.error("supported runs require 100M/50M or 1M/1M warmup/measure, interval 1M")
     if not args.dry_run and not args.build_audit:
         parser.error("--build-audit is required before starting gem5")
     if not args.dry_run and not args.validation_audit:
@@ -476,6 +487,7 @@ def main(argv=None):
         canonical = (json.dumps(task["candidates"], sort_keys=True, indent=2) + "\n").encode()
         task["candidate_sha256"] = hashlib.sha256(canonical).hexdigest()
     jobs = mask_jobs(tasks)
+    args.run_counts = planned_run_counts(tasks, jobs)
     args.command_prefix = legacy().command_prefix(args.disable_aslr)
     args.common_identity = {
         "gem5": file_identity(args.gem5), "config": file_identity(args.config),
@@ -493,7 +505,7 @@ def main(argv=None):
         if getattr(args, name):
             args.common_identity[name] = file_identity(getattr(args, name))
     plan = {"identity": args.common_identity, "jobs": args.jobs, "tasks": tasks,
-            "full_runs": {"baseline": 5, "collect": 5, "masks": len(jobs), "joint": 5},
+            "full_runs": args.run_counts,
             "qualification": "same-slice offline specialization"}
     if args.dry_run:
         print(json.dumps(plan, indent=2, sort_keys=True))

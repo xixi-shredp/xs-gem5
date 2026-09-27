@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <sstream>
+#include <string>
 
 #include <boost/dynamic_bitset.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -188,7 +189,7 @@ testHistory()
     history.update(0x1000, 0x9998, true, true, false, true);
     expect(snapshot.contextsFor(0x1000) == contexts,
            "prediction snapshot stays immutable after speculative update");
-    history = snapshot.history;
+    history = *snapshot.history;
     expect(HintSnapshot(history, ghr).contextsFor(0x1000) == contexts,
            "snapshot copy restores all added histories");
 }
@@ -393,6 +394,11 @@ idealizeCandidates(std::string finite)
 std::shared_ptr<const HintSnapshot>
 snapshotFor(const HintIndirect &hardware)
 {
+    if (!hardware.isIdeal()) {
+        HintFiniteHistory finite;
+        finite.configure(hardware.historyPCs());
+        return std::make_shared<const HintSnapshot>(finite);
+    }
     HintHistory history;
     history.configure(hardware.historyPCs(), hardware.isIdeal());
     return std::make_shared<const HintSnapshot>(
@@ -615,7 +621,7 @@ testHardware(const std::string &metadata, const std::string &candidates,
     reset_hardware.finish();
 }
 
-void
+[[maybe_unused]] void
 testCollect(const std::string &candidate_path)
 {
     HintIndirect::Config config;
@@ -866,7 +872,7 @@ testIdealOccupancyAndCollect()
            "v3 collection retains later candidate and absent-context observations");
 }
 
-void
+[[maybe_unused]] void
 testFiniteIdealEquivalence()
 {
     HintIndirect::Config finite_config;
@@ -1329,6 +1335,571 @@ testEarlierTakenCancellation(bool ideal)
            "earlier-taken cases use one query per block and no committed Hint score");
 }
 
+uint64_t
+vectorNumber(const std::string &value)
+{
+    return std::stoull(value, nullptr, 0);
+}
+
+void
+testFiniteV3CollectObserverHistory()
+{
+    HintFiniteHistory state;
+    state.configure({0x1000});
+    state.update(0x1000, 0x2000, true, false, false, true);
+    const HintSnapshot snapshot(state, true);
+    expect(snapshot.collectHistory && snapshot.finite,
+           "finite collect keeps an exact observer-only history snapshot");
+    const auto original = snapshot.v3ContextsFor(0);
+    // Collect may not stall the BPU. Exercise both local ring wrap and more
+    // than 96 younger global writes, which replay must instead backpressure.
+    for (unsigned n = 0; n < 105; ++n)
+        state.update(0x1000, 0x2000 + (n & 3) * 2,
+                     true, n % 9 == 0, false, true);
+    state = *snapshot.collectHistory;
+    expect(state.snapshot().low64 == snapshot.finite->low64 &&
+           state.snapshot().localLow8 == snapshot.finite->localLow8 &&
+           HintSnapshot(state, true).v3ContextsFor(0) == original,
+           "collect observer restores exact ITH/LHR/Call/Ret after ring wrap");
+}
+
+void
+testFiniteV3Vectors(const std::string &path)
+{
+    boost::property_tree::ptree vectors;
+    boost::property_tree::read_json(path, vectors);
+    expect(vectors.get<unsigned>("version") == 3,
+           "shared v3 vectors have expected version");
+    for (const auto &node : vectors.get_child("fold14")) {
+        const auto pc = vectorNumber(node.second.get<std::string>("pc"));
+        expect(hintFold14(pc) == vectorNumber(
+            node.second.get<std::string>("result")),
+            "fold14 matches shared Python vector");
+    }
+    for (const auto &node : vectors.get_child("hash")) {
+        const auto &row = node.second;
+        const auto components = HintV3Contexts{
+            hintFold28(vectorNumber(row.get<std::string>("ith_low64"))),
+            static_cast<uint32_t>(vectorNumber(
+                row.get<std::string>("lhr_low8"))),
+            hintFold28(vectorNumber(row.get<std::string>("call_low64"))),
+            hintFold28(vectorNumber(row.get<std::string>("ret_low64")))};
+        unsigned index = 0;
+        for (const auto &value : row.get_child("components")) {
+            expect(components[index++] == vectorNumber(
+                value.second.get_value<std::string>()),
+                "v3 context component matches shared Python vector");
+        }
+        const auto pc = vectorNumber(row.get<std::string>("pc"));
+        const auto key = hintHashV3(pc, components,
+                                    row.get<unsigned>("mask"));
+        expect(key == vectorNumber(row.get<std::string>("key")) &&
+               (key & 2047) == row.get<unsigned>("set") &&
+               (key >> 11) == row.get<unsigned>("tag"),
+               "v3 key/set/tag match shared Python vector");
+    }
+    for (const auto &node : vectors.get_child("cam_windows")) {
+        const auto start = vectorNumber(
+            node.second.get<std::string>("start_pc"));
+        const Addr end = (start + Addr(64)) & ~Addr(31);
+        std::optional<Addr> selected;
+        if (end > start) {
+            for (const auto &pc_node : node.second.get_child("pcs")) {
+                const auto pc = vectorNumber(
+                    pc_node.second.get_value<std::string>());
+                if (pc >= start && pc < end &&
+                    (!selected || pc < *selected))
+                    selected = pc;
+            }
+        }
+        const auto expected = node.second.get<std::string>("selected");
+        expect((expected == "null" && !selected) ||
+               (expected != "null" && selected &&
+                *selected == vectorNumber(expected)),
+               "v3 CAM window matches shared Python vector");
+    }
+
+    HintFiniteHistory history;
+    history.configure({0x1000});
+    history.ith.cells[history.ith.head] = 1;
+    history.ith.cells[(history.ith.head - 1) & 127] = 1;
+    history.ith.cells[(history.ith.head - 127) & 127] = 1;
+    history.update(0x2000, 0x1006, true, false, false, true);
+    expect(history.low64(history.ith) == 0x17,
+           "ITH shift/truncate matches shared Python vector");
+
+    history.configure({0x1000});
+    history.locals[0].cells[7] = 1;
+    history.locals[0].cells[6] = 1;
+    history.locals[0].cells[0] = 1;
+    history.update(0x1000, 0x1006, true, false, false, true);
+    expect(history.localLow8(0) == 0x17 &&
+           history.locals[0].cells[0] == 3,
+           "LHR shift/truncate matches shared Python vector");
+
+    history.configure({0x1000});
+    history.calls.cells[history.calls.head] = 1;
+    history.calls.cells[(history.calls.head - 1) & 127] = 1;
+    history.calls.cells[(history.calls.head - 127) & 127] = 1;
+    history.update(0x1010, 0, false, true, false, true);
+    expect(history.low64(history.calls) == 0x81c,
+           "Call shift/XOR matches shared Python vector");
+
+    history.configure({0x1000});
+    boost::dynamic_bitset<> ith(256), calls(256), returns(256);
+    boost::dynamic_bitset<> local(16);
+    for (unsigned event = 0; event < 135; ++event) {
+        const Addr pc = 0x1000;
+        const Addr target = 0x2000 | ((event * 5 + 1) & 3) << 1;
+        const bool call = event % 3 != 0;
+        const bool ret = event % 5 == 0;
+        history.update(pc, target, true, call, ret, true);
+        if (call) {
+            calls <<= 2;
+            const auto folded = hintFold14(pc);
+            for (unsigned bit = 0; bit < 14; ++bit)
+                if (folded & (1U << bit)) calls.flip(bit);
+        }
+        if (ret) {
+            returns <<= 2;
+            const auto folded = hintFold14(pc);
+            for (unsigned bit = 0; bit < 14; ++bit)
+                if (folded & (1U << bit)) returns.flip(bit);
+        } else {
+            const unsigned code = (target >> 1) & 3;
+            ith <<= 2;
+            ith[0] = code & 1;
+            ith[1] = code & 2;
+            local <<= 2;
+            local[0] = code & 1;
+            local[1] = code & 2;
+        }
+        const auto low = [](const auto &bits, unsigned count) {
+            uint64_t result = 0;
+            for (unsigned bit = 0; bit < count; ++bit)
+                if (bits[bit]) result |= uint64_t(1) << bit;
+            return result;
+        };
+        expect(history.low64(history.ith) == low(ith, 64) &&
+               history.low64(history.calls) == low(calls, 64) &&
+               history.low64(history.returns) == low(returns, 64) &&
+               history.localLow8(0) == low(local, 8),
+               "physical rings match logical 256/16-bit shift oracle");
+    }
+    const auto saved = history.snapshot();
+    for (unsigned event = 0; event < 96; ++event)
+        history.update(0x1000, 0x2006, true, true, true, true);
+    history.restore(saved);
+    expect(history.low64(history.ith) == saved.low64[0] &&
+           history.low64(history.calls) == saved.low64[1] &&
+           history.low64(history.returns) == saved.low64[2],
+           "compact heads/low12 restore all three ring read windows");
+}
+
+std::string
+finiteV3Metadata(unsigned cam_count = 1, unsigned mask = 0)
+{
+    const std::string digest(64, '0');
+    std::ostringstream out;
+    out << "{\"format\":\"h2p-hint\",\"version\":3,"
+           "\"storage\":\"finite\",\"hash_version\":3,"
+           "\"mask_order\":[\"ITH\",\"LHR\",\"Call\",\"Ret\"],"
+           "\"history\":{\"ith_entries\":128,\"ith_use_bits\":64,"
+           "\"lhr_entries\":16,\"lhr_bits\":16,\"lhr_use_bits\":8,"
+           "\"call_entries\":128,\"ret_entries\":128,"
+           "\"path_use_bits\":64,\"target_shift\":1},"
+           "\"layout\":{\"cam_entries\":16,\"context_entries\":4096,"
+           "\"ways\":2,\"slot_entries\":32,\"conf_queue_depth\":32,"
+           "\"hint_meta_entries\":16,\"lhr_max_uncommitted\":4},"
+           "\"cam\":[";
+    for (unsigned i = 0; i < cam_count; ++i) {
+        if (i)
+            out << ',';
+        out << "{\"pc\":\"0x" << std::hex << (0x1000 + i * 0x80)
+            << "\",\"mask\":" << std::dec << mask << '}';
+    }
+    out << "],\"slots\":[\"0x2000\"],"
+           "\"entries\":[{\"set\":0,\"way\":0,\"tag\":1,"
+           "\"slot\":0,\"conf\":3}],"
+           "\"source\":{\"workload_id\":\"hint-self-test\","
+           "\"checkpoint_sha256\":\"" << digest
+        << "\",\"profile_sha256\":\"" << digest
+        << "\",\"builder_sha256\":\"" << digest << "\"}}";
+    return out.str();
+}
+
+HintIndirect::Config
+finiteV3Config(const std::string &prefix, unsigned cam_count = 1,
+               unsigned mask = 0)
+{
+    HintIndirect::Config config;
+    config.mode = "replay";
+    config.confQueueDepth = 32;
+    config.outputPrefix = prefix;
+    config.metadataPath = writeInput(prefix + "-metadata.json",
+                                     finiteV3Metadata(cam_count, mask));
+    return config;
+}
+
+void
+testFiniteV3Predictor()
+{
+    HintIndirect hardware(finiteV3Config("finite-v3-predictor"), nullptr);
+    HintFiniteHistory history;
+    history.configure(hardware.historyPCs());
+    hardware.setMeasurementActive(true, 0);
+    std::array<std::shared_ptr<HintQuery>, 4> queries;
+    std::shared_ptr<const HintSnapshot> first_snapshot;
+    for (unsigned i = 0; i < queries.size(); ++i) {
+        auto snapshot = std::make_shared<const HintSnapshot>(history);
+        if (!i)
+            first_snapshot = snapshot;
+        auto query = hardware.query(snapshot, 0x1000, 0x1040, i + 1);
+        const auto target = hardware.complete(query, 0x1000, 0x3000,
+                                               true, true, false, true);
+        expect(query->key == 0x800 && query->set == 0 && query->tagHit &&
+               query->conf == 3 - i &&
+               bool(target) == (i < 3) &&
+               (i == 3 || *target == 0x2000),
+               "v3 pending confidence forwarding reaches conf0 fallback");
+        expect(hardware.canReserve(0x1000),
+               "fourth same-LHR write is still accepted");
+        hardware.reserve(query, 0x1000, history.localPhase(0));
+        history.update(0x1000, target.value_or(0x3000),
+                       true, false, false, true);
+        hardware.bind(query, i + 1);
+        queries[i] = query;
+        if (i < 3)
+            hardware.resolve(query, 0x1000, 0x3000, i + 1, i + 1);
+    }
+    expect(hardware.canReserve(0x1000) &&
+               hardware.reserveBlockReason(0x1000) ==
+                   HintIndirect::StallReason::None,
+           "no-LHR mask does not block the fifth same-PC prediction");
+    hardware.tick(5);
+    hardware.tick(6);
+    fatal_if(hardware.confidenceAtEntry(queries[0]->entryId) != 2 ||
+             hardware.pendingUpdates() != 2,
+             "Hint self-test: single-port expected conf=2/pending=2, "
+             "got conf=%u/pending=%u",
+             hardware.confidenceAtEntry(queries[0]->entryId),
+             unsigned(hardware.pendingUpdates()));
+    hardware.redirect(history, 1, 0x1000, true, 0x2000, 1, 6);
+    history.restore(*first_snapshot->finite);
+    history.update(0x1000, 0x2000, true, false, false, true);
+    expect(history.low64(history.ith) == 0 &&
+           history.localLow8(0) == 0 &&
+           hardware.confidenceAtEntry(queries[0]->entryId) == 3 &&
+           hardware.pendingUpdates() == 1 &&
+           hardware.queueCounts().reverted == 1 &&
+           hardware.queueCounts().canceled == 2 &&
+           hardware.canReserve(0x1000),
+           "H2P redirect reverses younger local writes and applied scores");
+    const auto after = hardware.query(std::make_shared<const HintSnapshot>(history),
+                                      0x1000, 0x1040, 7);
+    expect(after->conf == 3 && after->tagHit,
+           "corrected shadow score forwards before table write");
+    hardware.commitTarget(1);
+    hardware.tick(8);
+    hardware.tick(9);
+    expect(hardware.pendingUpdates() == 0 &&
+           hardware.confidenceAtEntry(queries[0]->entryId) == 3,
+           "committed corrected request writes independently of metadata release");
+    hardware.commit(queries[0], 1, 0x1000, 0x2000, true, 0x2000, 9);
+    expect(hardware.totals().corrected == 1 && hardware.totals().harmed == 0,
+           "replay target triple records one real dynamic correction");
+    hardware.finish();
+}
+
+void
+testFiniteV3MaskAwareAdmission()
+{
+    HintIndirect no_lhr(finiteV3Config("finite-v3-no-lhr"), nullptr);
+    HintFiniteHistory no_lhr_history;
+    no_lhr_history.configure(no_lhr.historyPCs());
+    no_lhr.setMeasurementActive(true, 0);
+    const auto before = no_lhr_history.snapshot();
+    const auto before_phase = no_lhr_history.localPhase(0);
+    for (unsigned i = 0; i < 5; ++i) {
+        const auto query = no_lhr.query(
+            std::make_shared<const HintSnapshot>(no_lhr_history),
+            0x1000, 0x1040, i + 1);
+        no_lhr.complete(query, 0x1000, 0x3000,
+                        true, true, false, true);
+        expect(no_lhr.canReserve(0x1000),
+               "no-LHR mask accepts same-PC writes beyond four in flight");
+        no_lhr.reserve(query, 0x1000, no_lhr_history.localPhase(0));
+        no_lhr_history.update(0x1000, 0x2000 + 2 * i,
+                              true, false, false, true);
+        no_lhr.bind(query, i + 1);
+    }
+    expect(no_lhr.inFlightHints() == 5 &&
+               no_lhr_history.localPhase(0) == ((before_phase + 5) & 15) &&
+               no_lhr.reserveBlockReason(0x1000) ==
+                   HintIndirect::StallReason::None,
+           "fifth no-LHR prediction reserves metadata and writes physical LHR");
+    no_lhr.redirect(no_lhr_history, 1, 0x800, false, 0, 0, 5);
+    no_lhr_history.restore(before);
+    expect(no_lhr.inFlightHints() == 0 &&
+               no_lhr_history.localPhase(0) == before_phase,
+           "redirect releases five no-LHR reservations and restores phase");
+    for (unsigned i = 0; i < 16; ++i) {
+        auto query = no_lhr.query(
+            std::make_shared<const HintSnapshot>(no_lhr_history),
+            0x1000, 0x1040, i + 6);
+        no_lhr.complete(query, 0x1000, 0x3000,
+                        true, true, false, true);
+        expect(no_lhr.canReserve(0x1000),
+               "no-LHR admission remains bounded by available metadata");
+        no_lhr.reserve(query, 0x1000, no_lhr_history.localPhase(0));
+        no_lhr_history.update(0x1000, 0x2000,
+                              true, false, false, true);
+        no_lhr.bind(query, i + 1);
+    }
+    expect(!no_lhr.canReserve(0x1000) &&
+               no_lhr.reserveBlockReason(0x1000) ==
+                   HintIndirect::StallReason::MetaQueue,
+           "no-LHR mask still stalls when all 16 metadata entries are used");
+    no_lhr.commitTarget(1);
+    expect(no_lhr.canReserve(0x1000),
+           "commit releases one no-LHR metadata reservation");
+    no_lhr.finish();
+
+    HintIndirect reads_lhr(finiteV3Config("finite-v3-reads-lhr", 1, 2),
+                           nullptr);
+    HintFiniteHistory reads_lhr_history;
+    reads_lhr_history.configure(reads_lhr.historyPCs());
+    reads_lhr.setMeasurementActive(true, 0);
+    for (unsigned i = 0; i < 4; ++i) {
+        auto query = reads_lhr.query(
+            std::make_shared<const HintSnapshot>(reads_lhr_history),
+            0x1000, 0x1040, i + 1);
+        reads_lhr.complete(query, 0x1000, 0x3000,
+                           true, true, false, true);
+        expect(reads_lhr.canReserve(0x1000),
+               "LHR-reading mask accepts the first four writes");
+        reads_lhr.reserve(query, 0x1000,
+                          reads_lhr_history.localPhase(0));
+        reads_lhr_history.update(0x1000, 0x2000,
+                                 true, false, false, true);
+        reads_lhr.bind(query, i + 1);
+    }
+    expect(!reads_lhr.canReserve(0x1000) &&
+               reads_lhr.reserveBlockReason(0x1000) ==
+                   HintIndirect::StallReason::Lhr,
+           "LHR-reading mask blocks the fifth uncommitted same-PC write");
+    reads_lhr.recordStall(HintIndirect::StallReason::Lhr);
+    reads_lhr.recordStall(HintIndirect::StallReason::None);
+    expect(reads_lhr.queueCounts().lhrStalls == 1 &&
+               reads_lhr.queueCounts().metaQueueStalls == 0,
+           "LHR-only capacity event increments only the LHR stall counter");
+    reads_lhr.commitTarget(1);
+    expect(reads_lhr.canReserve(0x1000),
+           "LHR-reading mask resumes after the oldest reservation commits");
+    reads_lhr.finish();
+}
+
+void
+testFiniteV3NonHintRedirect()
+{
+    HintIndirect hardware(finiteV3Config("finite-v3-nonhint-redirect"), nullptr);
+    HintFiniteHistory history;
+    history.configure(hardware.historyPCs());
+    const auto before = history.snapshot();
+    hardware.setMeasurementActive(true, 0);
+    std::array<std::shared_ptr<HintQuery>, 3> queries;
+    for (unsigned i = 0; i < queries.size(); ++i) {
+        auto query = hardware.query(std::make_shared<const HintSnapshot>(history),
+                                    0x1000, 0x1040, i + 1);
+        hardware.complete(query, 0x1000, 0x3000, true, true, false, true);
+        hardware.reserve(query, 0x1000, history.localPhase(0));
+        history.update(0x1000, 0x2000, true, false, false, true);
+        hardware.bind(query, i + 2);
+        hardware.resolve(query, 0x1000, 0x3000, i + 2, i + 1);
+        queries[i] = query;
+    }
+    for (uint64_t cycle = 4; cycle <= 7; ++cycle)
+        hardware.tick(cycle);
+    expect(hardware.confidenceAtEntry(queries[0]->entryId) == 0 &&
+           hardware.queueCounts().applied == 3,
+           "three younger wrong scores apply before unrelated redirect");
+    hardware.redirect(history, 1, 0x800, false, 0, 0, 7);
+    history.restore(before);
+    expect(hardware.confidenceAtEntry(queries[0]->entryId) == 3 &&
+           hardware.queueCounts().reverted == 3 &&
+           hardware.canReserve(0x1000) &&
+           history.localLow8(0) == 0,
+           "non-H2P redirect undoes applied younger scores in reverse order");
+    hardware.finish();
+}
+
+void
+testFiniteV3PhaseAndCapacity()
+{
+    HintIndirect hardware(finiteV3Config("finite-v3-phase"), nullptr);
+    HintFiniteHistory history;
+    history.configure(hardware.historyPCs());
+    auto make_query = [&](uint64_t cycle, uint64_t ftq_id) {
+        auto query = hardware.query(std::make_shared<const HintSnapshot>(history),
+                                    0x1000, 0x1040, cycle);
+        hardware.complete(query, 0x1000, 0x3000, true, true, false, true);
+        hardware.reserve(query, 0x1000, history.localPhase(0));
+        history.update(0x1000, 0x2000, true, false, false, true);
+        hardware.bind(query, ftq_id);
+        return query;
+    };
+    auto warm = make_query(1, 1);
+    hardware.setMeasurementActive(true, 1);
+    hardware.resolve(warm, 0x1000, 0x3000, 1, 1, false);
+    hardware.commitTarget(1);
+    expect(hardware.pendingUpdates() == 0 &&
+           hardware.confidenceAtEntry(warm->entryId) == 3,
+           "warmup resolve cannot score after later phase transition");
+    auto measured = make_query(3, 2);
+    hardware.setMeasurementActive(false, 3);
+    hardware.resolve(measured, 0x1000, 0x3000, 2, 3, true);
+    hardware.commitTarget(2);
+    expect(hardware.pendingUpdates() == 1 &&
+           hardware.queueCounts().enqueued == 1,
+           "measure resolve remains eligible after measure ends");
+    hardware.tick(5);
+    expect(hardware.confidenceAtEntry(measured->entryId) == 2,
+           "measure-eligible score writes while measurement is inactive");
+    auto delayed = make_query(6, 3);
+    hardware.commitTarget(3);
+    expect(hardware.inFlightHints() == 0,
+           "FTQ commit releases an unexecuted predicted Hint branch");
+    hardware.resolveByFTQId(3, 0x1000, 0x3000, 3, 7, true);
+    expect(hardware.inFlightHints() == 0 &&
+           hardware.pendingUpdates() == 0 && delayed->resolved,
+           "retired unexecuted branch cannot gain a late score");
+    hardware.finish();
+
+    HintIndirect not_taken(finiteV3Config("finite-v3-not-taken"), nullptr);
+    HintFiniteHistory not_taken_history;
+    not_taken_history.configure(not_taken.historyPCs());
+    not_taken.setMeasurementActive(true, 0);
+    auto not_taken_query = not_taken.query(
+        std::make_shared<const HintSnapshot>(not_taken_history),
+        0x1000, 0x1040, 1);
+    not_taken.complete(not_taken_query, 0x1000, 0x3000,
+                       true, true, false, true);
+    not_taken.reserve(not_taken_query, 0x1000, 15);
+    not_taken.bind(not_taken_query, 1);
+    not_taken.resolve(not_taken_query, 0x1000, 0x1004, 1, 1, true, false);
+    not_taken.commitTarget(1);
+    expect(not_taken.inFlightHints() == 0 &&
+           not_taken.pendingUpdates() == 0 &&
+           not_taken.confidenceAt(0, 0) == 3,
+           "not-taken resolve frees Hint metadata without scoring");
+    not_taken.finish();
+
+    HintIndirect full(finiteV3Config("finite-v3-full", 16), nullptr);
+    full.recordStall(HintIndirect::StallReason::HistoryWindow);
+    expect(full.queueCounts().historyWindowStalls == 0,
+           "restore/warmup stalls do not enter measurement counters");
+    full.setMeasurementActive(true, 0);
+    for (unsigned i = 0; i < 16; ++i) {
+        const Addr pc = 0x1000 + i * 0x80;
+        expect(full.canReserve(pc), "free Hint metadata slot is available");
+        auto query = std::make_shared<HintQuery>();
+        full.reserve(query, pc, 15);
+        full.bind(query, i + 1);
+        full.resolve(query, pc, 0x2000, i + 1, i + 1);
+    }
+    expect(!full.canReserve(0x1000),
+           "17th in-flight H2P prediction stalls at 16-entry metadata limit");
+    expect(full.reserveBlockReason(0x1000) ==
+               HintIndirect::StallReason::MetaQueue,
+           "full metadata queue has priority over per-LHR capacity");
+    full.recordStall(HintIndirect::StallReason::MetaQueue);
+    full.recordStall(HintIndirect::StallReason::HistoryWindow);
+    expect(full.queueCounts().metaQueueStalls == 1 &&
+               full.queueCounts().historyWindowStalls == 1 &&
+               full.queueCounts().lhrStalls == 0,
+           "measured failed enqueue attempts are separated by reason");
+    full.commitTarget(1);
+    expect(full.canReserve(0x1000),
+           "commit releases one Hint metadata queue slot");
+    full.finish();
+}
+
+void
+testFiniteV3ShadowAndOverflow()
+{
+    HintIndirect hardware(finiteV3Config("finite-v3-shadow"), nullptr);
+    HintFiniteHistory history;
+    history.configure(hardware.historyPCs());
+    hardware.setMeasurementActive(true, 0);
+    const auto predict = [&](uint64_t cycle, uint64_t ftq_id,
+                             Addr actual) {
+        auto query = hardware.query(std::make_shared<const HintSnapshot>(history),
+                                    0x1000, 0x1040, cycle);
+        const auto override = hardware.complete(query, 0x1000, 0x3000,
+                                                true, true, false, true);
+        expect(hardware.canReserve(0x1000), "shadow fixture has LHR capacity");
+        hardware.reserve(query, 0x1000, history.localPhase(0));
+        history.update(0x1000, override.value_or(0x3000),
+                       true, false, false, true);
+        hardware.bind(query, ftq_id);
+        hardware.resolve(query, 0x1000, actual, ftq_id, cycle);
+        return query;
+    };
+    for (unsigned i = 0; i < 3; ++i) {
+        auto query = predict(i + 1, i + 1, 0x3000);
+        hardware.commitTarget(i + 1);
+        expect(query->tagHit, "wrong targets still have valid shadow entries");
+    }
+    for (uint64_t cycle = 4; cycle <= 7; ++cycle)
+        hardware.tick(cycle);
+    expect(hardware.confidenceAt(0, 0) == 0,
+           "three wrong scores reach confidence zero");
+    auto shadow = predict(8, 4, 0x2000);
+    expect(shadow->tagHit && shadow->conf == 0 && !shadow->overridden,
+           "confidence-zero shadow preserves baseline target");
+    auto recovered = hardware.query(
+        std::make_shared<const HintSnapshot>(history), 0x1000, 0x1040, 9);
+    expect(recovered->conf == 1 &&
+           hardware.complete(recovered, 0x1000, 0x3000,
+                             true, true, false, true) ==
+               std::optional<Addr>(0x2000),
+           "correct shadow resolve forwards recovery before writeback");
+    hardware.commitTarget(4);
+    hardware.tick(10);
+    hardware.tick(11);
+    expect(hardware.confidenceAt(0, 0) == 1 &&
+           hardware.queueCounts().recoveries == 1,
+           "shadow recovery reaches the single-port table");
+    hardware.finish();
+
+    HintIndirect overflow(finiteV3Config("finite-v3-overflow"), nullptr);
+    HintFiniteHistory overflow_history;
+    overflow_history.configure(overflow.historyPCs());
+    overflow.setMeasurementActive(true, 0);
+    for (uint64_t cycle = 1; cycle <= 33; ++cycle) {
+        auto query = overflow.query(
+            std::make_shared<const HintSnapshot>(overflow_history),
+            0x1000, 0x1040, cycle);
+        overflow.complete(query, 0x1000, 0x3000,
+                          true, true, false, true);
+        expect(overflow.canReserve(0x1000),
+               "committed metadata releases LHR capacity under read pressure");
+        overflow.reserve(query, 0x1000,
+                         overflow_history.localPhase(0));
+        overflow_history.update(0x1000, 0x2000,
+                                true, false, false, true);
+        overflow.bind(query, cycle);
+        overflow.resolve(query, 0x1000, 0x3000, cycle, cycle);
+        overflow.commitTarget(cycle);
+    }
+    expect(overflow.pendingUpdates() == 32 &&
+           overflow.queueCounts().enqueued == 32 &&
+           overflow.queueCounts().dropped == 1 &&
+           overflow.queueCounts().applied == 0,
+           "read-priority starvation fills 32-entry FIFO and drops 33rd score");
+    overflow.finish();
+}
+
 } // anonymous namespace
 
 void
@@ -1339,6 +1910,7 @@ HintIndirectTest::startup()
         HintIndirect::Config config;
         config.mode = "replay";
         config.ideal = ideal;
+        config.confQueueDepth = ideal ? 8 : 32;
         config.metadataPath = metadata;
         config.candidatePath = candidates;
         HintIndirect hardware(config, nullptr);
@@ -1354,74 +1926,29 @@ HintIndirectTest::startup()
         testHistory();
         testIdealHistory();
         testRetiredPrefix();
-        testMaskQueries();
+        testFiniteV3CollectObserverHistory();
+        testFiniteV3Vectors(vectors);
+        testFiniteV3Predictor();
+        testFiniteV3MaskAwareAdmission();
+        testFiniteV3NonHintRedirect();
+        testFiniteV3PhaseAndCapacity();
+        testFiniteV3ShadowAndOverflow();
         testMaskQueries(true);
         const auto candidate_path = writeInput("hint-test-candidates.json",
             "{\"format\":\"h2p-hint-candidates\",\"version\":2,\"source\":{},"
             "\"pcs\":[\"0x1000\",\"0x1008\",\"0x2000\",\"0x3000\",\"0x20001002\"]}");
-        const auto metadata_path = writeInput("hint-test-metadata.json",
-                                              metadataText(false));
-        testHardware(metadata_path, candidate_path);
         testHardware(writeInput("hint-test-ideal-metadata.json",
                                 idealizeMetadata(metadataText(false))),
                      writeInput("hint-test-ideal-candidates.json",
                                 idealizeCandidates(readOutput(
                                     "hint-test-candidates.json"))), true);
-        testCollect(candidate_path);
         testUnlimitedCapacity();
         testIdealOccupancyAndCollect();
-        testFiniteIdealEquivalence();
-        for (const bool ideal : {false, true}) {
-            for (const bool collect : {false, true}) {
-                testPredictionBounds(ideal, collect);
-            }
-        }
+        for (const bool collect : {false, true})
+            testPredictionBounds(true, collect);
         testIdealInvalidEntry();
-        testMixedConfidenceFIFO(false);
         testMixedConfidenceFIFO(true);
-        testEarlierTakenCancellation(false);
         testEarlierTakenCancellation(true);
-
-        HintIndirect::Config empty_config;
-        empty_config.mode = "replay";
-        empty_config.metadataPath = writeInput("hint-test-empty.json",
-                                                metadataText(true));
-        empty_config.outputPrefix = "empty-test";
-        HintIndirect empty(empty_config, nullptr);
-        empty.setMeasurementActive(true);
-        const auto snapshot = snapshotFor(empty);
-        const auto query = empty.query(snapshot, 0x1000, 0x1010, 1);
-        expect(!query->hasCandidate && !query->tagHit &&
-               !empty.complete(query, 0x1000, 0x4000,
-                               true, true, false, true),
-               "empty metadata leaves every entry invalid");
-        empty.commit(query, 1, 0x1000, 0x4000, true, 0x4000, 2);
-        empty.finish();
-        expect(empty.totals().finalMisses == 0 && empty.pendingUpdates() == 0,
-               "empty table preserves baseline behavior");
-
-        auto invalid_text = metadataText(false);
-        const std::string valid_entry =
-            "\"tag\":1,\"slot\":0,\"conf\":3,\"valid\":true";
-        invalid_text.replace(invalid_text.find(valid_entry), valid_entry.size(),
-            "\"tag\":1,\"slot\":0,\"conf\":0,\"valid\":false");
-        auto invalid_config = empty_config;
-        invalid_config.metadataPath = writeInput("hint-test-invalid-bit.json",
-                                                 invalid_text);
-        invalid_config.outputPrefix = "invalid-bit-test";
-        HintIndirect invalid(invalid_config, nullptr);
-        invalid.setMeasurementActive(true);
-        const auto invalid_query = invalid.query(snapshotFor(invalid),
-                                                  0x1000, 0x1010, 1);
-        expect(!invalid_query->tagHit &&
-               !invalid.complete(invalid_query, 0x1000, 0x4000,
-                                  true, true, false, true),
-               "valid-zero SRAM entry cannot become a shadow hit");
-        invalid.commit(invalid_query, 1, 0x1000, 0x4000, true, 0x4000, 1);
-        invalid.tick(2);
-        expect(invalid.pendingUpdates() == 0 && invalid.confidenceAt(0, 0) == 0,
-               "correct target cannot enable an invalid SRAM entry");
-        invalid.finish();
 
         HintIndirect::Config off_config;
         off_config.outputPrefix = "off-test";

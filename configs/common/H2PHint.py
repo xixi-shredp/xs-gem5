@@ -8,7 +8,7 @@ GEOMETRY = {
     "context_entries": ("hintContextEntries", 4096),
     "ways": ("hintWays", 2),
     "slot_entries": ("hintSlotEntries", 32),
-    "conf_queue_depth": ("hintConfQueueDepth", 8),
+    "conf_queue_depth": ("hintConfQueueDepth", 32),
 }
 
 
@@ -24,12 +24,12 @@ def add_h2p_hint_options(parser):
     parser.add_argument(
         "--h2p-hint-candidates",
         default="",
-        help="Ranked candidate JSON: finite v2 or unlimited v3",
+        help="Ranked candidate JSON: finite v3 or unlimited v3",
     )
     parser.add_argument(
         "--h2p-hint-metadata",
         default="",
-        help="Frozen table JSON: finite v2 or unlimited v3",
+        help="Frozen table JSON: finite v3 or unlimited v3",
     )
     for name, (_, default) in GEOMETRY.items():
         parser.add_argument(
@@ -77,14 +77,15 @@ def validate_h2p_hint_config(args):
                 option = "--h2p-hint-" + name.replace("_", "-")
                 return f"--ideal-hint-ibp does not accept changing {option}"
         return None
-    if values["cam_entries"] > 20:
+    if values["cam_entries"] != 16:
         return (
-            "Hint CAM capacity cannot exceed the 20-candidate profiling limit"
+            "Finite v3 Hint requires exactly 16 CAM entries"
         )
     entries, ways = values["context_entries"], values["ways"]
     sets = entries // ways
-    if entries % ways or not sets or sets & (sets - 1) or sets >= 1 << 28:
-        return "Hint context entries / ways must be a power of two below 2^28"
+    if (entries, ways, values["slot_entries"],
+            values["conf_queue_depth"]) != (4096, 2, 32, 32):
+        return "Finite v3 Hint requires 4096 Context, two ways, 32 Slots and a 32-entry confidence FIFO"
     return None
 
 
@@ -101,4 +102,6 @@ def h2p_hint_params(args):
             for name, (param, default) in GEOMETRY.items()
         }
     )
+    if getattr(args, "ideal_hint_ibp", False) and params["hintConfQueueDepth"] == 32:
+        params["hintConfQueueDepth"] = 8
     return params

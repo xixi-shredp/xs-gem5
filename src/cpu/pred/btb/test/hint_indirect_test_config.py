@@ -8,12 +8,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--metadata", default="")
 parser.add_argument("--candidates", default="")
 parser.add_argument("--ideal-hint-ibp", action="store_true")
+parser.add_argument("--vectors", default="../manifest/hint-v3-vectors.json")
 parser.add_argument("--range-port-reuse", action="store_true")
 args = parser.parse_args()
 root = Root(full_system=False)
 root.test = HintIndirectTest(
     metadata=args.metadata,
     candidates=args.candidates,
+    vectors=args.vectors,
     ideal=args.ideal_hint_ibp,
     range_port_reuse=args.range_port_reuse,
 )

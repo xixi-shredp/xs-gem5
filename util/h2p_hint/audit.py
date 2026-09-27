@@ -1,6 +1,7 @@
 """Audit simulation evidence without running or repairing an experiment."""
 
 import importlib.util
+import gzip
 import json
 import math
 from pathlib import Path
@@ -73,10 +74,10 @@ def compare_observer(baseline, observed, check_windows=False):
     }
 
 
-def validate_hint_stats(data, total_misses, mode, candidates, ideal=False):
+def validate_hint_stats(data, total_misses, mode, candidates, ideal=False, finite_v3=False):
     if (
         data.get("format") != "h2p-hint-stats"
-        or data.get("version") != (3 if ideal else 2)
+        or data.get("version") != (3 if ideal or finite_v3 else 2)
         or data.get("mode") != mode
     ):
         raise ValueError("invalid Hint statistics identity")
@@ -121,25 +122,88 @@ def validate_hint_stats(data, total_misses, mode, candidates, ideal=False):
     ):
         if type(queue.get(name, 0)) is not int or queue.get(name, 0) < 0:
             raise ValueError("invalid confidence queue counter")
-    if (
-        queue.get("carried_in", 0) + queue["enqueued"]
-        != queue["applied"] + queue["pending"]
-    ):
+    if finite_v3:
+        for name in ("history_window_stalls", "meta_queue_stalls", "lhr_stalls"):
+            if type(queue.get(name)) is not int or queue[name] < 0:
+                raise ValueError(f"invalid measured Hint enqueue stall count {name}")
+        if (queue.get("carried_in", 0) + queue["enqueued"] !=
+                queue["applied"] + queue["pending"] + queue.get("canceled", 0)):
+            raise ValueError("finite-v3 confidence queue conservation failed")
+    elif (queue.get("carried_in", 0) + queue["enqueued"] !=
+          queue["applied"] + queue["pending"]):
         raise ValueError("confidence queue conservation failed")
-    if queue["enqueued"] + queue["dropped"] != data["global"]["tag_hits"]:
+    if not finite_v3 and queue["enqueued"] + queue["dropped"] != data["global"]["tag_hits"]:
         raise ValueError(
             "not every committed tag hit scored or dropped exactly one update"
         )
     return data
 
 
-def validate_occupancy(data, mode, metadata=None, sample_cycles=None):
+def validate_replay_trace(path, stats):
+    """Reconcile each dynamic target triple with per-PC replay counters."""
+    counters = {}
+    previous_seq, previous_cycle = -1, -1
+    with gzip.open(path, "rt") as stream:
+        header = json.loads(next(stream))
+        if header != {"kind": "header", "format": "h2p-hint-replay",
+                      "version": 3, "storage": "finite"}:
+            raise ValueError("invalid finite-v3 replay trace header")
+        for line in stream:
+            row = json.loads(line)
+            if row.get("kind") != "branch":
+                raise ValueError("replay trace contains a non-branch row")
+            pc, actual = address(row["pc"]), address(row["actual"])
+            if (type(row["seq"]) is not int or row["seq"] <= previous_seq or
+                    type(row["commit_cycle"]) is not int or
+                    row["commit_cycle"] < previous_cycle):
+                raise ValueError("replay trace retirement order differs")
+            previous_seq, previous_cycle = row["seq"], row["commit_cycle"]
+            baseline = int(row["baseline_target"], 16)
+            final = int(row["final_target"], 16)
+            if not 0 <= baseline <= (1 << 64) - 1 or not 0 <= final <= (1 << 64) - 1:
+                raise ValueError("replay target is outside unsigned 64-bit range")
+            before = not row["baseline_valid"] or baseline != actual
+            after = not row["final_valid"] or final != actual
+            if (row["corrected"] is not (before and not after) or
+                    row["harmed"] is not (not before and after)):
+                raise ValueError("replay correction/harm differs from target triple")
+            if row["tag_hit"] != (row["hint_target"] is not None):
+                raise ValueError("replay tag hit lacks a shadow target")
+            if row["override"] and (not row["tag_hit"] or row["confidence"] == 0):
+                raise ValueError("replay override lacks an enabled Hint target")
+            if row["tag_hit"] and (type(row["confidence"]) is not int or
+                    not 0 <= row["confidence"] <= 3):
+                raise ValueError("replay confidence is out of range")
+            count = counters.setdefault(pc, {name: 0 for name in empty_counters()})
+            count["executions"] += 1
+            count["baseline_misses"] += before
+            count["final_misses"] += after
+            count["corrected"] += row["corrected"]
+            count["harmed"] += row["harmed"]
+            count["eligible"] += row["eligible"]
+            count["tag_hits"] += row["tag_hit"]
+            count["conf_enabled"] += bool(row["tag_hit"] and row["confidence"])
+            count["overrides"] += row["override"]
+    for stat in stats["pcs"]:
+        pc = address(stat["pc"])
+        actual = counters.get(pc, {name: 0 for name in empty_counters()})
+        if any(actual[name] != stat[name] for name in empty_counters()):
+            raise ValueError(f"replay trace and per-PC counters differ at {pc:#x}")
+    return {"records": sum(row["executions"] for row in counters.values()),
+            "pcs": len(counters)}
+
+
+def validate_occupancy(data, mode, metadata=None, sample_cycles=None, finite_v3=False):
     """Frozen valid rows occupy storage even while confidence is zero."""
     if mode == "replay":
-        validate_metadata(metadata)
+        if finite_v3:
+            from .finite_v3 import contract as v3_contract
+            v3_contract.pack_image(metadata)
+        else:
+            validate_metadata(metadata)
         residents = {
-            "cam": sum(row["valid"] for row in metadata["cam"]),
-            "context": sum(row["valid"] for row in metadata["entries"]),
+            "cam": sum(row.get("valid", True) for row in metadata["cam"]),
+            "context": sum(row.get("valid", True) for row in metadata["entries"]),
             "slots": len(metadata["slots"]),
         }
     else:
@@ -191,6 +255,7 @@ def audit_run(
     ideal=False,
     metadata=None,
     check_occupancy=False,
+    finite_v3=False,
 ):
     output = Path(output)
     checker = legacy()
@@ -209,6 +274,7 @@ def audit_run(
                 mode,
                 candidates,
                 ideal,
+                finite_v3,
             )
             for row in stats["pcs"]:
                 if (
@@ -233,6 +299,8 @@ def audit_run(
             and not (output / "hint-profile.jsonl.gz").is_file()
         ):
             raise ValueError("missing collect profile")
+        if mode == "replay" and finite_v3:
+            validate_replay_trace(output / "hint-replay.jsonl.gz", stats)
         config = (output / "config.ini").read_text()
         if f"hintMode={mode}\n" not in config:
             raise ValueError("Hint configuration mode mismatch")
@@ -283,7 +351,7 @@ def audit_run(
                 phases["measure_complete"]["tick"] // period
                 - phases["warmup_complete"]["tick"] // period
             )
-            validate_occupancy(stats, mode, metadata, cycles)
+            validate_occupancy(stats, mode, metadata, cycles, finite_v3)
             if stats.get("storage") != ("unlimited" if ideal else "finite"):
                 raise ValueError("Hint stats storage flag differs")
         except (OSError, KeyError, TypeError, ValueError) as error:
@@ -293,6 +361,16 @@ def audit_run(
         if (output / "stats.txt").exists()
         else {}
     )
+    if finite_v3 and mode == "replay" and stats is not None:
+        for field, key in (("history_window_stalls", "historyWindowStalls"),
+                           ("meta_queue_stalls", "metaQueueStalls"),
+                           ("lhr_stalls", "lhrStalls")):
+            # stats_values excludes the h2pHint group; read these three
+            # counters directly to cross-check the JSON measurement dump.
+            line = re.search(r"^system\.cpu\.branchPred\.h2pHint\." + key +
+                             r"\s+(\d+)\s", (output / "stats.txt").read_text(), re.M)
+            if line is None or int(line.group(1)) != stats["queue"][field]:
+                errors.append(f"Hint {field} differs between stats.txt and JSON")
     return {
         "result": "pass" if not errors else "fail",
         "errors": errors,

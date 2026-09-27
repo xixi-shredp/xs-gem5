@@ -84,7 +84,7 @@ testIdealHistory()
     for (size_t index = 0; index < pcs.size(); ++index) {
         require(history.local(pcs[index]) == expected_local[index],
                 "unlimited local update isolation");
-        require(empty.history.local(pcs[index]) == 0,
+        require(empty.history->local(pcs[index]) == 0,
                 "older zero-root snapshot is immutable");
     }
     require(history.local(0x3000) == 0,
@@ -96,19 +96,19 @@ testIdealHistory()
     require(populated.contextsFor(pcs.back()) == saved_context &&
             history.local(pcs.back()) == 0x55,
             "new updates cannot mutate a populated prediction snapshot");
-    history = populated.history;
+    history = *populated.history;
     require(history.local(pcs.back()) == expected_local.back(),
             "rollback restores an older shared root");
     history.update(pcs.front(), 0x8006, true, false, false, true);
-    require(populated.history.local(pcs.front()) == expected_local.front(),
+    require(populated.history->local(pcs.front()) == expected_local.front(),
             "divergent update after rollback leaves original root intact");
-    history = empty.history;
+    history = *empty.history;
     require(history.local(pcs.front()) == 0 && history.local(pcs.back()) == 0,
             "rollback can recover an empty root after populated roots");
 
     // Verify exact event eviction using a direct age-vector oracle, including
     // calls that also return and therefore do not enter target histories.
-    history = populated.history;
+    history = *populated.history;
     const auto old_global = history.globalFold();
     std::vector<uint64_t> events;
     for (unsigned event = 0; event < 130; ++event) {
@@ -143,7 +143,7 @@ testIdealHistory()
 
     // A >20-PC snapshot recovers the same retired prefix for memory, control,
     // and trap squashes; wrong-path events and equal-PC retired events drop.
-    const auto base = populated.history;
+    const auto base = *populated.history;
     BranchInfo call;
     call.pc = pcs[33];
     call.target = 0x9002;
@@ -193,7 +193,7 @@ testIdealHistory()
     expected.update(ret.pc, ret.target, true, false, true, true);
     expected.update(jump.pc, jump.target, true, false, false, true);
     compare(recovered, expected, pcs);
-    compare(target.hintSnapshot->history, base, pcs);
+    compare(*target.hintSnapshot->history, base, pcs);
 
     // Removing the flag must retain the finite array semantics. Compare the
     // full encoding and every mask after mixed branch events.

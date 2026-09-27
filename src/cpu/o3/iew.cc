@@ -1594,6 +1594,11 @@ IEW::SquashCheckAfterExe(DynInstPtr inst)
         TimeStruct::IewComm::ResolvedCFIEntry entry;
         entry.ftqId = inst->getFtqId();
         entry.pc = inst->getPC();
+        const auto &resolved_pc = inst->pcState().as<RiscvISA::PCState>();
+        const bool taken = resolved_pc.branching() || inst->isUncondCtrl();
+        cpu->notifyHintBranchResolve(entry.ftqId, entry.pc,
+                                     resolved_pc.npc(), inst->seqNum,
+                                     taken, tid);
         resolved_cfis.push_back(entry);
     }
 

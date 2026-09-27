@@ -416,6 +416,10 @@ class CPU : public BaseCPU
     void finishInstructionCommit(const DynInstPtr &inst);
     bool instructionMeasurementFinished() const
     { return instructionPhase == InstructionPhase::Finished; }
+    bool instructionMeasurementActive() const
+    { return instructionPhase == InstructionPhase::Measure; }
+    void notifyHintBranchResolve(uint64_t ftq_id, Addr pc, Addr target,
+                                 uint64_t sequence, bool taken, ThreadID tid);
 
     void instDone(ThreadID tid, const DynInstPtr &inst);
 

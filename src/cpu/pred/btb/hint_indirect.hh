@@ -21,6 +21,7 @@ namespace branch_prediction::btb_pred
 {
 
 struct HintSnapshot;
+class HintFiniteHistory;
 
 // This object follows one prediction into the FTQ. The physical SRAM entry
 // and target are snapshots, not a request to repeat a lookup at retirement.
@@ -33,6 +34,7 @@ struct HintQuery
     bool hasCandidate = false;
     Addr pc = 0;
     unsigned mask = 0;
+    int camIndex = -1;
     uint32_t key = 0;
     unsigned set = 0;
     unsigned way = 0;
@@ -50,6 +52,8 @@ struct HintQuery
     bool btbIdentified = false;
     bool eligible = false;
     bool overridden = false;
+    uint64_t ftqId = 0;
+    bool resolved = false;
 };
 
 class HintIndirect
@@ -93,12 +97,19 @@ class HintIndirect
         uint64_t carriedIn = 0;
         uint64_t zeroTransitions = 0;
         uint64_t recoveries = 0;
+        uint64_t canceled = 0;
+        uint64_t reverted = 0;
         uint64_t maxOccupancy = 0;
         uint64_t occupancySamples = 0;
         uint64_t occupancySum = 0;
+        // Failed prediction-enqueue attempts in the measured interval.
+        uint64_t historyWindowStalls = 0;
+        uint64_t metaQueueStalls = 0;
+        uint64_t lhrStalls = 0;
     };
 
     enum class Table { Cam, Context, Slots };
+    enum class StallReason { None, HistoryWindow, MetaQueue, Lhr };
 
     struct Occupancy
     {
@@ -116,6 +127,7 @@ class HintIndirect
     bool isCollect() const { return config.mode == "collect"; }
     bool isReplay() const { return config.mode == "replay"; }
     bool isIdeal() const { return config.ideal; }
+    bool isFiniteV3() const { return enabled() && !config.ideal; }
     const std::vector<Addr> &historyPCs() const { return historyPcs; }
 
     // Ordered [start, end) bounds. Empty or wrapped bounds consume the normal
@@ -136,6 +148,25 @@ class HintIndirect
         Addr pc, Addr actual, bool final_valid, Addr final_target,
         uint64_t cycle);
 
+    bool canReserve(Addr pc) const;
+    StallReason reserveBlockReason(Addr pc) const;
+    void recordStall(StallReason reason);
+    void reserve(const std::shared_ptr<HintQuery> &query, Addr pc,
+                 uint8_t local_phase);
+    void bind(const std::shared_ptr<HintQuery> &query, uint64_t ftq_id,
+              unsigned ftq_capacity = 64);
+    void resolve(const std::shared_ptr<HintQuery> &query, Addr pc,
+                 Addr actual, uint64_t sequence, uint64_t cycle,
+                 std::optional<bool> measure_at_resolve = std::nullopt,
+                 bool actual_taken = true);
+    void resolveByFTQId(uint64_t ftq_id, Addr pc, Addr actual,
+                        uint64_t sequence, uint64_t cycle,
+                        bool measure_at_resolve, bool actual_taken = true);
+    void redirect(HintFiniteHistory &history, uint64_t ftq_id, Addr squash_pc,
+                  bool actual_h2p, Addr actual, uint64_t sequence,
+                  uint64_t cycle);
+    void commitTarget(uint64_t ftq_id);
+
     void tick(uint64_t cycle);
     void setMeasurementActive(bool active);
     void setMeasurementActive(bool active, uint64_t cycle);
@@ -145,9 +176,13 @@ class HintIndirect
 
     const Counts &totals() const { return global; }
     const QueueCounts &queueCounts() const { return queueStats; }
-    size_t pendingUpdates() const { return updates.size(); }
+    size_t pendingUpdates() const {
+        return config.ideal ? updates.size() : finiteUpdates.size();
+    }
+    size_t inFlightHints() const { return finiteMeta.size(); }
     unsigned confidenceAt(unsigned set, unsigned way) const;
     unsigned confidenceAtEntry(size_t entry_id) const;
+    int localIndex(Addr pc) const;
     Occupancy occupancy(Table table) const;
 
   private:
@@ -172,6 +207,28 @@ class HintIndirect
         uint64_t commitCycle = 0;
         uint64_t readyCycle = 0;
     };
+    struct FiniteMeta
+    {
+        std::shared_ptr<HintQuery> query;
+        Addr branchPC = 0;
+        uint64_t ftqId = 0;
+        unsigned ftqIndex = 0;
+        uint64_t ftqGeneration = 0;
+        uint64_t ordinal = 0;
+        int localIndex = -1;
+        uint8_t localPhase = 15;
+        bool resolved = false;
+        bool committed = false;
+        bool scoreEligible = false;
+        bool enqueued = false;
+        bool applied = false;
+        bool dropped = false;
+        uint64_t sequence = 0;
+        uint64_t resolveCycle = 0;
+        uint64_t readyCycle = 0;
+        Addr actual = 0;
+        unsigned oldConf = 0;
+    };
     struct QueryCounts
     {
         uint64_t lookups = 0;
@@ -192,6 +249,7 @@ class HintIndirect
 
     void loadCandidates();
     void loadMetadata();
+    void loadFiniteV3Metadata();
     void openOutputs();
     void writeHeader();
     void writeProfile(const std::shared_ptr<HintQuery> &query,
@@ -202,6 +260,11 @@ class HintIndirect
     void writeStats();
     void enqueue(const std::shared_ptr<HintQuery> &query,
         uint64_t sequence, Addr actual, uint64_t cycle);
+    void drainFiniteResolved();
+    void releaseCommittedFinite();
+    void tickFinite(uint64_t cycle);
+    unsigned forwardedConfidence(size_t entry_id) const;
+    void undoFinite(const std::shared_ptr<FiniteMeta> &record);
     std::string outputName(const std::string &name) const;
 
     const Config config;
@@ -218,6 +281,11 @@ class HintIndirect
     uint64_t occupancyCycles = 0;
     std::optional<uint64_t> occupancyCycle;
     std::deque<Update> updates;
+    std::deque<std::shared_ptr<FiniteMeta>> finiteMeta;
+    std::deque<std::shared_ptr<FiniteMeta>> finiteScoreOrder;
+    std::deque<std::shared_ptr<FiniteMeta>> finiteUpdates;
+    uint64_t nextFiniteOrdinal = 1;
+    std::optional<uint64_t> finiteServiceThrough;
     Counts global;
     std::map<Addr, Counts> perPc;
     QueueCounts queueStats;

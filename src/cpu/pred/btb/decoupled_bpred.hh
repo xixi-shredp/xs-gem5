@@ -150,6 +150,7 @@ class DecoupledBPUWithBTB : public BPredUnit
         FullBTBPrediction finalPred;      ///< Final prediction
         FullBTBPrediction hintBaselineS3;
         HintHistory hintHistory;
+        HintFiniteHistory hintFiniteHistory;
         PairTAGE::TrainPacket finalTrainPacket;
         PairTAGE::TrainPacket twoTakenTrainPacket;
         std::vector<BTBEntry> twoTakenBTBEntries;
@@ -782,7 +783,8 @@ class DecoupledBPUWithBTB : public BPredUnit
                       bool is_conditional = false,
                       bool actually_taken = false,
                       const StaticInstPtr &static_inst = nullptr,
-                      unsigned control_inst_size = 0);
+                      unsigned control_inst_size = 0,
+                      uint64_t sequence = 0);
 
     void resetPC(Addr new_pc);
     void resetPC(ThreadID tid, Addr new_pc);
@@ -790,7 +792,8 @@ class DecoupledBPUWithBTB : public BPredUnit
     // Helper functions for update
     bool resolveUpdate(unsigned &target_id, ThreadID tid);
     void prepareResolveUpdateEntries(unsigned &target_id, ThreadID tid);
-    void markCFIResolved(unsigned &target, uint64_t resolvedInstPC, ThreadID tid);
+    void markCFIResolved(unsigned &target, uint64_t resolvedInstPC,
+                         ThreadID tid);
     void updatePredictorComponents(FetchTarget &target);
     void updateStatistics(const FetchTarget &target);
     void notifyResolveSuccess(ThreadID tid);
@@ -874,6 +877,10 @@ class DecoupledBPUWithBTB : public BPredUnit
     void commitBranch(const DynInstPtr &inst, bool miss);
 
     void h2pSetMeasurementActive(bool active);
+
+    void h2pResolveAtExecute(FetchTargetId target_id, Addr pc,
+                             Addr actual_target, uint64_t sequence,
+                             bool taken, bool measure_active, ThreadID tid);
 
     void h2pNotifyCommit(uint64_t measured_units)
     {

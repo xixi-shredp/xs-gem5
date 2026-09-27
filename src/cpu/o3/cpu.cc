@@ -1448,6 +1448,18 @@ CPU::initInstructionPhases()
 }
 
 void
+CPU::notifyHintBranchResolve(uint64_t ftq_id, Addr pc, Addr target,
+                             uint64_t sequence, bool taken, ThreadID tid)
+{
+    auto *bpu = dynamic_cast<branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
+        fetch.getBp());
+    if (bpu) {
+        bpu->h2pResolveAtExecute(ftq_id, pc, target, sequence, taken,
+                                 instructionMeasurementActive(), tid);
+    }
+}
+
+void
 CPU::finishInstructionCommit(const DynInstPtr &inst)
 {
     auto *bpu = dynamic_cast<branch_prediction::btb_pred::DecoupledBPUWithBTB *>(

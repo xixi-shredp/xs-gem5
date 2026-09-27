@@ -1252,7 +1252,7 @@ class DecoupledBPUWithBTB(BranchPredictor):
     hintContextEntries = Param.Unsigned(4096, "Total Hint context SRAM entries")
     hintWays = Param.Unsigned(2, "Hint context SRAM associativity")
     hintSlotEntries = Param.Unsigned(32, "Shared Hint target slots")
-    hintConfQueueDepth = Param.Unsigned(8, "Hint confidence write queue depth")
+    hintConfQueueDepth = Param.Unsigned(32, "Hint confidence write queue depth")
     smtFTQMode = Param.SMTFTQMode('Independent',
                                   "SMT FTQ mode: per-thread independent or shared quota")
     smtFTQPolicy = Param.SMTFTQPolicy('Partitioned',

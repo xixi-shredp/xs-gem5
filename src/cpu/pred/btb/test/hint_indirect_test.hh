@@ -12,12 +12,14 @@ class HintIndirectTest : public SimObject
   public:
     explicit HintIndirectTest(const HintIndirectTestParams &p)
         : SimObject(p), metadata(p.metadata), candidates(p.candidates),
-          ideal(p.ideal), rangePortReuse(p.range_port_reuse) {}
+          vectors(p.vectors), ideal(p.ideal),
+          rangePortReuse(p.range_port_reuse) {}
     void startup() override;
 
   private:
     const std::string metadata;
     const std::string candidates;
+    const std::string vectors;
     const bool ideal;
     const bool rangePortReuse;
 };

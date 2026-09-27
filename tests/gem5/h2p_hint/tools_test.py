@@ -11,7 +11,9 @@ from pathlib import Path
 import random
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -25,7 +27,10 @@ from h2p_hint.model import (
     load_candidates, load_metadata, replay_reference, rotl28, validate_metadata, write_json,
 )
 from h2p_hint.profile import Cache, make_cache
-from h2p_hint.runner import HEAVY, build_command, load_workloads, mask_jobs, parse_args, validate_runtime_gate
+from h2p_hint.runner import (
+    HEAVY, build_command, final_report, image_path, load_workloads, mask_jobs,
+    parse_args, planned_run_counts, run_path, validate_runtime_gate,
+)
 
 
 def sample(seq, *, pc=0x20, actual=0x80, baseline=0x40, query=None,
@@ -433,10 +438,80 @@ class PipelineToolsTests(unittest.TestCase):
         jobs = mask_jobs(tasks)
         self.assertEqual(len(jobs), 224)
         self.assertTrue(all(len(job["masks"]) <= 16 for job in jobs))
+        self.assertEqual(sum(planned_run_counts(tasks, jobs).values()), 239)
+        half_sweep = [job for job in jobs if job["mask"] < 16]
+        self.assertEqual(sum(planned_run_counts(tasks, half_sweep).values()), 127)
         for task in tasks:
             for pc in task["candidates"]["pcs"]:
                 masks = [job["mask"] for job in jobs if job["task"] == task and address(pc) in job["masks"]]
                 self.assertEqual(masks, list(range(32)))
+
+    def test_runner_accepts_both_instruction_windows(self):
+        base = ["--gem5", "gem5.opt", "--config", "kmhv3.py",
+                "--workload-list", "heavy.json", "--output-root", "out",
+                "--source-manifest", "source.json", "--inputs-root", "inputs",
+                "--dry-run"]
+        self.assertEqual(
+            (parse_args(base).warmup_insts, parse_args(base).measure_insts),
+            (100_000_000, 50_000_000),
+        )
+        short = base + ["--warmup-insts", "1000000", "--measure-insts", "1000000"]
+        self.assertEqual(parse_args(short).h2p_stat_interval, 1_000_000)
+        for invalid in (
+            base + ["--warmup-insts", "1000000"],
+            short + ["--h2p-stat-interval", "500000"],
+        ):
+            with patch("sys.stderr"), self.assertRaises(SystemExit) as error:
+                parse_args(invalid)
+            self.assertEqual(error.exception.code, 2)
+
+    def test_final_report_uses_planned_count_and_short_window(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            task = {"bench": "scimark_fft", "scale": "test", "checkpoint_id": "26"}
+            tasks = [task]
+            masks = [{"stage": "masks", "task": task, "group": 0,
+                      "mask": mask, "masks": {0x20: mask}} for mask in (0, 1)]
+            args = SimpleNamespace(output_root=root, warmup_insts=1_000_000,
+                measure_insts=1_000_000, h2p_stat_interval=1_000_000,
+                run_counts=planned_run_counts(tasks, masks))
+            for stage, misses in (("baseline", 1), ("joint", 0)):
+                output = run_path(args, task, stage)
+                (output / "h2p-indirec").mkdir(parents=True)
+                (output / "h2p-indirec" / "0.txt").write_text("")
+                (output / "status.json").write_text(json.dumps({
+                    "result": "pass", "final_misses": misses, "ipc": 1.0,
+                    "hint": {"queue": {}}, "window_count": 1,
+                }))
+            joint_image = image_path(args, task, "joint")
+            joint_image.mkdir(parents=True)
+            (joint_image / "metadata.txt").write_text(json.dumps({
+                "cam": [], "slots": [], "entries": [],
+            }))
+            for job in masks:
+                output = run_path(args, task, "masks", job["group"], job["mask"])
+                output.mkdir(parents=True)
+                (output / "status.json").write_text(json.dumps({
+                    "result": "pass", "hint": {"pcs": []}, "ipc": 1.0,
+                    "window_count": 1,
+                }))
+                image_dir = image_path(args, task, "masks", job["group"], job["mask"])
+                image_dir.mkdir(parents=True)
+                (image_dir / "reference.json").write_text('{"pcs": []}')
+            with patch("h2p_hint.runner.mask_jobs", return_value=masks):
+                with self.assertRaisesRegex(ValueError, "5 successful full runs"):
+                    final_report(args, tasks)
+                collect = run_path(args, task, "collect")
+                collect.mkdir(parents=True)
+                (collect / "status.json").write_text(json.dumps({
+                    "result": "pass", "window_count": 1,
+                }))
+                summary = final_report(args, tasks)
+            self.assertEqual(summary["full_runs"], 5)
+            report = (root / "report.md").read_text()
+            self.assertIn("1M warm-up，reset 后 1M measure", report)
+            self.assertIn("5 次完整运行", report)
+            self.assertIn("2-mask 真实重放", report)
 
     def test_host_root_mapping_and_default_test_scale(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run the finite Hint heavy-workload experiment; see --help."""
+"""Run the audited finite-v3 Hint heavy-workload experiment; see --help."""
 
-from h2p_hint.runner import main
+from h2p_hint.finite_runner import main
 
 
 if __name__ == "__main__":
