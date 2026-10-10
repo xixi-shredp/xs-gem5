@@ -216,7 +216,7 @@ class HintIndirect
         uint64_t ftqGeneration = 0;
         uint64_t ordinal = 0;
         int localIndex = -1;
-        uint8_t localPhase = 15;
+        uint8_t localPhase = 31;
         bool resolved = false;
         bool committed = false;
         bool scoreEligible = false;

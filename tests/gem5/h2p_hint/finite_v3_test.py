@@ -20,8 +20,8 @@ class FiniteV3LoaderTest(unittest.TestCase):
         source["workload_id"] = "hint-self-test"
         metadata = {
             "format": "h2p-hint",
-            "version": 3,
-            "storage": "finite",
+            "version": 5,
+            "storage": "finite", "context_encoding": finite_v3.contract.CONTEXT_ENCODING,
             "hash_version": finite_v3.contract.HASH_VERSION,
             "mask_order": finite_v3.contract.MASK_ORDER,
             "history": finite_v3.contract.HISTORY,
@@ -33,7 +33,7 @@ class FiniteV3LoaderTest(unittest.TestCase):
             "source": source,
         }
         expected = json.loads(
-            (finite_v3._CONTRACT_PATH.parent / "hint-v3-vectors.json")
+            (finite_v3._CONTRACT_PATH.parent / "hint-context-v5-vectors.json")
             .read_text()
         )["sample_image"]
         with tempfile.TemporaryDirectory() as directory:
@@ -57,8 +57,8 @@ class FiniteV3LoaderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "candidate.json"
             path.write_text(json.dumps({
-                "format": "h2p-hint-candidates", "version": 3,
-                "storage": "finite", "source": {},
+                "format": "h2p-hint-candidates", "version": 5,
+                "storage": "finite", "context_encoding": finite_v3.contract.CONTEXT_ENCODING, "source": {},
                 "pcs": ["0x1000", "0x1002"],
             }))
             self.assertEqual(finite_v3.load_candidates(path),

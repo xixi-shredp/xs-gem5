@@ -13,7 +13,7 @@ class HintIndirectTest : public SimObject
     explicit HintIndirectTest(const HintIndirectTestParams &p)
         : SimObject(p), metadata(p.metadata), candidates(p.candidates),
           vectors(p.vectors), ideal(p.ideal),
-          rangePortReuse(p.range_port_reuse) {}
+          rangePortReuse(p.range_port_reuse), contextFork(p.context_fork) {}
     void startup() override;
 
   private:
@@ -22,6 +22,7 @@ class HintIndirectTest : public SimObject
     const std::string vectors;
     const bool ideal;
     const bool rangePortReuse;
+    const bool contextFork;
 };
 
 } // namespace gem5::branch_prediction::btb_pred

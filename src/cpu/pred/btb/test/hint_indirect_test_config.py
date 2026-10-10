@@ -1,5 +1,6 @@
 """Run with the fully built gem5.opt; this is not a gtest binary."""
 import argparse
+from pathlib import Path
 
 import m5
 from m5.objects import HintIndirectTest, Root
@@ -8,7 +9,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--metadata", default="")
 parser.add_argument("--candidates", default="")
 parser.add_argument("--ideal-hint-ibp", action="store_true")
-parser.add_argument("--vectors", default="../manifest/hint-v3-vectors.json")
+parser.add_argument("--vectors", default=str(Path(__file__).resolve().parents[5] / "util/h2p_hint/hint-context-v5-vectors.json"))
 parser.add_argument("--range-port-reuse", action="store_true")
 args = parser.parse_args()
 root = Root(full_system=False)

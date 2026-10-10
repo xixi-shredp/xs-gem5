@@ -45,7 +45,17 @@ def main():
     )
     metadata_case("version", lambda data: data.update(version=1))
     metadata_case("hash_version", lambda data: data.update(hash_version=1))
-    metadata_case("ghr_length", lambda data: data.update(ghr_bits=971))
+    if args.ideal_hint_ibp:
+        metadata_case("ghr_length", lambda data: data.update(ghr_bits=971))
+    else:
+        metadata_case("legacy_v3", lambda data: data.update(version=3, hash_version=3))
+        metadata_case("missing_encoding", lambda data: data.pop("context_encoding"))
+        metadata_case("wrong_encoding", lambda data: data.update(context_encoding="rtl-v4"))
+        metadata_case("old_ith64", lambda data: data["history"].update(ith_use_bits=64))
+        metadata_case("old_lhr16_physical", lambda data: data["history"].update(lhr_bits=16))
+        metadata_case("old_lhr8_read", lambda data: data["history"].update(lhr_use_bits=8))
+        candidate_case("old_candidate_v3", lambda data: data.update(version=3))
+        candidate_case("missing_candidate_encoding", lambda data: data.pop("context_encoding"))
     metadata_case("mask_order", lambda data: data["mask_order"].reverse())
     metadata_case(
         "history_length", lambda data: data["history"].update(call_pcs=65)

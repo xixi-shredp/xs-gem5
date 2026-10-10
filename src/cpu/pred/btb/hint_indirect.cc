@@ -269,10 +269,11 @@ const char *MaskOrderJson = "[\"GHR\",\"GITHR\",\"LITHR\",\"Call\",\"Return\"]";
 const char *FiniteReferenceJson =
     "{\"cam_entries\":16,\"context_entries\":4096,\"ways\":2,"
     "\"slot_entries\":32}";
+const char *ForkContextEncoding = "xs-gem5-fork-ith128-path128-lhr16-v1";
 const char *V3HistoryJson =
-    "{\"ith_entries\":128,\"ith_use_bits\":64,\"lhr_entries\":16,"
-    "\"lhr_bits\":16,\"lhr_use_bits\":8,\"call_entries\":128,"
-    "\"ret_entries\":128,\"path_use_bits\":64,\"target_shift\":1}";
+    "{\"ith_entries\":128,\"ith_use_bits\":128,\"lhr_entries\":16,"
+    "\"lhr_bits\":32,\"lhr_use_bits\":16,\"call_entries\":128,"
+    "\"ret_entries\":128,\"path_use_bits\":128,\"target_shift\":1}";
 const char *V3MaskOrderJson = "[\"ITH\",\"LHR\",\"Call\",\"Ret\"]";
 
 void
@@ -447,7 +448,7 @@ HintIndirect::HintIndirect(const Config &config, statistics::Group *parent)
     fatal_if(!config.ideal && (config.camEntries != 16 ||
              config.contextEntries != 4096 || config.ways != 2 ||
              config.slotEntries != 32 || config.confQueueDepth != 32),
-             "Finite v3 Hint requires 16 CAM, 4096 Context, two ways, "
+             "Finite fork v5 Hint requires 16 CAM, 4096 Context, two ways, "
              "32 Slots and 32 confidence FIFO entries");
     fatal_if(config.ideal && (config.camEntries != 16 ||
              config.contextEntries != 4096 || config.ways != 2 ||
@@ -510,11 +511,14 @@ HintIndirect::loadCandidates()
 {
     const auto tree = readJson(config.candidatePath);
     require(stringField(tree, "format") == "h2p-hint-candidates" &&
-            integer(tree, "version") == 3,
+            integer(tree, "version") == (config.ideal ? 3 : 5),
             "candidate format/version does not match Hint storage mode");
     require(stringField(tree, "storage") ==
             (config.ideal ? "unlimited" : "finite"),
             "candidate storage does not match Hint mode");
+    if (!config.ideal)
+        require(stringField(tree, "context_encoding") == ForkContextEncoding,
+                "candidate fork Context encoding mismatch");
     checkObject(tree.get_child("source"), "source");
     std::set<Addr> seen;
     for (const auto &node : arrayField(tree, "pcs")) {
@@ -524,7 +528,7 @@ HintIndirect::loadCandidates()
         candidates.push_back(pc);
     }
     require(config.ideal || candidates.size() <= 16,
-            "finite v3 Hint collect supports at most 16 CAM PCs");
+            "finite fork v5 Hint collect supports at most 16 CAM PCs");
     if (config.ideal) {
         candidateIndex.assign(seen.begin(), seen.end());
     }
@@ -686,27 +690,28 @@ HintIndirect::loadFiniteV3Metadata()
 {
     const auto tree = readJson(config.metadataPath);
     require(stringField(tree, "format") == "h2p-hint" &&
-            integer(tree, "version") == 3 &&
+            integer(tree, "version") == 5 &&
             stringField(tree, "storage") == "finite" &&
-            integer(tree, "hash_version") == 3,
-            "finite Hint requires metadata/hash/storage version 3");
+            integer(tree, "hash_version") == 5 &&
+            stringField(tree, "context_encoding") == ForkContextEncoding,
+            "finite Hint requires fork metadata/hash/storage version 5 and encoding");
     std::vector<std::string> order;
     for (const auto &node : arrayField(tree, "mask_order"))
         order.push_back(stringValue(node.second));
     require(order == std::vector<std::string>({"ITH", "LHR", "Call", "Ret"}),
-            "finite v3 mask bit order mismatch");
+            "finite fork v5 mask bit order mismatch");
     const auto &history = tree.get_child("history");
     checkObject(history, "history");
     const std::array<std::pair<const char *, unsigned>, 9> history_fields = {{
-        {"ith_entries", 128}, {"ith_use_bits", 64},
-        {"lhr_entries", 16}, {"lhr_bits", 16}, {"lhr_use_bits", 8},
+        {"ith_entries", 128}, {"ith_use_bits", 128},
+        {"lhr_entries", 16}, {"lhr_bits", 32}, {"lhr_use_bits", 16},
         {"call_entries", 128}, {"ret_entries", 128},
-        {"path_use_bits", 64}, {"target_shift", 1}}};
+        {"path_use_bits", 128}, {"target_shift", 1}}};
     require(history.size() == history_fields.size(),
-            "finite v3 history field count mismatch");
+            "finite fork v5 history field count mismatch");
     for (const auto &[name, value] : history_fields)
         require(integer(history, name) == value,
-                std::string("finite v3 history mismatch: ") + name);
+                std::string("finite fork v5 history mismatch: ") + name);
     const auto &layout = tree.get_child("layout");
     checkObject(layout, "layout");
     const std::array<std::pair<const char *, unsigned>, 7> layout_fields = {{
@@ -714,24 +719,24 @@ HintIndirect::loadFiniteV3Metadata()
         {"slot_entries", 32}, {"conf_queue_depth", 32},
         {"hint_meta_entries", 16}, {"lhr_max_uncommitted", 4}}};
     require(layout.size() == layout_fields.size(),
-            "finite v3 layout field count mismatch");
+            "finite fork v5 layout field count mismatch");
     for (const auto &[name, value] : layout_fields)
         require(integer(layout, name) == value,
-                std::string("finite v3 layout mismatch: ") + name);
+                std::string("finite fork v5 layout mismatch: ") + name);
     const auto &source = tree.get_child("source");
     checkObject(source, "source");
     require(!stringField(source, "workload_id").empty(),
-            "finite v3 workload identity is empty");
+            "finite fork v5 workload identity is empty");
     const std::regex digest("[0-9a-f]{64}");
     for (const char *name : {"checkpoint_sha256", "profile_sha256",
                              "builder_sha256"})
         require(std::regex_match(stringField(source, name), digest),
-                std::string("finite v3 source digest mismatch: ") + name);
+                std::string("finite fork v5 source digest mismatch: ") + name);
 
     bool invalid_seen = false;
     Addr previous_pc = 0;
     const auto &cam_array = arrayField(tree, "cam");
-    require(cam_array.size() <= 16, "finite v3 CAM capacity exceeded");
+    require(cam_array.size() <= 16, "finite fork v5 CAM capacity exceeded");
     for (const auto &node : cam_array) {
         const auto &row = node.second;
         checkObject(row, "CAM entry");
@@ -745,24 +750,24 @@ HintIndirect::loadFiniteV3Metadata()
         const auto mask = integer(row, "mask");
         require(!invalid_seen && mask < 16 &&
                 (cam.empty() || previous_pc < pc),
-                "finite v3 CAM PCs must ascend before invalid rows");
+                "finite fork v5 CAM PCs must ascend before invalid rows");
         cam.push_back({pc, static_cast<unsigned>(mask)});
         previous_pc = pc;
     }
     std::set<Addr> seen_targets;
     const auto &slot_array = arrayField(tree, "slots");
-    require(slot_array.size() <= 32, "finite v3 Slot capacity exceeded");
+    require(slot_array.size() <= 32, "finite fork v5 Slot capacity exceeded");
     for (const auto &node : slot_array) {
         const Addr target = address(stringValue(node.second));
         require(seen_targets.insert(target).second,
-                "duplicate finite v3 Slot target");
+                "duplicate finite fork v5 Slot target");
         slots.push_back(target);
     }
     std::set<std::pair<unsigned, unsigned>> positions;
     std::set<std::pair<unsigned, uint32_t>> tags;
     const auto &context_array = arrayField(tree, "entries");
     require(context_array.size() <= 4096,
-            "finite v3 Context capacity exceeded");
+            "finite fork v5 Context capacity exceeded");
     for (const auto &node : context_array) {
         const auto &row = node.second;
         checkObject(row, "Context entry");
@@ -777,10 +782,10 @@ HintIndirect::loadFiniteV3Metadata()
         const auto conf = integer(row, "conf");
         require(set < 2048 && way < 2 && tag < (1U << 17) &&
                 slot < slots.size() && conf == 3,
-                "finite v3 Context row is out of range or has invalid target");
+                "finite fork v5 Context row is out of range or has invalid target");
         require(positions.emplace(set, way).second &&
                 tags.emplace(set, tag).second,
-                "duplicate finite v3 Context position or tag");
+                "duplicate finite fork v5 Context position or tag");
         entries[set * 2 + way] = {true, static_cast<uint32_t>(tag),
             static_cast<uint32_t>((tag << 11) | set),
             static_cast<size_t>(slot), 3};
@@ -822,7 +827,8 @@ HintIndirect::openOutputs()
         fatal_if(gzbuffer(output->profile, 1U << 20) != 0,
                  "Cannot allocate Hint replay trace buffer");
         output->writeProfile("{\"kind\":\"header\",\"format\":\"h2p-hint-replay\","
-                             "\"version\":3,\"storage\":\"finite\"}\n");
+                             "\"version\":5,\"storage\":\"finite\",\"hash_version\":5,"
+                             "\"context_encoding\":\"xs-gem5-fork-ith128-path128-lhr16-v1\"}\n");
     }
 }
 
@@ -831,13 +837,14 @@ HintIndirect::writeHeader()
 {
     std::ostringstream line;
     line << "{\"kind\":\"header\",\"format\":\"h2p-hint-profile\","
-         << "\"version\":3,\"hash_version\":"
-         << (config.ideal ? 2 : 3);
+         << "\"version\":" << (config.ideal ? 3 : 5)
+         << ",\"hash_version\":" << (config.ideal ? 2 : 5);
     if (config.ideal)
         line << ",\"ghr_bits\":970,\"mask_order\":" << MaskOrderJson
              << ",\"history\":" << HistoryJson;
     else
-        line << ",\"storage\":\"finite\",\"mask_order\":"
+        line << ",\"storage\":\"finite\",\"context_encoding\":"
+             << jsonString(ForkContextEncoding) << ",\"mask_order\":"
              << V3MaskOrderJson << ",\"history\":" << V3HistoryJson;
     if (config.ideal) {
         line << ",\"storage\":\"unlimited\",\"finite_reference\":"
@@ -950,10 +957,10 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
     }
     if (!config.ideal) {
         fatal_if(!snapshot->finite,
-                 "Finite v3 Hint query lacks physical-ring snapshot");
+                 "Finite fork v5 Hint query lacks physical-ring snapshot");
         result->camIndex = localIndex(result->pc);
         fatal_if(result->camIndex < 0,
-                 "Finite v3 CAM candidate has no physical LHR index");
+                 "Finite fork v5 CAM candidate has no physical LHR index");
         result->key = hintHashV3(result->pc,
             snapshot->v3ContextsFor(result->camIndex), result->mask);
     } else {
@@ -1517,6 +1524,13 @@ HintIndirect::writeProfile(const std::shared_ptr<HintQuery> &query,
     } else {
         line << "null";
     }
+    if (!config.ideal) {
+        line << ",\"history\":";
+        if (query && query->snapshot && localIndex(pc) >= 0)
+            line << query->snapshot->historyJson(pc, localIndex(pc));
+        else
+            line << "null";
+    }
     line << "}\n";
     output->writeProfile(line.str());
 }
@@ -1634,7 +1648,7 @@ HintIndirect::writeConfZero(const Update &update, uint64_t cycle)
         writeContexts(line, query.snapshot->contextsFor(query.pc));
     else
         writeContexts(line, query.snapshot->v3ContextsFor(query.camIndex));
-    line << ",\"history\":" << query.snapshot->historyJson(query.pc)
+    line << ",\"history\":" << query.snapshot->historyJson(query.pc, query.camIndex)
          << ",\"hash\":" << query.key << ",\"set\":" << query.set
          << ",\"way\":" << query.way << ",\"slot\":" << query.slot;
     if (config.ideal) {
@@ -1714,7 +1728,8 @@ HintIndirect::resetStats(uint64_t cycle)
             writeHeader();
         else
             output->writeProfile("{\"kind\":\"header\",\"format\":\"h2p-hint-replay\","
-                                 "\"version\":3,\"storage\":\"finite\"}\n");
+                                 "\"version\":5,\"storage\":\"finite\",\"hash_version\":5,"
+                             "\"context_encoding\":\"xs-gem5-fork-ith128-path128-lhr16-v1\"}\n");
     }
     if (isReplay()) {
         output->confZero.close();
@@ -1767,7 +1782,7 @@ HintIndirect::writeStats()
     auto &line = *out->stream();
     line << std::setprecision(17)
          << "{\"format\":\"h2p-hint-stats\",\"version\":"
-         << 3 << ",\"mode\":"
+         << (config.ideal ? 3 : 5) << ",\"mode\":"
          << jsonString(config.mode) << ",\"storage\":"
          << jsonString(config.ideal ? "unlimited" : "finite")
          << ",\"occupancy_applicable\":" << (isReplay() ? "true" : "false")
@@ -1777,7 +1792,11 @@ HintIndirect::writeStats()
     writeOccupancy(line, occupancy(Table::Context));
     line << ",\"slots\":";
     writeOccupancy(line, occupancy(Table::Slots));
-    line << "},\"global\":{";
+    if (!config.ideal)
+        line << "},\"hash_version\":5,\"context_encoding\":"
+             << jsonString(ForkContextEncoding) << ",\"global\":{";
+    else
+        line << "},\"global\":{";
     writeCounts(line, global);
     line << "},\"pcs\":[";
     bool first = true;

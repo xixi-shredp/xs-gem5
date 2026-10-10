@@ -1,4 +1,4 @@
-"""Shared finite-v3 profile reader, deterministic builder, and image codec.
+"""Shared finite-v5-fork profile reader, deterministic builder, and image codec.
 
 xs-gem5 and RTL collect their own gzip JSONL traces. Both use this module to
 score fixed-confidence target corrections and build the same packed image.
@@ -15,12 +15,9 @@ from collections import Counter, defaultdict
 from .model import address, json_loads
 
 
-_CONTRACT_PATH = Path(__file__).resolve().parents[3] / "manifest" / "hint_v3.py"
-_SPEC = spec_from_file_location("kmhv3_hint_v3_contract", _CONTRACT_PATH)
-if _SPEC is None or _SPEC.loader is None:
-    raise ImportError(f"cannot load Hint v3 contract from {_CONTRACT_PATH}")
-contract = module_from_spec(_SPEC)
-_SPEC.loader.exec_module(contract)
+# The fork contract is self-contained; no project-parent manifest dependency.
+from . import context_v5_contract as contract
+_CONTRACT_PATH = Path(contract.__file__).resolve()
 
 
 def load_metadata(path):
@@ -39,13 +36,14 @@ def load_candidates(path):
         not isinstance(data, dict)
         or data.get("format") != "h2p-hint-candidates"
         or type(data.get("version")) is not int
-        or data["version"] != 3
+        or data["version"] != 5
         or data.get("storage") != "finite"
+        or data.get("context_encoding") != contract.CONTEXT_ENCODING
         or not isinstance(data.get("source"), dict)
         or not isinstance(data.get("pcs"), list)
         or len(data["pcs"]) > 16
     ):
-        raise ValueError("candidate file is not finite Hint v3")
+        raise ValueError("candidate file is not finite Hint v5 fork")
     if any(not isinstance(pc, str) or not re.fullmatch(
             r"0x[0-9a-fA-F]{1,16}", pc) for pc in data["pcs"]):
         raise ValueError("candidate PCs must be hexadecimal address strings")
@@ -66,17 +64,18 @@ def digest(path):
 
 
 def read_profile(path):
-    """Read the simulator-neutral finite-v3 gzip JSONL profile."""
+    """Read the simulator-neutral finite-v5-fork gzip JSONL profile."""
     with gzip.open(path, "rt") as stream:
         header = json_loads(next(stream))
-        expected = {"version": 3, "storage": "finite", "hash_version": 3,
+        expected = {"version": 5, "storage": "finite", "hash_version": 5,
+                    "context_encoding": contract.CONTEXT_ENCODING,
                     "mask_order": contract.MASK_ORDER, "history": contract.HISTORY,
                     "layout": contract.LAYOUT}
         if (header.get("kind") != "header" or
                 header.get("format") != "h2p-hint-profile" or
-                any(type(header.get(k)) is not type(v) or header[k] != v
+                any(not contract._same_typed(header.get(k), v)
                     for k, v in expected.items())):
-            raise ValueError("profile header does not match finite Hint v3")
+            raise ValueError("profile header does not match finite Hint v5 fork")
         pcs = [contract.address_word(int(pc, 16)) for pc in header["pcs"]]
         if len(pcs) > 16 or len(set(pcs)) != len(pcs):
             raise ValueError("one physical CAM profile needs <=16 unique PCs")
@@ -109,6 +108,18 @@ def read_profile(path):
                     len(contexts) != 4 or any(type(x) is not int or
                     not 0 <= x <= contract.MASK28 for x in contexts)):
                 raise ValueError("profile requires four folded contexts")
+            if contexts is not None:
+                history = row.get("history")
+                if not isinstance(history, dict):
+                    raise ValueError("fork profile lacks full history evidence")
+                try:
+                    components = contract.context_components(
+                        int(history["ith_low128"], 16), int(history["lhr_low16"], 16),
+                        int(history["call_low128"], 16), int(history["ret_low128"], 16))
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValueError("invalid fork full history evidence") from error
+                if list(components) != contexts:
+                    raise ValueError("fork history and folded contexts differ")
             if row["eligible"] and (contexts is None or query is None or
                     not row["baseline_valid"] or row["baseline_pc"] != row["pc"] or
                     not row["block_start"] <= row["pc"] < row["block_end"]):
@@ -179,14 +190,15 @@ def build_image(rows, masks, source):
                for set_id, values in sorted(by_set.items())
                for way, (key, target) in enumerate(sorted(values))]
     active = [pc for pc in masks if mapped.intersection(own_keys[pc])]
-    metadata = {"format": "h2p-hint", "version": 3, "storage": "finite",
-                "hash_version": 3, "mask_order": contract.MASK_ORDER,
+    metadata = {"format": "h2p-hint", "version": 5, "storage": "finite",
+                "hash_version": 5, "context_encoding": contract.CONTEXT_ENCODING,
+                "mask_order": contract.MASK_ORDER,
                 "history": contract.HISTORY, "layout": layout,
                 "cam": [{"pc": hex(pc), "mask": masks[pc]} for pc in active],
                 "slots": [hex(target) for target in slots],
                 "entries": entries, "source": source}
     image = contract.pack_image(metadata)
-    report = {"format": "h2p-hint-builder", "version": 3, "storage": "finite",
+    report = {"format": "h2p-hint-builder", "version": 5, "storage": "finite",
               "loaded_pcs": len(active), "observed_keys": len(keys),
               "mapped_keys": len(entries), "slot_targets": len(slots),
               "estimated_net_correction_before_confidence": sum(x[0] for x in selected),
@@ -274,7 +286,7 @@ def main(argv=None):
     metadata, image, report = build_image(rows, masks, source)
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
-    (args.output / "hint-v3.bin").write_bytes(image)
+    (args.output / "hint-context-v5.bin").write_bytes(image)
     (args.output / "builder.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     (args.output / "fixed-conf3-estimate.json").write_text(
         json.dumps(score_image(rows, metadata), indent=2, sort_keys=True) + "\n")

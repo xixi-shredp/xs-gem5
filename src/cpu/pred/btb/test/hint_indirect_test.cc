@@ -1352,13 +1352,13 @@ testFiniteV3CollectObserverHistory()
            "finite collect keeps an exact observer-only history snapshot");
     const auto original = snapshot.v3ContextsFor(0);
     // Collect may not stall the BPU. Exercise both local ring wrap and more
-    // than 96 younger global writes, which replay must instead backpressure.
+    // than 64 younger global writes, which replay must instead backpressure.
     for (unsigned n = 0; n < 105; ++n)
         state.update(0x1000, 0x2000 + (n & 3) * 2,
                      true, n % 9 == 0, false, true);
     state = *snapshot.collectHistory;
-    expect(state.snapshot().low64 == snapshot.finite->low64 &&
-           state.snapshot().localLow8 == snapshot.finite->localLow8 &&
+    expect(state.snapshot().low128 == snapshot.finite->low128 &&
+           state.snapshot().localLow16 == snapshot.finite->localLow16 &&
            HintSnapshot(state, true).v3ContextsFor(0) == original,
            "collect observer restores exact ITH/LHR/Call/Ret after ring wrap");
 }
@@ -1368,132 +1368,47 @@ testFiniteV3Vectors(const std::string &path)
 {
     boost::property_tree::ptree vectors;
     boost::property_tree::read_json(path, vectors);
-    expect(vectors.get<unsigned>("version") == 3,
-           "shared v3 vectors have expected version");
+    expect(vectors.get<unsigned>("version") == 5 &&
+           vectors.get<std::string>("context_encoding") ==
+               "xs-gem5-fork-ith128-path128-lhr16-v1",
+           "fork vectors have frozen version and encoding");
     for (const auto &node : vectors.get_child("fold14")) {
-        const auto pc = vectorNumber(node.second.get<std::string>("pc"));
-        expect(hintFold14(pc) == vectorNumber(
-            node.second.get<std::string>("result")),
-            "fold14 matches shared Python vector");
+        expect(hintFold14(vectorNumber(node.second.get<std::string>("pc"))) ==
+               vectorNumber(node.second.get<std::string>("result")),
+               "fold14 matches frozen Python vector");
     }
     for (const auto &node : vectors.get_child("hash")) {
         const auto &row = node.second;
-        const auto components = HintV3Contexts{
-            hintFold28(vectorNumber(row.get<std::string>("ith_low64"))),
-            static_cast<uint32_t>(vectorNumber(
-                row.get<std::string>("lhr_low8"))),
-            hintFold28(vectorNumber(row.get<std::string>("call_low64"))),
-            hintFold28(vectorNumber(row.get<std::string>("ret_low64")))};
+        const auto wide = [&](const char *name) {
+            const auto &words = row.get_child(name);
+            std::array<uint64_t, 2> value{};
+            unsigned index = 0;
+            for (const auto &word : words) {
+                expect(index < 2, "128-bit vector has two words");
+                value[index++] = vectorNumber(word.second.get_value<std::string>());
+            }
+            expect(index == 2, "128-bit vector has two words");
+            return value;
+        };
+        const HintV3Contexts components = {
+            hintFold128(wide("ith_words")),
+            static_cast<uint32_t>(vectorNumber(row.get<std::string>("lhr_low16"))),
+            hintFold128(wide("call_words")), hintFold128(wide("ret_words"))};
         unsigned index = 0;
         for (const auto &value : row.get_child("components")) {
-            expect(components[index++] == vectorNumber(
+            expect(index < 4 && components[index++] == vectorNumber(
                 value.second.get_value<std::string>()),
-                "v3 context component matches shared Python vector");
+                "fork full context matches frozen Python vector");
         }
-        const auto pc = vectorNumber(row.get<std::string>("pc"));
-        const auto key = hintHashV3(pc, components,
-                                    row.get<unsigned>("mask"));
+        expect(index == 4, "four fork components");
+        const auto key = hintHashV3(vectorNumber(row.get<std::string>("pc")),
+                                   components, row.get<unsigned>("mask"));
         expect(key == vectorNumber(row.get<std::string>("key")) &&
                (key & 2047) == row.get<unsigned>("set") &&
                (key >> 11) == row.get<unsigned>("tag"),
-               "v3 key/set/tag match shared Python vector");
+               "fork key/set/tag match frozen Python vectors");
     }
-    for (const auto &node : vectors.get_child("cam_windows")) {
-        const auto start = vectorNumber(
-            node.second.get<std::string>("start_pc"));
-        const Addr end = (start + Addr(64)) & ~Addr(31);
-        std::optional<Addr> selected;
-        if (end > start) {
-            for (const auto &pc_node : node.second.get_child("pcs")) {
-                const auto pc = vectorNumber(
-                    pc_node.second.get_value<std::string>());
-                if (pc >= start && pc < end &&
-                    (!selected || pc < *selected))
-                    selected = pc;
-            }
-        }
-        const auto expected = node.second.get<std::string>("selected");
-        expect((expected == "null" && !selected) ||
-               (expected != "null" && selected &&
-                *selected == vectorNumber(expected)),
-               "v3 CAM window matches shared Python vector");
-    }
-
-    HintFiniteHistory history;
-    history.configure({0x1000});
-    history.ith.cells[history.ith.head] = 1;
-    history.ith.cells[(history.ith.head - 1) & 127] = 1;
-    history.ith.cells[(history.ith.head - 127) & 127] = 1;
-    history.update(0x2000, 0x1006, true, false, false, true);
-    expect(history.low64(history.ith) == 0x17,
-           "ITH shift/truncate matches shared Python vector");
-
-    history.configure({0x1000});
-    history.locals[0].cells[7] = 1;
-    history.locals[0].cells[6] = 1;
-    history.locals[0].cells[0] = 1;
-    history.update(0x1000, 0x1006, true, false, false, true);
-    expect(history.localLow8(0) == 0x17 &&
-           history.locals[0].cells[0] == 3,
-           "LHR shift/truncate matches shared Python vector");
-
-    history.configure({0x1000});
-    history.calls.cells[history.calls.head] = 1;
-    history.calls.cells[(history.calls.head - 1) & 127] = 1;
-    history.calls.cells[(history.calls.head - 127) & 127] = 1;
-    history.update(0x1010, 0, false, true, false, true);
-    expect(history.low64(history.calls) == 0x81c,
-           "Call shift/XOR matches shared Python vector");
-
-    history.configure({0x1000});
-    boost::dynamic_bitset<> ith(256), calls(256), returns(256);
-    boost::dynamic_bitset<> local(16);
-    for (unsigned event = 0; event < 135; ++event) {
-        const Addr pc = 0x1000;
-        const Addr target = 0x2000 | ((event * 5 + 1) & 3) << 1;
-        const bool call = event % 3 != 0;
-        const bool ret = event % 5 == 0;
-        history.update(pc, target, true, call, ret, true);
-        if (call) {
-            calls <<= 2;
-            const auto folded = hintFold14(pc);
-            for (unsigned bit = 0; bit < 14; ++bit)
-                if (folded & (1U << bit)) calls.flip(bit);
-        }
-        if (ret) {
-            returns <<= 2;
-            const auto folded = hintFold14(pc);
-            for (unsigned bit = 0; bit < 14; ++bit)
-                if (folded & (1U << bit)) returns.flip(bit);
-        } else {
-            const unsigned code = (target >> 1) & 3;
-            ith <<= 2;
-            ith[0] = code & 1;
-            ith[1] = code & 2;
-            local <<= 2;
-            local[0] = code & 1;
-            local[1] = code & 2;
-        }
-        const auto low = [](const auto &bits, unsigned count) {
-            uint64_t result = 0;
-            for (unsigned bit = 0; bit < count; ++bit)
-                if (bits[bit]) result |= uint64_t(1) << bit;
-            return result;
-        };
-        expect(history.low64(history.ith) == low(ith, 64) &&
-               history.low64(history.calls) == low(calls, 64) &&
-               history.low64(history.returns) == low(returns, 64) &&
-               history.localLow8(0) == low(local, 8),
-               "physical rings match logical 256/16-bit shift oracle");
-    }
-    const auto saved = history.snapshot();
-    for (unsigned event = 0; event < 96; ++event)
-        history.update(0x1000, 0x2006, true, true, true, true);
-    history.restore(saved);
-    expect(history.low64(history.ith) == saved.low64[0] &&
-           history.low64(history.calls) == saved.low64[1] &&
-           history.low64(history.returns) == saved.low64[2],
-           "compact heads/low12 restore all three ring read windows");
+    verifyHintContextForkHistory();
 }
 
 std::string
@@ -1501,13 +1416,14 @@ finiteV3Metadata(unsigned cam_count = 1, unsigned mask = 0)
 {
     const std::string digest(64, '0');
     std::ostringstream out;
-    out << "{\"format\":\"h2p-hint\",\"version\":3,"
-           "\"storage\":\"finite\",\"hash_version\":3,"
+    out << "{\"format\":\"h2p-hint\",\"version\":5,"
+           "\"storage\":\"finite\",\"hash_version\":5,"
+           "\"context_encoding\":\"xs-gem5-fork-ith128-path128-lhr16-v1\","
            "\"mask_order\":[\"ITH\",\"LHR\",\"Call\",\"Ret\"],"
-           "\"history\":{\"ith_entries\":128,\"ith_use_bits\":64,"
-           "\"lhr_entries\":16,\"lhr_bits\":16,\"lhr_use_bits\":8,"
+           "\"history\":{\"ith_entries\":128,\"ith_use_bits\":128,"
+           "\"lhr_entries\":16,\"lhr_bits\":32,\"lhr_use_bits\":16,"
            "\"call_entries\":128,\"ret_entries\":128,"
-           "\"path_use_bits\":64,\"target_shift\":1},"
+           "\"path_use_bits\":128,\"target_shift\":1},"
            "\"layout\":{\"cam_entries\":16,\"context_entries\":4096,"
            "\"ways\":2,\"slot_entries\":32,\"conf_queue_depth\":32,"
            "\"hint_meta_entries\":16,\"lhr_max_uncommitted\":4},"
@@ -1634,7 +1550,7 @@ testFiniteV3MaskAwareAdmission()
         no_lhr.bind(query, i + 1);
     }
     expect(no_lhr.inFlightHints() == 5 &&
-               no_lhr_history.localPhase(0) == ((before_phase + 5) & 15) &&
+               no_lhr_history.localPhase(0) == ((before_phase + 5) & 31) &&
                no_lhr.reserveBlockReason(0x1000) ==
                    HintIndirect::StallReason::None,
            "fifth no-LHR prediction reserves metadata and writes physical LHR");
@@ -1922,12 +1838,21 @@ HintIndirectTest::startup()
             fatal("Wrapped Hint query incorrectly released its same-cycle port");
         }
         hardware.finish();
+    } else if (contextFork) {
+        testFiniteV3Vectors(vectors);
+        testFiniteV3CollectObserverHistory();
+        testFiniteV3Predictor();
+        testFiniteV3MaskAwareAdmission();
+        testFiniteV3NonHintRedirect();
+        testFiniteV3PhaseAndCapacity();
+        testFiniteV3ShadowAndOverflow();
     } else {
         testHistory();
         testIdealHistory();
         testRetiredPrefix();
         testFiniteV3CollectObserverHistory();
         testFiniteV3Vectors(vectors);
+        testFiniteV3CollectObserverHistory();
         testFiniteV3Predictor();
         testFiniteV3MaskAwareAdmission();
         testFiniteV3NonHintRedirect();

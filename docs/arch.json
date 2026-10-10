@@ -1,0 +1,71 @@
+{
+  "schema": "hint-context-fork-v1",
+  "state": "implementation_contract_build_and_validation_pending",
+  "scope": "independent_xs_gem5_worktree",
+  "mask_order": ["ith", "lhr", "call", "ret"],
+  "hash": {
+    "bits": 28,
+    "pc_encoding": "(instruction_start_pc >> 1) & ((1 << 47) - 1)",
+    "fold": "input bit i XORs into output bit i modulo 28",
+    "fold128": "fold28(low64) XOR rol28(fold28(high64), 8)",
+    "context_rotations": [2, 3, 4, 5],
+    "lhr_context": "unrotated unsigned low16",
+    "legacy_metadata_v3_compatible": false,
+    "container_version": 5,
+    "encoding": "xs-gem5-fork-ith128-path128-lhr16-v1"
+  },
+  "global_rings": {
+    "count": 3,
+    "cells_per_ring": 128,
+    "cell_bits": 2,
+    "physical_bits_per_ring": 256,
+    "prediction_bits_per_ring": 128,
+    "phase_bits": 8,
+    "phase_modulus": 256,
+    "physical_index_mask": 127,
+    "initial_phase": 255,
+    "max_younger_writes_for_recovery": 64
+  },
+  "path_update": {
+    "call_event_pc": "call_instruction_start_pc",
+    "ret_event_pc": "return_instruction_start_pc",
+    "fold14": "XOR all 14-bit chunks of encoded pc",
+    "formula": "H_new = H_old << 2; H_new[13:0] ^= fold14(encoded_event_pc)",
+    "saved_low_bits_for_recovery": 12
+  },
+  "lhr": {
+    "entries": 16,
+    "cells_per_entry": 16,
+    "cell_bits": 2,
+    "physical_bits_per_entry": 32,
+    "total_physical_bits": 512,
+    "prediction_bits_per_entry": 16,
+    "selector_bits": 4,
+    "phase_bits": 5,
+    "phase_modulus": 32,
+    "physical_index_mask": 15,
+    "initial_phase": 31,
+    "physical_recovery_slack_writes": 8,
+    "enabled_lhr_pending_admission_limit": 4,
+    "preserve_existing_masked_off_bypass": true,
+    "masked_off_bypass_requires_mask_static_and_no_prediction_read": true,
+    "masked_off_ring_arbitrary_write_bit_exact_recovery_claimed": false,
+    "recovery_payload_bits": 86,
+    "recovery_payload": {"all_phases": 80, "correct_target_bits": 2, "selector": 4},
+    "overwritten_cell_undo_required_with_preserved_admission": false
+  },
+  "observer": {
+    "global_prediction_snapshots_bits": 384,
+    "lhr_prediction_snapshots_bits": 256,
+    "read_snapshots_are_physical_recovery_payload": false,
+    "collect_full_copy_is_replay_hardware": false,
+    "software_write_counters_are_physical_metadata": false
+  },
+  "unchanged": {
+    "hint_meta_entries": 16,
+    "predictor_tables": "existing_finite_table_layout",
+    "predictor_config": "BackendV2_NoRVV_NoLLC",
+    "rtl_sources": true
+  },
+  "validation_scope": "final_gem5_opt_production_helper_and_format_tests_no_six_slice_experiment"
+}

@@ -1,6 +1,6 @@
 """Single-core BackendV2, scalar FP, no RVV execution and no LLC.
 
-Off/collect/replay use the common Hint-v3 options. The entry locks structural
+Off/collect/replay use the fork Hint-v5 options. The entry locks structural
 parameters so every experiment phase instantiates the same baseline machine.
 """
 import hashlib
@@ -30,8 +30,7 @@ from common.xiangshan import (
 )
 from kmhv3 import setPtwLevelLimitParams
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DRAM_INI = PROJECT_ROOT / 'manifest/DDR4_3200_2ch.ini'
+DRAM_INI = Path(__file__).resolve().parents[1] / 'common/DDR4_3200_2ch.ini'
 DRAM_INI_SHA256 = '0cf98cd29657a9365f772ff6d8dfaf3f2aa795593f0b16cc9e52dc5654e79fc6'
 
 

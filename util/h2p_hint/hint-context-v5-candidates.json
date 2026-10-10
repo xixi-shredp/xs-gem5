@@ -1,0 +1,10 @@
+{
+  "format": "h2p-hint-candidates",
+  "version": 5,
+  "storage": "finite",
+  "context_encoding": "xs-gem5-fork-ith128-path128-lhr16-v1",
+  "pcs": [
+    "0x1000"
+  ],
+  "source": {}
+}

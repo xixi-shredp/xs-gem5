@@ -24,9 +24,13 @@ struct FetchTarget;
 using HintV3Contexts = std::array<uint32_t, 4>;
 
 uint16_t hintFold14(Addr pc);
+uint32_t hintFold128(const std::array<uint64_t, 2> &value);
 uint32_t hintHashV3(Addr pc, const HintV3Contexts &contexts, uint8_t mask);
+// Directed production-helper checks, invoked by the final gem5.opt test
+// SimObject. This does not allocate a guest or use a separate gtest binary.
+void verifyHintContextForkHistory();
 
-// Finite v3 keeps the full history in physical rings. A block snapshot holds
+// The finite fork keeps the full history in physical rings. A block snapshot holds
 // only the heads, the six cells touched by a path XOR, and the hash read
 // windows; it never copies a 128-cell ring into every FTQ entry.
 class HintFiniteHistory
@@ -35,14 +39,15 @@ class HintFiniteHistory
     struct Ring
     {
         std::array<uint8_t, 128> cells{};
-        uint8_t head = 127;
+        // Logical 8-bit phase; physical cell index is head & 127.
+        uint8_t head = 255;
         uint64_t writes = 0;
     };
     struct LocalRing
     {
-        std::array<uint8_t, 8> cells{};
-        uint8_t head = 7;
-        uint8_t phase = 15;
+        std::array<uint8_t, 16> cells{};
+        uint8_t head = 15;
+        uint8_t phase = 31;
         uint64_t writes = 0;
     };
     struct Snapshot
@@ -50,8 +55,10 @@ class HintFiniteHistory
         std::array<uint8_t, 3> heads{};
         std::array<uint64_t, 3> writes{};
         std::array<uint16_t, 2> pathLow12{};
-        std::array<uint64_t, 3> low64{};
-        std::array<uint8_t, 16> localLow8{};
+        // Read snapshots are simulation observers, not physical rollback data.
+        std::array<std::array<uint64_t, 2>, 3> low128{};
+        std::array<uint16_t, 16> localLow16{};
+        std::array<uint8_t, 16> localPhases{};
     };
 
     void configure(const std::vector<Addr> &pcs);
@@ -65,6 +72,9 @@ class HintFiniteHistory
     uint8_t localHead(unsigned index) const;
     uint8_t localPhase(unsigned index) const;
     void restoreLocalPhase(unsigned index, uint8_t phase);
+    uint16_t localLow16(unsigned index) const;
+    std::array<uint64_t, 2> low128(const Ring &ring) const;
+    // Legacy test observers. Production fork hashing uses only 128/16 reads.
     uint8_t localLow8(unsigned index) const;
     uint64_t low64(const Ring &ring) const;
     uint16_t low12(const Ring &ring) const;
@@ -142,7 +152,7 @@ struct HintSnapshot
 
     HintContexts contextsFor(Addr pc) const;
     HintV3Contexts v3ContextsFor(int local_index) const;
-    std::string historyJson(Addr pc) const;
+    std::string historyJson(Addr pc, int local_index = -1) const;
 
     std::unique_ptr<HintHistory> history;
     boost::dynamic_bitset<> ghr;

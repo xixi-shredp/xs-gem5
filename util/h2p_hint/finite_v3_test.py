@@ -23,11 +23,12 @@ class FiniteV3Test(unittest.TestCase):
                 "baseline_target": hex(baseline), "query_cycle": seq,
                 "commit_cycle": seq + 1, "block_start": hex(pc),
                 "block_end": hex(pc + 32), "eligible": True,
-                "contexts": [0, 0, 0, 0]}
+                "contexts": [0, 0, 0, 0], "history": {"ith_low128": "0x0",
+                    "call_low128": "0x0", "ret_low128": "0x0", "lhr_low16": "0x0"}}
 
     def profile(self, path, pcs, rows):
-        header = {"kind": "header", "format": "h2p-hint-profile", "version": 3,
-                  "storage": "finite", "hash_version": 3,
+        header = {"kind": "header", "format": "h2p-hint-profile", "version": 5,
+                  "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING, "hash_version": 5,
                   "mask_order": contract.MASK_ORDER, "history": contract.HISTORY,
                   "layout": contract.LAYOUT, "clock_period": 500, "pcs": [hex(pc) for pc in pcs]}
         with gzip.open(path, "wt") as stream:
@@ -79,7 +80,8 @@ class FiniteV3Test(unittest.TestCase):
                    "query_cycle": 2, "commit_cycle": 20}
             with gzip.open(path, "wt") as stream:
                 stream.write(json.dumps({"kind": "header", "format": "h2p-hint-replay",
-                                         "version": 3, "storage": "finite"}) + "\n")
+                                         "version": 5, "storage": "finite",
+                                         "hash_version": 5, "context_encoding": contract.CONTEXT_ENCODING}) + "\n")
                 stream.write(json.dumps(row) + "\n")
             counts = empty_counters()
             counts.update(executions=1, baseline_misses=1, corrected=1,
@@ -89,7 +91,8 @@ class FiniteV3Test(unittest.TestCase):
             row["harmed"] = True
             with gzip.open(path, "wt") as stream:
                 stream.write(json.dumps({"kind": "header", "format": "h2p-hint-replay",
-                                         "version": 3, "storage": "finite"}) + "\n")
+                                         "version": 5, "storage": "finite",
+                                         "hash_version": 5, "context_encoding": contract.CONTEXT_ENCODING}) + "\n")
                 stream.write(json.dumps(row) + "\n")
             with self.assertRaisesRegex(ValueError, "correction/harm"):
                 validate_replay_trace(path, {"pcs": [{"pc": "0x1000", **counts}]})

@@ -1,4 +1,4 @@
-"""Audited finite-v3 Hint experiment for selected CPython checkpoints."""
+"""Audited finite-v5-fork Hint experiment for selected CPython checkpoints."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -218,7 +218,7 @@ def run_one(args, task, stage, *, group=None, candidate=None, metadata=None):
         if candidate is None or metadata is None:
             raise ValueError("joint replay requires audited candidate and metadata")
         image_dir = metadata.parent
-        image = image_dir / "hint-v3.bin"
+        image = image_dir / "hint-context-v5.bin"
         data = json.loads(metadata.read_text())
         source = data["source"]
         groups = sorted((args.output_root / "runs" / "collect" / tag(task)).glob("group-*"))
@@ -300,8 +300,8 @@ def run_one(args, task, stage, *, group=None, candidate=None, metadata=None):
 
 def candidate_file(args, task, group, pcs, ranking):
     path = args.output_root / "inputs" / tag(task) / f"candidates-{group}.json"
-    data = {"format": "h2p-hint-candidates", "version": 3,
-            "storage": "finite", "pcs": [hex(pc) for pc in pcs],
+    data = {"format": "h2p-hint-candidates", "version": 5,
+            "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING, "pcs": [hex(pc) for pc in pcs],
             "source": {"baseline_h2p_sha256": digest(run_path(args.output_root, task, "baseline") /
                                                        "h2p-indirect.txt"),
                        "ranking": [{"pc": hex(pc), "misses": misses} for pc, misses in ranking]}}
@@ -345,7 +345,7 @@ def build_and_score(args, task, rows, pcs, source):
         if (status.get("result") != "pass" or
                 status.get("source") != source or
                 digest(metadata_path) != status.get("metadata_sha256") or
-                digest(directory / "hint-v3.bin") != status.get("image_sha256")):
+                digest(directory / "hint-context-v5.bin") != status.get("image_sha256")):
             raise ValueError(f"existing image audit differs: {directory}")
         return metadata_path
     directory.mkdir(parents=True)
@@ -374,12 +374,12 @@ def build_and_score(args, task, rows, pcs, source):
             choice["loaded_candidate"] = int(choice["pc"], 16) in active
         estimate = score_image(rows, metadata)
         write_json(directory / "metadata.json", metadata)
-        (directory / "hint-v3.bin").write_bytes(image)
+        (directory / "hint-context-v5.bin").write_bytes(image)
         write_json(directory / "builder.json", report)
         write_json(directory / "best-masks.json", choices)
         write_json(directory / "fixed-conf3-estimate.json", estimate)
         write_json(directory / "candidates-joint.json", {
-            "format": "h2p-hint-candidates", "version": 3, "storage": "finite",
+            "format": "h2p-hint-candidates", "version": 5, "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING,
             "pcs": [entry["pc"] for entry in metadata["cam"]],
             "source": {"metadata_sha256": digest(directory / "metadata.json")}})
         with (directory / "mask-sweep.jsonl").open("w") as stream:
@@ -395,7 +395,7 @@ def build_and_score(args, task, rows, pcs, source):
                     stream.write(json.dumps(entry, sort_keys=True) + "\n")
         status = {"result": "pass", "source": source,
                   "metadata_sha256": digest(directory / "metadata.json"),
-                  "image_sha256": digest(directory / "hint-v3.bin"),
+                  "image_sha256": digest(directory / "hint-context-v5.bin"),
                   "mask_trials": len(scores), "finished_utc": now()}
         write_json(directory / "build-status.json", status)
     except Exception:
@@ -454,7 +454,7 @@ def report(args, tasks):
                      "loaded_pcs": len(metadata["cam"]),
                      "fixed_conf3_estimate": estimate,
                      "metadata_sha256": digest(image / "metadata.json"),
-                     "image_sha256": digest(image / "hint-v3.bin")})
+                     "image_sha256": digest(image / "hint-context-v5.bin")})
     status_paths = sorted((args.output_root / "runs").rglob("status.json"))
     expected_runs = sum(2 + max(1, (len(ranked_candidates(
         run_path(args.output_root, task, "baseline"))[0]) + 15) // 16)
@@ -462,8 +462,8 @@ def report(args, tasks):
     if (len(status_paths) != expected_runs or any(
             json.loads(path.read_text()).get("result") != "pass" for path in status_paths)):
         raise ValueError(f"formal result audit requires {expected_runs} passed simulations")
-    summary = {"format": "h2p-hint-experiment-summary", "version": 3,
-               "storage": "finite",
+    summary = {"format": "h2p-hint-experiment-summary", "version": 5,
+               "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING,
                "window": f"{args.warmup_insts} warmup + {args.measure_insts} measure",
                "warmup_insts": args.warmup_insts,
                "measure_insts": args.measure_insts,
@@ -479,7 +479,7 @@ def report(args, tasks):
         "statuses": [{"path": str(path), "sha256": digest(path)} for path in status_paths],
         "summary_sha256": digest(args.output_root / "summary.json"),
         "finished_utc": now()})
-    lines = [f"# xs-gem5 Hint finite v3: {args.warmup_insts}+{args.measure_insts}", "",
+    lines = [f"# xs-gem5 Hint Context fork v5: {args.warmup_insts}+{args.measure_insts}", "",
              f"{len(tasks)} 片各自按 baseline → collect (最多 16+4) → 离线构表 → Hint replay 执行。",
              "mask-sweep 是基于实际 baseline 目标与原预测的固定 conf=3 离线估计；",
              "下表是含动态置信度与错误路径影响的真实 gem5 replay。", "",
@@ -682,7 +682,7 @@ def main(argv=None):
 
 
 def _contract_path():
-    return Path(__file__).resolve().parents[3] / "manifest" / "hint_v3.py"
+    return Path(contract.__file__).resolve()
 
 
 if __name__ == "__main__":

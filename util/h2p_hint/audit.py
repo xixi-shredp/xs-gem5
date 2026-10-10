@@ -78,10 +78,14 @@ def compare_observer(baseline, observed, check_windows=False):
 def validate_hint_stats(data, total_misses, mode, candidates, ideal=False, finite_v3=False):
     if (
         data.get("format") != "h2p-hint-stats"
-        or data.get("version") != (3 if ideal or finite_v3 else 2)
+        or data.get("version") != (5 if finite_v3 else 3 if ideal else 2)
         or data.get("mode") != mode
     ):
         raise ValueError("invalid Hint statistics identity")
+    if finite_v3:
+        from .finite_v3 import contract
+        if data.get("context_encoding") != contract.CONTEXT_ENCODING or data.get("hash_version") != 5:
+            raise ValueError("Hint fork statistics encoding mismatch")
     rows = [data["global"], *data["pcs"]]
     for row in rows:
         for name in empty_counters():
@@ -147,7 +151,9 @@ def validate_replay_trace(path, stats):
     with gzip.open(path, "rt") as stream:
         header = json.loads(next(stream))
         if header != {"kind": "header", "format": "h2p-hint-replay",
-                      "version": 3, "storage": "finite"}:
+                      "version": 5, "storage": "finite",
+                      "hash_version": 5, "context_encoding":
+                      "xs-gem5-fork-ith128-path128-lhr16-v1"}:
             raise ValueError("invalid finite-v3 replay trace header")
         for line in stream:
             row = json.loads(line)
