@@ -37,6 +37,8 @@
 
 #include "mem/dramsim3.hh"
 
+#include <cmath>
+
 #include "base/callback.hh"
 #include "base/trace.hh"
 #include "debug/DRAMsim3.hh"
@@ -58,13 +60,19 @@ DRAMsim3::DRAMsim3(const Params &p) :
                        this, 0, std::placeholders::_1)),
     wrapper(p.configFile, p.filePath, read_cb, write_cb),
     retryReq(false), retryResp(false), startTick(0),
-    nbrOutstandingReads(0), nbrOutstandingWrites(0),
+    responsePadding(p.response_padding), deferWriteAck(p.defer_write_ack),
+    maxPendingPackets(p.max_pending_packets ? p.max_pending_packets :
+                      wrapper.queueSize()),
+    dramClockPeriod(std::llround(wrapper.clockPeriod() * sim_clock::as_int::ns)),
+    completionEvent([this]{ completePadded(); }, name() + ".completion"),
     sendResponseEvent([this]{ sendResponse(); }, name()),
     tickEvent([this]{ tick(); }, name())
 {
     DPRINTF(DRAMsim3,
-            "Instantiated DRAMsim3 with clock %d ns and queue size %d\n",
-            wrapper.clockPeriod(), wrapper.queueSize());
+            "Instantiated DRAMsim3 with clock %g ns, native queue size %u, global pending capacity %u\n",
+            wrapper.clockPeriod(), wrapper.queueSize(), maxPendingPackets);
+    fatal_if(!dramClockPeriod, "DRAMsim3 tCK rounds to zero ticks");
+    fatal_if(!maxPendingPackets, "DRAMsim3 global pending capacity must be positive");
 
     // Register a callback to compensate for the destructor not
     // being called. The callback prints the DRAMsim3 stats.
@@ -116,7 +124,7 @@ DRAMsim3::sendResponse()
         responseQueue.pop();
 
         DPRINTF(DRAMsim3, "Have %d read, %d write, %d responses outstanding\n",
-                nbrOutstandingReads, nbrOutstandingWrites,
+                completions.outstandingReads(), completions.outstandingWrites(),
                 responseQueue.size());
 
         if (!responseQueue.empty() && !sendResponseEvent.scheduled()) {
@@ -139,7 +147,7 @@ DRAMsim3::sendResponse()
 unsigned int
 DRAMsim3::nbrOutstanding() const
 {
-    return nbrOutstandingReads + nbrOutstandingWrites + responseQueue.size();
+    return completions.outstanding() + responseQueue.size();
 }
 
 void
@@ -151,17 +159,16 @@ DRAMsim3::tick()
 
         // is the connected port waiting for a retry, if so check the
         // state and send a retry if conditions have changed
-        if (retryReq && nbrOutstanding() < wrapper.queueSize()) {
+        if (retryReq && nbrOutstanding() < maxPendingPackets) {
             retryReq = false;
             port.sendRetryReq();
         }
     }
 
-    schedule(tickEvent,
-        curTick() + wrapper.clockPeriod() * sim_clock::as_int::ns);
+    schedule(tickEvent, curTick() + dramClockPeriod);
 
-    DPRINTF(DRAMsim3, "Scheduled Dramsim after %d ns, at tick %lu\n", wrapper.clockPeriod(),
-            curTick() + wrapper.clockPeriod() * sim_clock::as_int::ns);
+    DPRINTF(DRAMsim3, "Scheduled Dramsim after %g ns, at tick %lu\n",
+            wrapper.clockPeriod(), curTick() + dramClockPeriod);
 }
 
 Tick
@@ -170,7 +177,7 @@ DRAMsim3::recvAtomic(PacketPtr pkt)
     access(pkt);
 
     // 50 ns is just an arbitrary value at this point
-    return pkt->cacheResponding() ? 0 : 50000;
+    return pkt->cacheResponding() ? 0 : 50 * sim_clock::as_int::ns;
 }
 
 void
@@ -183,6 +190,12 @@ DRAMsim3::recvFunctional(PacketPtr pkt)
     // potentially update the packets in our response queue as well
     for (auto i = responseQueue.begin(); i != responseQueue.end(); ++i)
         pkt->trySatisfyFunctional((*i).first);
+    completions.forEachPacket([pkt](const auto &transaction) {
+        // Deferred writes already performed their backing-store access; their
+        // retained response data must participate in functional updates too.
+        if (transaction.write)
+            pkt->trySatisfyFunctional(transaction.packet);
+    });
 
     pkt->popLabel();
 }
@@ -206,9 +219,7 @@ DRAMsim3::recvTimingReq(PacketPtr pkt)
 
     // if we cannot accept we need to send a retry once progress can
     // be made
-    bool outstanding_full = (nbrOutstanding() >= wrapper.queueSize());
-    // bool can_accept = (nbrOutstanding() < wrapper.queueSize()) &&
-    //                   wrapper.canAccept(pkt->getAddr(), pkt->isWrite());
+    bool outstanding_full = (nbrOutstanding() >= maxPendingPackets);
     bool wrapper_can_acc = true;
     if (!outstanding_full) {
         wrapper_can_acc = wrapper.canAccept(pkt->getAddr(), pkt->isWrite());
@@ -216,26 +227,32 @@ DRAMsim3::recvTimingReq(PacketPtr pkt)
     bool can_accept = !outstanding_full && wrapper_can_acc;
 
     DPRINTF(DRAMsim3, "Can accept: %i, outstanding: %u, queue size: %u, wrapper can acc: %i, is write: %i\n",
-            can_accept, nbrOutstanding(), wrapper.queueSize(), wrapper_can_acc, pkt->isWrite());
+            can_accept, nbrOutstanding(), maxPendingPackets, wrapper_can_acc, pkt->isWrite());
 
+    // Save request attributes before access() changes a write into a response.
+    const bool isWrite = pkt->isWrite();
+    const Addr address = pkt->getAddr();
     // keep track of the transaction
     if (pkt->isRead()) {
         if (can_accept) {
-            outstandingReads[pkt->getAddr()].push(pkt);
-
-            // we count a transaction as outstanding until it has left the
-            // queue in the controller, and the response has been sent
-            // back, note that this will differ for reads and writes
-            ++nbrOutstandingReads;
+            completions.accept(address, pkt, false, pkt->needsResponse());
         }
     } else if (pkt->isWrite()) {
         if (can_accept) {
-            outstandingWrites[pkt->getAddr()].push(pkt);
-
-            ++nbrOutstandingWrites;
-
-            // perform the access for writes
-            accessAndRespond(pkt);
+            if (deferWriteAck) {
+                const bool needsResponse = pkt->needsResponse();
+                // Preserve the existing backing-store visibility at acceptance,
+                // but retain ownership and all response/outstanding resources
+                // until the DRAM callback plus responsePadding. This is the
+                // RTL cosim completion policy, not an added request latency.
+                access(pkt);
+                completions.accept(address, pkt, true, needsResponse);
+            } else {
+                // Legacy configurations retain immediate write ACK. A null
+                // handle avoids retaining a pointer already owned upstream.
+                completions.accept(address, nullptr, true, false);
+                accessAndRespond(pkt);
+            }
         }
     } else {
         // keep it simple and just respond if necessary
@@ -253,7 +270,7 @@ DRAMsim3::recvTimingReq(PacketPtr pkt)
         // @todo what about the granularity here, implicit assumption that
         // a transaction matches the burst size of the memory (which we
         // cannot determine without parsing the ini file ourselves)
-        wrapper.enqueue(pkt->getAddr(), pkt->isWrite());
+        wrapper.enqueue(address, isWrite);
 
         return true;
     } else {
@@ -283,6 +300,13 @@ DRAMsim3::accessAndRespond(PacketPtr pkt)
     // response
     access(pkt);
 
+    respond(pkt, needsResponse);
+}
+
+void
+DRAMsim3::respond(PacketPtr pkt, bool needsResponse)
+{
+
     // turn packet around to go back to requestor if response expected
     if (needsResponse) {
         // access already turned the packet into a response
@@ -311,28 +335,13 @@ DRAMsim3::accessAndRespond(PacketPtr pkt)
 
 void DRAMsim3::readComplete(unsigned id, uint64_t addr)
 {
-
     DPRINTF(DRAMsim3, "Read to address %lx complete\n", addr);
-
-    // get the outstanding reads for the address in question
-    auto p = outstandingReads.find(addr);
-    assert(p != outstandingReads.end());
-
-    // first in first out, which is not necessarily true, but it is
-    // the best we can do at this point
-    PacketPtr pkt = p->second.front();
-    p->second.pop();
-
-    if (p->second.empty())
-        outstandingReads.erase(p);
-
-    // no need to check for drain here as the next call will add a
-    // response to the response queue straight away
-    assert(nbrOutstandingReads != 0);
-    --nbrOutstandingReads;
-
-    // perform the actual memory access
-    accessAndRespond(pkt);
+    completions.callback(addr, false, curTick(),
+                         responsePadding * clockPeriod());
+    if (responsePadding == Cycles(0))
+        completePadded();
+    else
+        scheduleCompletion();
 }
 
 void DRAMsim3::writeComplete(unsigned id, uint64_t addr)
@@ -340,19 +349,38 @@ void DRAMsim3::writeComplete(unsigned id, uint64_t addr)
 
     DPRINTF(DRAMsim3, "Write to address %lld complete\n", addr);
 
-    // get the outstanding reads for the address in question
-    auto p = outstandingWrites.find(addr);
-    assert(p != outstandingWrites.end());
+    completions.callback(addr, true, curTick(),
+                         responsePadding * clockPeriod());
+    if (responsePadding == Cycles(0))
+        completePadded();
+    else
+        scheduleCompletion();
+}
 
-    // we have already responded, and this is only to keep track of
-    // what is outstanding
-    p->second.pop();
-    if (p->second.empty())
-        outstandingWrites.erase(p);
+void
+DRAMsim3::scheduleCompletion()
+{
+    const Tick ready = completions.nextReady();
+    if (!completionEvent.scheduled())
+        schedule(completionEvent, ready);
+    else if (ready < completionEvent.when())
+        reschedule(completionEvent, ready);
+}
 
-    assert(nbrOutstandingWrites != 0);
-    --nbrOutstandingWrites;
-
+void
+DRAMsim3::completePadded()
+{
+    while (completions.ready(curTick())) {
+        const auto transaction = completions.takeReady(curTick());
+        if (transaction.write) {
+            if (transaction.packet)
+                respond(transaction.packet, transaction.needsResponse);
+        } else {
+            accessAndRespond(transaction.packet);
+        }
+    }
+    if (completions.hasPending())
+        scheduleCompletion();
     if (nbrOutstanding() == 0)
         signalDrainDone();
 }

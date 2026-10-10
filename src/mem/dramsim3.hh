@@ -50,6 +50,7 @@
 #include <boost/heap/priority_queue.hpp>
 
 #include "mem/abstract_mem.hh"
+#include "mem/dram_completion_tracker.hh"
 #include "mem/dramsim3_wrapper.hh"
 #include "mem/qport.hh"
 #include "params/DRAMsim3.hh"
@@ -128,16 +129,19 @@ class DRAMsim3 : public AbstractMemory
      * done so that we can return the right packet on completion from
      * DRAMSim.
      */
-    std::unordered_map<Addr, std::queue<PacketPtr> > outstandingReads;
-    std::unordered_map<Addr, std::queue<PacketPtr> > outstandingWrites;
+    DramCompletionTracker<PacketPtr> completions;
+    const Cycles responsePadding;
+    const bool deferWriteAck;
+    // This global packet/response envelope is separate from each DRAM channel's
+    // native transaction queue. Zero in Params retains the legacy queue limit.
+    const unsigned maxPendingPackets;
+    Tick dramClockPeriod;
 
     /**
      * Count the number of outstanding transactions so that we can
      * block any further requests until there is space in DRAMsim3 and
      * the sending queue we need to buffer the response packets.
      */
-    unsigned int nbrOutstandingReads;
-    unsigned int nbrOutstandingWrites;
 
     /**
      * Queue to hold response packets until we can send them
@@ -165,6 +169,10 @@ class DRAMsim3 : public AbstractMemory
      * @param pkt The packet from the outside world
      */
     void accessAndRespond(PacketPtr pkt);
+    void respond(PacketPtr pkt, bool needsResponse);
+    void scheduleCompletion();
+    void completePadded();
+    EventFunctionWrapper completionEvent;
 
     void sendResponse();
 

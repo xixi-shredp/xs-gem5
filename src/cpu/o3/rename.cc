@@ -585,9 +585,20 @@ Rename::canRename(ThreadID tid)
         switch (i) {
             case IntRegClass:
             case FloatRegClass:
-            case VecRegClass:
             case RMiscRegClass:
                 demand_phy_regs[i] = std::max(demand_phy_regs[i], (int)renameWidth);
+                break;
+            case VecRegClass:
+                // NoV retains only the architectural vector ABI state.  It
+                // has no vector instructions or free speculative vector
+                // registers, so a worst-case vector destination reservation
+                // would permanently block even an empty scalar rename group.
+                // Keep the actual destination demand check below in all modes.
+                if (static_cast<const TheISA::ISA *>(
+                        cpu->params().isa.at(tid))->rvvEnabled()) {
+                    demand_phy_regs[i] =
+                        std::max(demand_phy_regs[i], (int)renameWidth);
+                }
                 break;
             default:
                 break;

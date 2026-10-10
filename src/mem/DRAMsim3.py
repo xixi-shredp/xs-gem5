@@ -50,3 +50,9 @@ class DRAMsim3(AbstractMemory):
                               "The configuration file to use with DRAMSim3")
     filePath = Param.String("ext/dramsim3/DRAMsim3/",
                             "Directory to prepend to file names")
+    response_padding = Param.Cycles(0,
+        "Hold read/write completions after DRAM callback, in memory core cycles")
+    defer_write_ack = Param.Bool(False,
+        "Hold write packets and acknowledgement until padded DRAM completion")
+    max_pending_packets = Param.Unsigned(0,
+        "Global accepted read/write/response capacity; 0 preserves native GetQueueSize limit")

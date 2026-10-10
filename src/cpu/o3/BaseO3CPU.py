@@ -112,6 +112,10 @@ class BaseO3CPU(BaseCPU):
         return True
 
     activity = Param.Unsigned(0, "Initial count")
+    measureInstCount = Param.Counter(0,
+        "Independent post-warmup retired instruction limit; zero uses maxinsts")
+    dumpWarmupStats = Param.Bool(False,
+        "Dump warmup statistics before reset; audited runner separates the dump")
 
     cacheStorePorts = Param.Unsigned(200, "Cache Ports. "
           "Constrains stores only.")

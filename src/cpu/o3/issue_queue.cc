@@ -207,8 +207,19 @@ IssueQue::IssueQue(const IssueQueParams& params)
                         csprintf("%s.vectorReadyQEvent", params.name)),
       selector(params.sel)
 {
-    panic_if(vectorSplitUnits == 0,
-             "%s: vectorSplitUnits must be greater than 0\n", iqname);
+    // Scalar-only issue queues need no vector load/store split state. Keep
+    // the positive-capacity gate for any queue that advertises vector ops.
+    if (vectorSplitUnits == 0) {
+        for (const auto port : params.oports) {
+            for (const auto fu : port->fu) {
+                for (const auto op : fu->opDescList) {
+                    panic_if(std::string(enums::OpClassStrings[op->opClass]).
+                             find("Vector") == 0,
+                             "%s: vector op with zero split resources\n", iqname);
+                }
+            }
+        }
+    }
 
     toIssue = inflightIssues.getWire(0);
     toFu = inflightIssues.getWire(-scheduleToExecDelay);

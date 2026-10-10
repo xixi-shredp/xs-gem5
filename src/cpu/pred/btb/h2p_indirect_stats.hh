@@ -38,6 +38,11 @@ class H2PIndirectStats
                 const std::optional<Addr> &final_target)
     {
         auto &record = records[pc];
+        ++record.executions;
+        if (!final_target)
+            ++record.absent;
+        else if (*final_target != actual_target)
+            ++record.wrong;
         auto &target_misses = record.targets[actual_target];
         if (!final_target || *final_target != actual_target) {
             ++record.misses;
@@ -46,6 +51,33 @@ class H2PIndirectStats
     }
 
     void clear() { records.clear(); }
+
+    void writeSummary(std::ostream &out) const
+    {
+        uint64_t executions = 0, absent = 0, wrong = 0;
+        for (const auto &[pc, record] : records) {
+            executions += record.executions;
+            absent += record.absent;
+            wrong += record.wrong;
+        }
+        out << "{\"format\":\"committed-nonreturn-indirect-targets\","
+            << "\"version\":1,\"executions\":" << executions
+            << ",\"absent_target\":" << absent
+            << ",\"valid_wrong_target\":" << wrong
+            << ",\"target_misses\":" << absent + wrong
+            << ",\"pcs\":[";
+        bool first = true;
+        for (const auto &[pc, record] : records) {
+            if (!first) out << ',';
+            first = false;
+            out << "{\"pc\":\"0x" << std::hex << pc << std::dec
+                << "\",\"executions\":" << record.executions
+                << ",\"absent_target\":" << record.absent
+                << ",\"valid_wrong_target\":" << record.wrong
+                << ",\"target_misses\":" << record.misses << '}';
+        }
+        out << "]}\n";
+    }
 
     void write(std::ostream &out) const
     {
@@ -66,6 +98,7 @@ class H2PIndirectStats
     struct Record
     {
         uint64_t misses = 0;
+        uint64_t executions = 0, absent = 0, wrong = 0;
         std::map<Addr, uint64_t> targets;
     };
 

@@ -331,7 +331,7 @@ matrixWriteBlob(ThreadContext *tc, Addr addr, const void *src, size_t size)
 
 
 
-ISA::ISA(const Params &p) : BaseISA(p)
+ISA::ISA(const Params &p) : BaseISA(p), enableRvv(p.enable_rvv)
 {
     _regClasses.emplace_back(IntRegClass, int_reg::NumRegs, debug::IntRegs, sizeof(RegVal));
     _regClasses.emplace_back(FloatRegClass, float_reg::NumRegs, debug::FloatRegs, sizeof(RegVal));
@@ -383,6 +383,8 @@ void ISA::clear()
 
     miscRegFile[MISCREG_PRV] = PRV_M;
     miscRegFile[MISCREG_ISA] = 0x80000000003411af;
+    if (!enableRvv)
+        miscRegFile[MISCREG_ISA] &= ~(1ULL << 21);
     miscRegFile[MISCREG_IMPID] = 0;
     miscRegFile[MISCREG_MIDELEG] = ((1 << 12) | (1 << 10) | (1 << 6) | (1 << 2));
     if (FullSystem) {
@@ -574,6 +576,8 @@ ISA::hpmCounterEnabled(int misc_reg) const
 RegVal
 ISA::readMiscRegNoEffect(int misc_reg) const
 {
+    if (misc_reg == MISCREG_ISA && !enableRvv)
+        return miscRegFile[misc_reg] & ~(1ULL << 21);
     if ((misc_reg >= RiscvISA::MiscRegIndex::MISCREG_PMPADDR00) &&
         (misc_reg < RiscvISA::MiscRegIndex::MISCREG_PMPADDR00 + 16)) {
         auto mmu = dynamic_cast<RiscvISA::MMU *>(tc->getMMUPtr());
@@ -752,6 +756,8 @@ ISA::readMiscReg(int misc_reg)
 void
 ISA::setMiscRegNoEffect(int misc_reg, RegVal val)
 {
+    if (misc_reg == MISCREG_ISA && !enableRvv)
+        val &= ~(1ULL << 21);
     if (misc_reg >= NUM_MISCREGS || misc_reg < 0) {
         // Illegal CSR
         panic("Illegal CSR index %#x\n", misc_reg);
@@ -1114,6 +1120,8 @@ ISA::unserialize(CheckpointIn &cp)
     UNSERIALIZE_CONTAINER(miscRegFile);
     if (miscRegFile.size() < NUM_MISCREGS)
         miscRegFile.resize(NUM_MISCREGS, 0);
+    if (!enableRvv)
+        miscRegFile[MISCREG_ISA] &= ~(1ULL << 21);
     UNSERIALIZE_SCALAR(matrixTileM);
     UNSERIALIZE_SCALAR(matrixTileK);
     UNSERIALIZE_SCALAR(matrixTileN);

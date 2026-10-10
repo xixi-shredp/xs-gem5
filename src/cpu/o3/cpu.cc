@@ -1382,10 +1382,11 @@ CPU::logInstructionPhase(const char *phase) const
 {
     inform("H2P_PHASE phase=%s tick=%llu committed=%llu warmup=%llu "
            "measure=%llu retired_post_restore=%llu terminal_fusion_excess=%u "
-           "warmup_fusion_split=%u",
+           "warmup_fusion_split=%u core_cycle=%llu reset_retired=%llu",
            phase, curTick(), thread[0]->numInst,
            warmupCommitted, measureCommitted, retiredPostRestore,
-           terminalFusionExcess, warmupFusionSplit);
+           terminalFusionExcess, warmupFusionSplit,
+           static_cast<uint64_t>(curCycle()), measureResetRetired);
 }
 
 void
@@ -1462,6 +1463,7 @@ CPU::notifyHintBranchResolve(uint64_t ftq_id, Addr pc, Addr target,
 void
 CPU::finishInstructionCommit(const DynInstPtr &inst)
 {
+    const auto &phaseParams = static_cast<const BaseO3CPUParams &>(params());
     auto *bpu = dynamic_cast<branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
         fetch.getBp());
     if (inst->isNop() || inst->isInstPrefetch() ||
@@ -1488,6 +1490,8 @@ CPU::finishInstructionCommit(const DynInstPtr &inst)
                      inst->pcState().as<RiscvISA::PCState>().npc() != restoreTargetPc,
                      "GCPT restore tail or saved target mismatch at mret");
             logInstructionPhase("restore_complete");
+            if (phaseParams.dumpWarmupStats && warmupInstCount)
+                statistics::reset();
             instructionPhase = warmupInstCount ? InstructionPhase::Warmup :
                                                 InstructionPhase::Measure;
             if (!warmupInstCount) {
@@ -1513,7 +1517,10 @@ CPU::finishInstructionCommit(const DynInstPtr &inst)
             ++warmupCommitted;
             if (warmupCommitted == warmupInstCount) {
                 warmupFusionSplit = i + 1 < units;
+                measureResetRetired = retiredPostRestore;
                 logInstructionPhase("warmup_complete");
+                if (phaseParams.dumpWarmupStats)
+                    statistics::dump();
                 statistics::reset();
                 instructionPhase = InstructionPhase::Measure;
                 if (bpu)
@@ -1523,8 +1530,11 @@ CPU::finishInstructionCommit(const DynInstPtr &inst)
             ++measureCommitted;
             if (bpu)
                 bpu->h2pNotifyCommit(1);
-            if (params().max_insts_any_thread &&
-                warmupCommitted + measureCommitted == params().max_insts_any_thread) {
+            const uint64_t measureLimit = phaseParams.measureInstCount ?
+                phaseParams.measureInstCount :
+                (params().max_insts_any_thread ?
+                 params().max_insts_any_thread - warmupCommitted : 0);
+            if (measureLimit && measureCommitted == measureLimit) {
                 terminalFusionExcess = units - i - 1;
                 instructionPhase = InstructionPhase::Finished;
                 if (bpu)

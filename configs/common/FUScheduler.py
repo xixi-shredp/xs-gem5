@@ -364,3 +364,86 @@ class IdealScheduler(Scheduler):
 
 
 DefaultScheduler = KunminghuScheduler
+
+
+class ScalarIntMisc(FUDesc):
+    # CSR/fence/illegal instruction handling, with no VectorConfig capability.
+    opList = [OpDesc(opClass='No_OpClass', opLat=5, pipelined=False)]
+
+
+class ScalarReadPort(FUDesc):
+    opList = [OpDesc(opClass='MemRead', opLat=4),
+              OpDesc(opClass='FloatMemRead', opLat=4)]
+
+
+class ScalarWritePort(FUDesc):
+    opList = [OpDesc(opClass='MemWrite', opLat=2),
+              OpDesc(opClass='MemAtomic', opLat=13),
+              OpDesc(opClass='FloatMemWrite', opLat=3)]
+
+
+class BackendV2NoRVVScheduler(Scheduler):
+    """BackendV2 scalar IQs, physical read-port arbitration and wakeup graph.
+
+    The model exposes wakeup destinations per IQ, whereas RTL uses individual
+    execution units. Queue-level aggregation is recorded in the stage2 audit.
+    """
+    IQs = [
+        IssueQue(name='intIQ0', inports=2, size=20, oports=[
+            IssuePort(fu=[IntALU(), ScalarIntMisc()],
+                      rp=[IntRD(0, 0), IntRD(4, 0), IntWR(0, 0)]),
+            IssuePort(fu=[IntBJU()], rp=[IntRD(0, 1), IntRD(4, 1)])]),
+        IssueQue(name='intIQ1', inports=2, size=20, oports=[
+            IssuePort(fu=[IntALU(), IntDiv()],
+                      rp=[IntRD(1, 0), IntRD(5, 0), IntWR(1, 0)]),
+            IssuePort(fu=[IntBJU()], rp=[IntRD(1, 1), IntRD(5, 1)])]),
+        IssueQue(name='intIQ2', inports=2, size=20, oports=[
+            IssuePort(fu=[IntALU(), IntCvt(), IntMult()],
+                      rp=[IntRD(2, 0), IntRD(6, 0), IntWR(2, 0)]),
+            IssuePort(fu=[IntBJU()], rp=[IntRD(2, 1), IntRD(6, 1)])]),
+        IssueQue(name='intIQ3', inports=2, size=20, oports=[
+            IssuePort(fu=[IntALU(), IntMult()],
+                      rp=[IntRD(3, 0), IntRD(7, 0), IntWR(3, 0)])]),
+        IssueQue(name='ld0', inports=2, size=16, oports=[
+            IssuePort(fu=[ScalarReadPort()], rp=[IntRD(8, 0)])]),
+        IssueQue(name='ld1', inports=2, size=16, oports=[
+            IssuePort(fu=[ScalarReadPort()], rp=[IntRD(9, 0)])]),
+        IssueQue(name='ld2', inports=2, size=16, oports=[
+            IssuePort(fu=[ScalarReadPort()], rp=[IntRD(10, 0)])]),
+        IssueQue(name='sta0', inports=2, size=16, oports=[
+            IssuePort(fu=[ScalarWritePort()], rp=[IntRD(3, 1)])]),
+        IssueQue(name='sta1', inports=2, size=16, oports=[
+            IssuePort(fu=[ScalarWritePort()], rp=[IntRD(7, 1)])]),
+        IssueQue(name='std0', inports=2, size=16, oports=[
+            IssuePort(fu=[StoreDataPort()],
+                      rp=[IntRD(4, 2), FpRD(9, 0)])]),
+        IssueQue(name='std1', inports=2, size=16, oports=[
+            IssuePort(fu=[StoreDataPort()],
+                      rp=[IntRD(5, 2), FpRD(10, 0)])]),
+        IssueQue(name='fpIQ0', inports=2, size=18, oports=[
+            IssuePort(fu=[FP_ALU(), FP_MISC(), FP_MAC()],
+                      rp=[FpRD(0, 0), FpRD(1, 0), FpRD(2, 0)])]),
+        IssueQue(name='fpIQ1', inports=2, size=18, oports=[
+            IssuePort(fu=[FP_ALU(), FP_MAC(), FP_SLOW()],
+                      rp=[FpRD(3, 0), FpRD(4, 0), FpRD(5, 0)])]),
+        IssueQue(name='fpIQ2', inports=2, size=18, oports=[
+            IssuePort(fu=[FP_ALU(), FP_MAC(), FP_SLOW()],
+                      rp=[FpRD(6, 0), FpRD(7, 0), FpRD(8, 0)])]),
+    ]
+    for iq in IQs:
+        iq.vectorSplitUnits = 0
+    intRegfileBanks = 1
+    enableMainRdpOpt = False
+    xbarWakeup = False
+    specWakeupNetwork = [
+        SpecWakeupChannel(
+            srcs=['intIQ0', 'intIQ1', 'intIQ2', 'intIQ3', 'ld0', 'ld1', 'ld2'],
+            dsts=['intIQ0', 'intIQ1', 'intIQ2', 'intIQ3',
+                  'ld0', 'ld1', 'ld2', 'sta0', 'sta1', 'std0', 'std1']),
+        SpecWakeupChannel(srcs=['fpIQ0', 'fpIQ1', 'fpIQ2'],
+                          dsts=['fpIQ0', 'fpIQ1', 'fpIQ2']),
+        SpecWakeupChannel(srcs=['ld0', 'ld1', 'ld2'],
+                          dsts=['fpIQ0', 'fpIQ1', 'fpIQ2']),
+        SpecWakeupChannel(srcs=['fpIQ0', 'fpIQ1', 'fpIQ2'],
+                          dsts=['std0', 'std1']),
+    ]

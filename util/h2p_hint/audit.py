@@ -6,8 +6,9 @@ import json
 import math
 from pathlib import Path
 import re
+import shlex
 
-from .model import address, empty_counters, validate_metadata
+from .model import address, empty_counters, sha256, validate_metadata
 
 
 def legacy():
@@ -244,6 +245,31 @@ def validate_occupancy(data, mode, metadata=None, sample_cycles=None, finite_v3=
     return data["occupancy"]
 
 
+def validate_difftest_config(config, command, difftest_ref_so=None,
+                             memory_type="DDR4_2400_8x8"):
+    """Bind the run's reference model to the audited command and config."""
+    enabled = difftest_ref_so is not None
+    flags = re.findall(r"^enable_difftest=(true|false)$", config, re.M)
+    if len(flags) < 2 or any(flag != ("true" if enabled else "false")
+                           for flag in flags):
+        raise ValueError("difftest configuration differs")
+    memories = [arg for arg in command if arg.startswith("--mem-type=")]
+    if (("--enable-difftest" in command) != enabled or
+            ("--disable-difftest" in command) == enabled or
+            memories != [f"--mem-type={memory_type}"]):
+        raise ValueError("difftest or memory command differs")
+    references = [arg.split("=", 1)[1] for arg in command
+                  if arg.startswith("--difftest-ref-so=")]
+    if enabled:
+        reference = Path(difftest_ref_so["path"])
+        if (references != [str(reference)] or
+                f"difftest_ref_so={reference}\n" not in config or
+                sha256(reference) != difftest_ref_so["sha256"]):
+            raise ValueError("NEMU reference path/SHA differs")
+    elif references:
+        raise ValueError("disabled difftest unexpectedly has a reference")
+
+
 def audit_run(
     output,
     returncode,
@@ -256,6 +282,8 @@ def audit_run(
     metadata=None,
     check_occupancy=False,
     finite_v3=False,
+    difftest_ref_so=None,
+    memory_type="DDR4_2400_8x8",
 ):
     output = Path(output)
     checker = legacy()
@@ -321,12 +349,8 @@ def audit_run(
                 raise ValueError(
                     "confidence queue exceeds configured capacity"
                 )
-        command = (output / "cmd.txt").read_text()
-        if (
-            "enable_difftest=true" in config
-            or "--mem-type=DDR4_2400_8x8" not in command
-        ):
-            raise ValueError("difftest or memory configuration differs")
+        command = shlex.split((output / "cmd.txt").read_text())
+        validate_difftest_config(config, command, difftest_ref_so, memory_type)
         if "--raw-cpt" in command:
             raise ValueError("zstd checkpoint was run as raw memory")
     except (OSError, KeyError, ValueError) as error:

@@ -81,6 +81,7 @@ class ISA : public BaseISA
 {
   protected:
     std::vector<RegVal> miscRegFile;
+    const bool enableRvv;
     uint32_t matrixTileM = 0;
     uint32_t matrixTileK = 0;
     uint32_t matrixTileN = 0;
@@ -97,6 +98,7 @@ class ISA : public BaseISA
 
   public:
     using Params = RiscvISAParams;
+    bool rvvEnabled() const { return enableRvv; }
 
     void clear();
 

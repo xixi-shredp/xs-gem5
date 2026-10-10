@@ -53,6 +53,7 @@ class Decoder : public InstDecoder
     //The extended machine instruction being generated
     ExtMachInst emi;
     uint32_t machInst;
+    const bool enableRvv;
 
     bool vtypeReady = true;
     VTYPE machVtype;
@@ -69,7 +70,8 @@ class Decoder : public InstDecoder
     StaticInstPtr decode(ExtMachInst mach_inst, Addr addr);
 
   public:
-    Decoder(const RiscvDecoderParams &p) : InstDecoder(p, &machInst)
+    Decoder(const RiscvDecoderParams &p) :
+        InstDecoder(p, &machInst), enableRvv(p.enable_rvv)
     {
         reset();
     }

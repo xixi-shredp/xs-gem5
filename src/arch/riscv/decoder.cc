@@ -28,6 +28,8 @@
  */
 
 #include "arch/riscv/decoder.hh"
+#include "arch/riscv/insts/unknown.hh"
+#include "arch/riscv/rvv_encoding.hh"
 #include "arch/riscv/types.hh"
 #include "base/bitfield.hh"
 #include "debug/Decode.hh"
@@ -81,6 +83,10 @@ Decoder::decode(ExtMachInst mach_inst, Addr addr)
     DPRINTF(Decode, "Decoding instruction 0x%08x at address %#x\n",
             mach_inst.instBits, addr);
 
+    // Gate before the process-wide cache: a scalar-only CPU must not reuse a
+    // vector StaticInst cached by another decoder, or contaminate its cache.
+    if (!enableRvv && isRvvEncoding(mach_inst.instBits))
+        return new Unknown(mach_inst);
     StaticInstPtr si = defaultCache.decode(this, mach_inst, addr);
 
     DPRINTF(Decode, "Decode: Decoded %s instruction: %#x\n",
@@ -105,7 +111,7 @@ Decoder::decode(PCStateBase &_next_pc)
         next_pc.compressed(false);
     }
 
-    emi.vtype8 = this->machVtype & 0xff;
+    emi.vtype8 = enableRvv ? this->machVtype & 0xff : 0;
     StaticInstPtr inst = decode(emi, next_pc.instAddr());
     if (inst->isVectorConfig()) {
         auto vset = static_cast<VConfOp*>(inst.get());
@@ -147,7 +153,7 @@ Decoder::clearVtype() {
 
 bool
 Decoder::stall() {
-    return !vtypeReady;
+    return enableRvv && !vtypeReady;
 }
 
 } // namespace RiscvISA

@@ -1,4 +1,6 @@
 #include "cpu/difftest.hh"
+#include <cstddef>
+#include <cstdlib>
 
 #include <dlfcn.h>
 
@@ -164,10 +166,25 @@ NemuProxy::NemuProxy(int coreid, const char *ref_so, bool enable_sdcard_diff, bo
 
     skipPerfCntCsr();
 
-    auto nemu_init = (void (*)(void))dlsym(handle, "difftest_init");
-    assert(nemu_init);
-
-    nemu_init();
+    // Bind the reference to this build's actual register-file layout before
+    // the first regcpy. A new experimental reference must reject a mismatch,
+    // rather than allowing a larger memcpy into the simulator's state buffer.
+    fprintf(stderr, "GEM5_DIFFTEST_ABI state_bytes=%zu gpr=%zu fpr=%zu mode=%zu pc=%zu h=%zu vr=%zu vstart=%zu vlenb=%zu vector_bytes=%zu\n",
+        sizeof(riscv64_CPU_regfile), offsetof(riscv64_CPU_regfile,gpr),
+        offsetof(riscv64_CPU_regfile,fpr), offsetof(riscv64_CPU_regfile,mode),
+        offsetof(riscv64_CPU_regfile,pc), offsetof(riscv64_CPU_regfile,v),
+        offsetof(riscv64_CPU_regfile,vr), offsetof(riscv64_CPU_regfile,vstart),
+        offsetof(riscv64_CPU_regfile,vlenb), sizeof(((riscv64_CPU_regfile*)nullptr)->vr));
+    auto nemu_init_v2 = (void (*)(unsigned))dlsym(handle, "difftest_init_v2");
+    if (nemu_init_v2) {
+        nemu_init_v2(sizeof(riscv64_CPU_regfile));
+    } else {
+        fatal_if(std::getenv("GEM5_REQUIRE_DIFFTEST_ABI"),
+            "This experiment requires NEMU difftest_init_v2 ABI validation");
+        auto nemu_init = (void (*)(void))dlsym(handle, "difftest_init");
+        assert(nemu_init);
+        nemu_init();
+    }
 }
 
 void

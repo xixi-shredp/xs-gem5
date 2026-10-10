@@ -140,6 +140,7 @@ class CPU : public BaseCPU
     uint64_t warmupCommitted = 0;
     uint64_t measureCommitted = 0;
     uint64_t retiredPostRestore = 0;
+    uint64_t measureResetRetired = 0;
     unsigned terminalFusionExcess = 0;
     bool warmupFusionSplit = false;
     Addr restoreMretPc = 0;

@@ -42,6 +42,7 @@ H2PIndirectStatsOutput::reset()
     // write the aggregate only on exit.
     if (totalWritten) {
         simout.remove("h2p-indirect.txt");
+        simout.remove("h2p-target-summary.json");
         totalWritten = false;
     }
 }
@@ -58,6 +59,9 @@ H2PIndirectStatsOutput::dump()
     auto out = simout.create("h2p-indirect.txt", false, true);
     total.write(*out->stream());
     simout.close(out);
+    auto summary = simout.create("h2p-target-summary.json", false, true);
+    total.writeSummary(*summary->stream());
+    simout.close(summary);
     totalWritten = true;
 }
 
