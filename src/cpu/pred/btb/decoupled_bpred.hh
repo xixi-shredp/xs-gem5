@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <queue>
 #include <stack>
 #include <utility>
@@ -151,6 +152,8 @@ class DecoupledBPUWithBTB : public BPredUnit
         FullBTBPrediction hintBaselineS3;
         HintHistory hintHistory;
         HintFiniteHistory hintFiniteHistory;
+        // Collect-only observer of actual retired history; never queried by BPU.
+        HintFiniteHistory hintCommittedHistory;
         PairTAGE::TrainPacket finalTrainPacket;
         PairTAGE::TrainPacket twoTakenTrainPacket;
         std::vector<BTBEntry> twoTakenBTBEntries;
@@ -876,6 +879,8 @@ class DecoupledBPUWithBTB : public BPredUnit
      */
     void commitBranch(const DynInstPtr &inst, bool miss);
 
+    bool hintDiscoveryActive = false;
+    std::map<Addr, std::pair<uint64_t, uint64_t>> hintDiscovery;
     void h2pSetMeasurementActive(bool active);
 
     void h2pResolveAtExecute(FetchTargetId target_id, Addr pc,

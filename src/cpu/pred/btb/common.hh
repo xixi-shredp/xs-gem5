@@ -382,6 +382,9 @@ struct FetchTarget
     // legacy component's metadata slot or overwrite its training prediction.
     std::shared_ptr<HintQuery> hintQuery;
     std::shared_ptr<const HintSnapshot> hintSnapshot;
+    int hintLocalSelector = -1;
+    bool hintLocalWrite = false;
+    Addr hintLocalBranchPC = 0;
 
     // A retired control can target its own fallthrough and share an FTQ entry
     // with later controls. Preserve their order, with a hard bound of one

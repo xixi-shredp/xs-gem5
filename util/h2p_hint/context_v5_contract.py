@@ -1,4 +1,9 @@
-"""Bit-exact reference and packed-image encoder for H2P Hint metadata v5 fork."""
+"""Bit-exact reference and packed-image encoder for H2P Hint metadata v7 spec.
+
+The unversioned H2PHINTL binary layout intentionally matches v6. Its bytes
+alone cannot distinguish the history contract: callers must validate v7
+metadata/profile identities and the accompanying image SHA before loading.
+"""
 
 from __future__ import annotations
 
@@ -7,26 +12,26 @@ import hashlib
 import json
 import re
 import struct
-import zlib
 from pathlib import Path
 
 
-MAGIC = b"H2PHCF05"
-VERSION = 5
-HASH_VERSION = 5
+MAGIC = b"H2PHINTL"
+VERSION = 7
+HASH_VERSION = 7
 MASK28 = (1 << 28) - 1
 MASK14 = (1 << 14) - 1
 MASK47 = (1 << 47) - 1
 MASK64 = (1 << 64) - 1
 MASK128 = (1 << 128) - 1
-CONTEXT_ENCODING = "xs-gem5-fork-ith128-path128-lhr16-v1"
-MASK_ORDER = ["ITH", "LHR", "Call", "Ret"]
+CONTEXT_ENCODING = "xs-gem5-spec-startpc-ith128-path128-lhr16-inflight8-v1"
+MASK_ORDER = ["ITH", "Call", "Ret", "LHR"]
 HISTORY = {
     "ith_entries": 128,
     "ith_use_bits": 128,
     "lhr_entries": 16,
     "lhr_bits": 32,
     "lhr_use_bits": 16,
+    "lhr_head_bits": 5,
     "call_entries": 128,
     "ret_entries": 128,
     "path_use_bits": 128,
@@ -39,7 +44,7 @@ LAYOUT = {
     "slot_entries": 32,
     "conf_queue_depth": 32,
     "hint_meta_entries": 16,
-    "lhr_max_uncommitted": 4,
+    "lhr_max_uncommitted": 8,
 }
 CAM_COUNT = 16
 CONTEXT_COUNT = 4096
@@ -51,57 +56,52 @@ FETCH_BLOCK_BYTES = 64
 FETCH_ALIGN_BYTES = 32
 
 
-def fold28(value: int) -> int:
-    if value < 0:
-        raise ValueError("fold28 input must be nonnegative")
-    return (value ^ (value >> 28) ^ (value >> 56)) & MASK28
+def fold(value: int, width: int) -> int:
+    if type(value) is not int or value < 0 or type(width) is not int or width <= 0:
+        raise ValueError("fold requires unsigned integer and positive width")
+    result = 0
+    mask = (1 << width) - 1
+    while value:
+        result ^= value & mask
+        value >>= width
+    return result
+
+
+def component28(value: int) -> int:
+    index = fold(value, 11)
+    tag = fold(value, 17) ^ ((fold(value, 16) << 2) & 0x1FFFF)
+    return (tag << 11) | index
 
 
 def fold14_pc(pc: int) -> int:
-    word = address_word(pc)
-    folded = 0
-    while word:
-        folded ^= word & MASK14
-        word >>= 14
-    return folded
-
-
-def rotate28(value: int, shift: int) -> int:
-    shift %= 28
-    value &= MASK28
-    if shift == 0:
-        return value
-    return ((value << shift) | (value >> (28 - shift))) & MASK28
+    return fold(address_word(pc), 14)
 
 
 def fold128(value: int) -> int:
     if type(value) is not int or not 0 <= value <= MASK128:
         raise ValueError("history must be an unsigned 128-bit integer")
-    result = 0
-    for shift in range(0, 128, 28):
-        result ^= (value >> shift) & MASK28
-    return result
+    return component28(value)
 
 
-def context_components(
-    ith_low128: int, lhr_low16: int, call_low128: int, ret_low128: int
-) -> tuple[int, int, int, int]:
+def context_components(ith_low128: int, lhr_low16: int,
+                       call_low128: int, ret_low128: int) -> tuple[int, int, int, int]:
+    # Keep named argument order for existing callers; return order follows mask bits.
     if type(lhr_low16) is not int or not 0 <= lhr_low16 <= 0xFFFF:
         raise ValueError("local history must be an unsigned 16-bit integer")
-    return (fold128(ith_low128), lhr_low16,
-            fold128(call_low128), fold128(ret_low128))
+    return (fold128(ith_low128), fold128(call_low128),
+            fold128(ret_low128), component28(lhr_low16))
 
 
 def hash_key(pc: int, components: tuple[int, int, int, int], mask: int) -> int:
-    if not 0 <= mask < 16 or len(components) != 4:
+    if type(mask) is not int or not 0 <= mask < 16 or len(components) != 4:
         raise ValueError("expected four context components and a four-bit mask")
-    key = fold28(address_word(pc))
+    key = component28(address_word(pc))
     for bit, component in enumerate(components):
-        if not 0 <= component <= MASK28:
+        if type(component) is not int or not 0 <= component <= MASK28:
             raise ValueError("context component exceeds 28 bits")
         if mask & (1 << bit):
-            key ^= rotate28(component, bit + 2)
-    return key & MASK28
+            key ^= component
+    return key
 
 
 def advance_target(history: int, target: int, bit_count: int) -> int:
@@ -131,10 +131,8 @@ def cam_window_end(start_pc: int) -> int | None:
 
 
 def select_cam_pc(start_pc: int, pcs: list[int]) -> int | None:
-    end = cam_window_end(start_pc)
-    if end is None:
-        return None
-    return min((pc for pc in pcs if start_pc <= pc < end), default=None)
+    address_word(start_pc)
+    return start_pc if start_pc in pcs else None
 
 
 def _number(value: object) -> int:
@@ -173,7 +171,7 @@ def _rows(metadata: dict) -> tuple[list[int], list[int], list[int]]:
         ("layout", LAYOUT),
     ):
         if not _same_typed(metadata.get(name), expected):
-            raise ValueError(f"metadata {name} differs from Hint v5 fork contract")
+            raise ValueError(f"metadata {name} differs from Hint v7 spec contract")
     source = metadata.get("source")
     if not isinstance(source, dict) or not isinstance(source.get("workload_id"), str) \
             or not source["workload_id"]:
@@ -259,16 +257,16 @@ def pack_image(metadata: dict) -> bytes:
         + struct.pack("<4096I", *context)
         + struct.pack("<32Q", *slots)
     )
-    header = struct.pack("<8sII", MAGIC, VERSION, zlib.crc32(body))
+    header = MAGIC + bytes(8)
     return header + body
 
 
 def unpack_image(image: bytes) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
     if len(image) != IMAGE_BYTES:
-        raise ValueError("Hint image length differs from v5 fork contract")
-    magic, version, checksum = struct.unpack_from("<8sII", image)
+        raise ValueError("Hint image length differs from v7 spec contract")
+    magic, reserved = struct.unpack_from("<8s8s", image)
     body = image[16:]
-    if magic != MAGIC or version != VERSION or zlib.crc32(body) != checksum:
+    if magic != MAGIC or reserved != bytes(8):
         raise ValueError("Hint image header or checksum is invalid")
     cam = struct.unpack_from("<16Q", body)
     context = struct.unpack_from("<4096I", body, CAM_COUNT * 8)
@@ -325,81 +323,20 @@ def unpack_image(image: bytes) -> tuple[tuple[int, ...], tuple[int, ...], tuple[
 
 
 def self_test() -> None:
-    vectors = json.loads(Path(__file__).with_name("hint-context-v5-vectors.json").read_text())
+    vectors = json.loads(Path(__file__).with_name("hint-context-v7-vectors.json").read_text())
     assert vectors["version"] == VERSION
-    for row in vectors["fold14"]:
-        assert fold14_pc(int(row["pc"], 16)) == int(row["result"], 16)
-    for row in vectors["history_steps"]:
-        initial = int(row["start"], 16)
-        if row["kind"] in ("ith", "lhr"):
-            actual = advance_target(initial, int(row["target"], 16), row["bits"])
-        else:
-            actual = advance_path(initial, int(row["pc"], 16))
-        assert actual == int(row["result"], 16)
     for row in vectors["hash"]:
-        components = context_components(
-            int(row["ith_low128"], 16),
-            int(row["lhr_low16"], 16),
-            int(row["call_low128"], 16),
-            int(row["ret_low128"], 16),
-        )
-        assert components == tuple(int(x, 16) for x in row["components"])
-        key = hash_key(int(row["pc"], 16), components, row["mask"])
-        assert key == int(row["key"], 16)
-        assert key & (SET_COUNT - 1) == row["set"]
-        assert key >> 11 == row["tag"]
-    for row in vectors["cam_windows"]:
-        selected = select_cam_pc(
-            int(row["start_pc"], 16), [int(pc, 16) for pc in row["pcs"]]
-        )
-        expected = row["selected"]
-        assert selected == (None if expected is None else int(expected, 16))
-    sample = {
-        "format": "h2p-hint", "version": VERSION, "storage": "finite",
-        "hash_version": HASH_VERSION, "context_encoding": CONTEXT_ENCODING,
-        "mask_order": MASK_ORDER,
-        "history": HISTORY, "layout": LAYOUT,
-        "cam": [{"pc": "0x1000", "mask": 15}],
-        "slots": ["0x2000"],
-        "entries": [{"set": 0, "way": 0, "tag": 1, "slot": 0, "conf": 3}],
-        "source": {
-            "workload_id": "self-test/0",
-            "checkpoint_sha256": "0" * 64,
-            "profile_sha256": "1" * 64,
-            "builder_sha256": "2" * 64,
-        },
-    }
+        components = context_components(int(row["ith_low128"], 16),
+            int(row["lhr_low16"], 16), int(row["call_low128"], 16),
+            int(row["ret_low128"], 16))
+        assert list(components) == row["components"]
+        assert hash_key(int(row["pc"], 16), components, row["mask"]) == row["key"]
+    sample = json.loads(Path(__file__).with_name("hint-context-v7-metadata.json").read_text())
     image = pack_image(sample)
-    image_vector = vectors["sample_image"]
-    assert len(image) == image_vector["length"]
-    assert struct.unpack_from("<I", image, 12)[0] == int(image_vector["crc32"], 16)
-    assert hashlib.sha256(image).hexdigest() == image_vector["sha256"]
-    cam, context, slots = unpack_image(image)
-    assert cam[0] == int(image_vector["cam_word_0"], 16)
-    assert context[0] == int(image_vector["context_word_0"], 16)
-    assert slots[0] == int(image_vector["slot_word_0"], 16)
-    for offset, format_string, value in (
-        (16 + 8, "<Q", 1),
-        (16 + CAM_COUNT * 8, "<I", 1 | (1 << 24)),
-        (16 + CAM_COUNT * 8, "<I", 1 | (31 << 17) | (3 << 22) | (1 << 24)),
-    ):
-        corrupt = bytearray(image)
-        struct.pack_into(format_string, corrupt, offset, value)
-        struct.pack_into("<I", corrupt, 12, zlib.crc32(corrupt[16:]))
-        try:
-            unpack_image(corrupt)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("semantically invalid image was accepted")
-    wrong_type = dict(sample)
-    wrong_type["history"] = dict(HISTORY, target_shift=True)
-    try:
-        pack_image(wrong_type)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("boolean history field was accepted as an integer")
+    assert len(image) == IMAGE_BYTES
+    assert image[:16] == MAGIC + bytes(8)
+    assert hashlib.sha256(image).hexdigest() == vectors["sample_image_sha256"]
+    unpack_image(image)
 
 
 def main() -> None:

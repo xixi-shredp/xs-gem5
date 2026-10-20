@@ -21,10 +21,14 @@ namespace btb_pred
 
 struct FetchTarget;
 
+// V7 components are independently encoded as T(raw)<<11 | I(raw),
+// in mask order ITH, Call, Ret, LHR. They are not F28(raw).
 using HintV3Contexts = std::array<uint32_t, 4>;
 
 uint16_t hintFold14(Addr pc);
 uint32_t hintFold128(const std::array<uint64_t, 2> &value);
+uint32_t hintEncode128(const std::array<uint64_t, 2> &value);
+uint32_t hintEncodeWord(uint64_t value);
 uint32_t hintHashV3(Addr pc, const HintV3Contexts &contexts, uint8_t mask);
 // Directed production-helper checks, invoked by the final gem5.opt test
 // SimObject. This does not allocate a guest or use a separate gtest binary.
@@ -39,14 +43,15 @@ class HintFiniteHistory
     struct Ring
     {
         std::array<uint8_t, 128> cells{};
-        // Logical 8-bit phase; physical cell index is head & 127.
-        uint8_t head = 255;
+        // Seven-bit physical head, with 64 cells of recovery guard band.
+        uint8_t head = 127;
         uint64_t writes = 0;
     };
     struct LocalRing
     {
         std::array<uint8_t, 16> cells{};
         uint8_t head = 15;
+        // Five-bit phase disambiguates a wrap of the sixteen-cell ring.
         uint8_t phase = 31;
         uint64_t writes = 0;
     };
@@ -59,23 +64,29 @@ class HintFiniteHistory
         std::array<std::array<uint64_t, 2>, 3> low128{};
         std::array<uint16_t, 16> localLow16{};
         std::array<uint8_t, 16> localPhases{};
+        // Assertion-only counters; never used to reconstruct history cells.
+        std::array<uint64_t, 16> localWrites{};
     };
 
     void configure(const std::vector<Addr> &pcs);
     Snapshot snapshot() const;
+    // Full restore is a directed-test/collect observer helper. Runtime finite
+    // replay first rewinds its bounded Hint metadata, then restores globals.
     void restore(const Snapshot &snapshot);
+    void restoreGlobals(const Snapshot &snapshot);
     bool canUpdateAfter(const Snapshot &oldest, bool indirect,
                         bool call, bool is_return, bool taken) const;
     void update(Addr pc, Addr target, bool indirect, bool call,
-                bool is_return, bool taken);
+                bool is_return, bool taken, int local_selector = -1,
+                bool write_local = false);
     int localIndex(Addr pc) const;
     uint8_t localHead(unsigned index) const;
     uint8_t localPhase(unsigned index) const;
     void restoreLocalPhase(unsigned index, uint8_t phase);
+    void rewindLocalPhase(unsigned index, uint8_t phase);
     uint16_t localLow16(unsigned index) const;
     std::array<uint64_t, 2> low128(const Ring &ring) const;
-    // Legacy test observers. Production fork hashing uses only 128/16 reads.
-    uint8_t localLow8(unsigned index) const;
+    // Production reads 128 global bits and the newest sixteen local bits.
     uint64_t low64(const Ring &ring) const;
     uint16_t low12(const Ring &ring) const;
     HintV3Contexts contexts(const Snapshot &snapshot, int local_index) const;

@@ -269,12 +269,12 @@ const char *MaskOrderJson = "[\"GHR\",\"GITHR\",\"LITHR\",\"Call\",\"Return\"]";
 const char *FiniteReferenceJson =
     "{\"cam_entries\":16,\"context_entries\":4096,\"ways\":2,"
     "\"slot_entries\":32}";
-const char *ForkContextEncoding = "xs-gem5-fork-ith128-path128-lhr16-v1";
+const char *ForkContextEncoding = "xs-gem5-spec-startpc-ith128-path128-lhr16-inflight8-v1";
 const char *V3HistoryJson =
     "{\"ith_entries\":128,\"ith_use_bits\":128,\"lhr_entries\":16,"
-    "\"lhr_bits\":32,\"lhr_use_bits\":16,\"call_entries\":128,"
+    "\"lhr_bits\":32,\"lhr_use_bits\":16,\"lhr_head_bits\":5,\"call_entries\":128,"
     "\"ret_entries\":128,\"path_use_bits\":128,\"target_shift\":1}";
-const char *V3MaskOrderJson = "[\"ITH\",\"LHR\",\"Call\",\"Ret\"]";
+const char *V3MaskOrderJson = "[\"ITH\",\"Call\",\"Ret\",\"LHR\"]";
 
 void
 writeOccupancy(std::ostream &out, const HintIndirect::Occupancy &value)
@@ -389,7 +389,7 @@ struct HintIndirect::Statistics : public statistics::Group
           ADD_STAT(metaQueueStalls, statistics::units::Count::get(),
                    "Measured prediction-enqueue attempts blocked by the 16-entry Hint metadata queue"),
           ADD_STAT(lhrStalls, statistics::units::Count::get(),
-                   "Measured prediction-enqueue attempts blocked by four uncommitted updates to an LHR-reading Hint PC"),
+                   "Measured Hint queries falling back after eight uncommitted updates to the same H2P PC"),
           ADD_STAT(zeroTransitions, statistics::units::Count::get(),
                    "Confidence writes transitioning from one to zero"),
           ADD_STAT(recoveries, statistics::units::Count::get(),
@@ -409,6 +409,7 @@ struct HintIndirect::Statistics : public statistics::Group
 struct HintIndirect::Output
 {
     gzFile profile = nullptr;
+    gzFile commitHistory = nullptr;
     std::ofstream confZero;
 
     ~Output()
@@ -416,6 +417,8 @@ struct HintIndirect::Output
         if (profile) {
             gzclose(profile);
         }
+        if (commitHistory)
+            gzclose(commitHistory);
     }
 
     void writeProfile(const std::string &line)
@@ -434,6 +437,11 @@ HintIndirect::HintIndirect(const Config &config, statistics::Group *parent)
 {
     fatal_if(config.mode != "off" && config.mode != "collect" &&
              config.mode != "replay", "Invalid Hint mode %s", config.mode);
+    fatal_if(config.profileContext != "prediction" &&
+             config.profileContext != "commit-pre",
+             "Invalid Hint profiling context source %s", config.profileContext);
+    fatal_if(config.ideal && config.profileContext != "prediction",
+             "Commit-pre Hint profiling requires finite mode");
     fatal_if(config.ideal && !enabled(),
              "Ideal Hint requires collect or replay mode");
     if (!enabled()) {
@@ -448,7 +456,7 @@ HintIndirect::HintIndirect(const Config &config, statistics::Group *parent)
     fatal_if(!config.ideal && (config.camEntries != 16 ||
              config.contextEntries != 4096 || config.ways != 2 ||
              config.slotEntries != 32 || config.confQueueDepth != 32),
-             "Finite fork v5 Hint requires 16 CAM, 4096 Context, two ways, "
+             "Finite spec v7 Hint requires 16 CAM, 4096 Context, two ways, "
              "32 Slots and 32 confidence FIFO entries");
     fatal_if(config.ideal && (config.camEntries != 16 ||
              config.contextEntries != 4096 || config.ways != 2 ||
@@ -511,7 +519,7 @@ HintIndirect::loadCandidates()
 {
     const auto tree = readJson(config.candidatePath);
     require(stringField(tree, "format") == "h2p-hint-candidates" &&
-            integer(tree, "version") == (config.ideal ? 3 : 5),
+            integer(tree, "version") == (config.ideal ? 3 : 7),
             "candidate format/version does not match Hint storage mode");
     require(stringField(tree, "storage") ==
             (config.ideal ? "unlimited" : "finite"),
@@ -528,7 +536,7 @@ HintIndirect::loadCandidates()
         candidates.push_back(pc);
     }
     require(config.ideal || candidates.size() <= 16,
-            "finite fork v5 Hint collect supports at most 16 CAM PCs");
+            "finite spec v7 Hint collect supports at most 16 CAM PCs");
     if (config.ideal) {
         candidateIndex.assign(seen.begin(), seen.end());
     }
@@ -690,53 +698,66 @@ HintIndirect::loadFiniteV3Metadata()
 {
     const auto tree = readJson(config.metadataPath);
     require(stringField(tree, "format") == "h2p-hint" &&
-            integer(tree, "version") == 5 &&
+            integer(tree, "version") == 7 &&
             stringField(tree, "storage") == "finite" &&
-            integer(tree, "hash_version") == 5 &&
+            integer(tree, "hash_version") == 7 &&
             stringField(tree, "context_encoding") == ForkContextEncoding,
-            "finite Hint requires fork metadata/hash/storage version 5 and encoding");
+            "finite Hint requires fork metadata/hash/storage version 7 and encoding");
     std::vector<std::string> order;
     for (const auto &node : arrayField(tree, "mask_order"))
         order.push_back(stringValue(node.second));
-    require(order == std::vector<std::string>({"ITH", "LHR", "Call", "Ret"}),
-            "finite fork v5 mask bit order mismatch");
+    require(order == std::vector<std::string>({"ITH", "Call", "Ret", "LHR"}),
+            "finite spec v7 mask bit order mismatch");
     const auto &history = tree.get_child("history");
     checkObject(history, "history");
-    const std::array<std::pair<const char *, unsigned>, 9> history_fields = {{
+    const std::array<std::pair<const char *, unsigned>, 10> history_fields = {{
         {"ith_entries", 128}, {"ith_use_bits", 128},
-        {"lhr_entries", 16}, {"lhr_bits", 32}, {"lhr_use_bits", 16},
+        {"lhr_entries", 16}, {"lhr_bits", 32}, {"lhr_use_bits", 16}, {"lhr_head_bits", 5},
         {"call_entries", 128}, {"ret_entries", 128},
         {"path_use_bits", 128}, {"target_shift", 1}}};
     require(history.size() == history_fields.size(),
-            "finite fork v5 history field count mismatch");
+            "finite spec v7 history field count mismatch");
     for (const auto &[name, value] : history_fields)
         require(integer(history, name) == value,
-                std::string("finite fork v5 history mismatch: ") + name);
+                std::string("finite spec v7 history mismatch: ") + name);
     const auto &layout = tree.get_child("layout");
     checkObject(layout, "layout");
     const std::array<std::pair<const char *, unsigned>, 7> layout_fields = {{
         {"cam_entries", 16}, {"context_entries", 4096}, {"ways", 2},
         {"slot_entries", 32}, {"conf_queue_depth", 32},
-        {"hint_meta_entries", 16}, {"lhr_max_uncommitted", 4}}};
+        {"hint_meta_entries", 16}, {"lhr_max_uncommitted", 8}}};
     require(layout.size() == layout_fields.size(),
-            "finite fork v5 layout field count mismatch");
+            "finite spec v7 layout field count mismatch");
     for (const auto &[name, value] : layout_fields)
         require(integer(layout, name) == value,
-                std::string("finite fork v5 layout mismatch: ") + name);
+                std::string("finite spec v7 layout mismatch: ") + name);
     const auto &source = tree.get_child("source");
     checkObject(source, "source");
+    const auto profile_source = source.get_child_optional("profile_context_source");
+    const auto online_source = source.get_child_optional("online_context_source");
+    require(bool(profile_source) == bool(online_source),
+            "Hint metadata context origins must occur together");
+    const std::string training_source = profile_source ?
+        stringField(source, "profile_context_source") : "prediction";
+    require(training_source == "prediction" || training_source == "commit-pre",
+            "Invalid Hint metadata profiling context origin");
+    require(!online_source ||
+            stringField(source, "online_context_source") == "prediction",
+            "Hint online context origin must remain prediction");
+    require(training_source == config.profileContext,
+            "Hint metadata profiling context origin differs from requested source");
     require(!stringField(source, "workload_id").empty(),
-            "finite fork v5 workload identity is empty");
+            "finite spec v7 workload identity is empty");
     const std::regex digest("[0-9a-f]{64}");
     for (const char *name : {"checkpoint_sha256", "profile_sha256",
                              "builder_sha256"})
         require(std::regex_match(stringField(source, name), digest),
-                std::string("finite fork v5 source digest mismatch: ") + name);
+                std::string("finite spec v7 source digest mismatch: ") + name);
 
     bool invalid_seen = false;
     Addr previous_pc = 0;
     const auto &cam_array = arrayField(tree, "cam");
-    require(cam_array.size() <= 16, "finite fork v5 CAM capacity exceeded");
+    require(cam_array.size() <= 16, "finite spec v7 CAM capacity exceeded");
     for (const auto &node : cam_array) {
         const auto &row = node.second;
         checkObject(row, "CAM entry");
@@ -750,24 +771,24 @@ HintIndirect::loadFiniteV3Metadata()
         const auto mask = integer(row, "mask");
         require(!invalid_seen && mask < 16 &&
                 (cam.empty() || previous_pc < pc),
-                "finite fork v5 CAM PCs must ascend before invalid rows");
+                "finite spec v7 CAM PCs must ascend before invalid rows");
         cam.push_back({pc, static_cast<unsigned>(mask)});
         previous_pc = pc;
     }
     std::set<Addr> seen_targets;
     const auto &slot_array = arrayField(tree, "slots");
-    require(slot_array.size() <= 32, "finite fork v5 Slot capacity exceeded");
+    require(slot_array.size() <= 32, "finite spec v7 Slot capacity exceeded");
     for (const auto &node : slot_array) {
         const Addr target = address(stringValue(node.second));
         require(seen_targets.insert(target).second,
-                "duplicate finite fork v5 Slot target");
+                "duplicate finite spec v7 Slot target");
         slots.push_back(target);
     }
     std::set<std::pair<unsigned, unsigned>> positions;
     std::set<std::pair<unsigned, uint32_t>> tags;
     const auto &context_array = arrayField(tree, "entries");
     require(context_array.size() <= 4096,
-            "finite fork v5 Context capacity exceeded");
+            "finite spec v7 Context capacity exceeded");
     for (const auto &node : context_array) {
         const auto &row = node.second;
         checkObject(row, "Context entry");
@@ -782,10 +803,10 @@ HintIndirect::loadFiniteV3Metadata()
         const auto conf = integer(row, "conf");
         require(set < 2048 && way < 2 && tag < (1U << 17) &&
                 slot < slots.size() && conf == 3,
-                "finite fork v5 Context row is out of range or has invalid target");
+                "finite spec v7 Context row is out of range or has invalid target");
         require(positions.emplace(set, way).second &&
                 tags.emplace(set, tag).second,
-                "duplicate finite fork v5 Context position or tag");
+                "duplicate finite spec v7 Context position or tag");
         entries[set * 2 + way] = {true, static_cast<uint32_t>(tag),
             static_cast<uint32_t>((tag << 11) | set),
             static_cast<size_t>(slot), 3};
@@ -805,7 +826,8 @@ HintIndirect::openOutputs()
         simout.createSubdirectory(config.outputPrefix);
     }
     for (const auto &name : {"hint-profile.jsonl.gz", "hint-replay.jsonl.gz",
-                             "hint-stats.json", "conf0.txt"}) {
+                             "hint-stats.json", "conf0.txt",
+                             "hint-commit-history.jsonl.gz"}) {
         fatal_if(std::filesystem::exists(simout.resolve(outputName(name))),
                  "Hint output already exists: %s; use a fresh output directory",
                  outputName(name));
@@ -820,6 +842,26 @@ HintIndirect::openOutputs()
         fatal_if(gzbuffer(output->profile, 1U << 20) != 0,
                  "Cannot allocate Hint profile compression buffer");
         writeHeader();
+        if (needsCommitProfileContext()) {
+            output->commitHistory = gzopen(simout.resolve(
+                outputName("hint-commit-history.jsonl.gz")).c_str(), "wb1");
+            fatal_if(!output->commitHistory ||
+                     gzbuffer(output->commitHistory, 1U << 20) != 0,
+                     "Cannot open committed Hint history diagnostic trace");
+            std::ostringstream header;
+            header << "{\"kind\":\"header\",\"format\":\"h2p-hint-commit-history\","
+                   << "\"version\":1,\"initial_state\":\"zero\","
+                   << "\"profile_context_source\":\"commit-pre\","
+                   << "\"online_context_source\":\"prediction\",\"tracked_pcs\":[";
+            for (size_t index = 0; index < historyPcs.size(); ++index) {
+                if (index) header << ',';
+                header << jsonString(hexAddress(historyPcs[index]));
+            }
+            header << "]}\n";
+            const std::string text = header.str();
+            fatal_if(gzwrite(output->commitHistory, text.data(), text.size()) !=
+                     int(text.size()), "Cannot write committed Hint trace header");
+        }
     } else if (isReplay() && !config.ideal) {
         output->profile = gzopen(
             simout.resolve(outputName("hint-replay.jsonl.gz")).c_str(), "wb1");
@@ -827,8 +869,8 @@ HintIndirect::openOutputs()
         fatal_if(gzbuffer(output->profile, 1U << 20) != 0,
                  "Cannot allocate Hint replay trace buffer");
         output->writeProfile("{\"kind\":\"header\",\"format\":\"h2p-hint-replay\","
-                             "\"version\":5,\"storage\":\"finite\",\"hash_version\":5,"
-                             "\"context_encoding\":\"xs-gem5-fork-ith128-path128-lhr16-v1\"}\n");
+                             "\"version\":7,\"storage\":\"finite\",\"hash_version\":7,"
+                             "\"context_encoding\":\"xs-gem5-spec-startpc-ith128-path128-lhr16-inflight8-v1\"}\n");
     }
 }
 
@@ -837,8 +879,10 @@ HintIndirect::writeHeader()
 {
     std::ostringstream line;
     line << "{\"kind\":\"header\",\"format\":\"h2p-hint-profile\","
-         << "\"version\":" << (config.ideal ? 3 : 5)
-         << ",\"hash_version\":" << (config.ideal ? 2 : 5);
+         << "\"version\":" << (config.ideal ? 3 : 7)
+         << ",\"hash_version\":" << (config.ideal ? 2 : 7)
+         << ",\"profile_context_source\":" << jsonString(config.profileContext)
+         << ",\"online_context_source\":\"prediction\"";
     if (config.ideal)
         line << ",\"ghr_bits\":970,\"mask_order\":" << MaskOrderJson
              << ",\"history\":" << HistoryJson;
@@ -857,7 +901,7 @@ HintIndirect::writeHeader()
              << ",\"ways\":" << config.ways
              << ",\"slot_entries\":" << config.slotEntries
              << ",\"conf_queue_depth\":" << config.confQueueDepth
-             << ",\"hint_meta_entries\":16,\"lhr_max_uncommitted\":4}";
+             << ",\"hint_meta_entries\":16,\"lhr_max_uncommitted\":8}";
     }
     line << ",\"clock_period\":" << config.clockPeriod << ",\"pcs\":[";
     for (size_t i = 0; i < candidates.size(); ++i) {
@@ -905,7 +949,8 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
     }
     size_t matches = 0;
     auto match = [&](Addr pc, unsigned mask) {
-        if (pc >= block_start && pc < block_end) {
+        if (config.ideal ? (pc >= block_start && pc < block_end) :
+                           pc == block_start) {
             ++matches;
             if (!result->hasCandidate || pc < result->pc) {
                 result->hasCandidate = true;
@@ -952,15 +997,46 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
             queryStats.camExtraCandidates += matches - 1;
         }
     }
-    if (!isReplay() || !result->hasCandidate) {
+    if (!result->hasCandidate)
         return result;
+    if (!config.ideal) {
+        // Recovery shares the SRAM port and the existing 16-entry journal.
+        // Normal BPU predictions continue while Hint waits for undo writes.
+        if (pendingRollbacks()) {
+            if (measurementActive) ++queueStats.rollbackFallbacks;
+            return result;
+        }
+        // A busy or full Hint path never delays the original BPU.
+        if (cycle < busyUntil) {
+            if (measurementActive) ++queryStats.busyFallbacks;
+            return result;
+        }
+        const auto reason = reserveBlockReason(result->pc);
+        if (reason != StallReason::None) {
+            recordStall(reason);
+            return result;
+        }
+        result->admitted = true;
+        result->s3Cycle = cycle + 2;
+        busyUntil = cycle + 3;
+        busyQuery = result;
+        // Existing BPU computes future-stage vectors in one call. Service
+        // the already-determined cycle-N writes before sampling the S2 read.
+        // Any resolve later in N becomes ready at N+1 and loses to this read.
+        tickFinite(cycle + 1);
+        if (isReplay()) {
+            lastContextReadCycle = cycle + 1;
+            if (measurementActive) ++queryStats.contextReads;
+        }
     }
+    if (!isReplay())
+        return result;
     if (!config.ideal) {
         fatal_if(!snapshot->finite,
-                 "Finite fork v5 Hint query lacks physical-ring snapshot");
+                 "Finite spec v7 Hint query lacks physical-ring snapshot");
         result->camIndex = localIndex(result->pc);
         fatal_if(result->camIndex < 0,
-                 "Finite fork v5 CAM candidate has no physical LHR index");
+                 "Finite spec v7 CAM candidate has no physical LHR index");
         result->key = hintHashV3(result->pc,
             snapshot->v3ContextsFor(result->camIndex), result->mask);
     } else {
@@ -990,8 +1066,7 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
         const auto &entry = entries[result->entryId];
         result->tagHit = true;
         result->slot = entry.slot;
-        result->conf = config.ideal ? entry.conf :
-            forwardedConfidence(result->entryId);
+        result->conf = entry.conf;
         result->hintTarget = slots[entry.slot];
         if (measurementActive) {
             ++queryStats.tagHits;
@@ -1024,15 +1099,10 @@ HintIndirect::reserveBlockReason(Addr pc) const
     if (finiteMeta.size() >= 16)
         return StallReason::MetaQueue;
     const int index = localIndex(pc);
-    // A mask without LHR never reads this local ring. Its pending writes do
-    // not constrain prediction admission, although they still update the
-    // physical history and retain metadata for commit or redirect.
-    if (isReplay() && !(cam[index].mask & 0x2))
-        return StallReason::None;
     return std::count_if(finiteMeta.begin(), finiteMeta.end(),
         [index](const auto &record) {
             return record->localIndex == index;
-        }) < 4 ? StallReason::None : StallReason::Lhr;
+        }) < 8 ? StallReason::None : StallReason::Lhr;
 }
 
 void
@@ -1062,13 +1132,15 @@ void
 HintIndirect::reserve(const std::shared_ptr<HintQuery> &query, Addr pc,
                       uint8_t local_phase)
 {
-    if (!isFiniteV3() || localIndex(pc) < 0)
+    if (!isFiniteV3() || !query || !query->admitted ||
+        localIndex(query->pc) < 0)
         return;
-    fatal_if(!canReserve(pc), "Finite Hint metadata/LHR capacity exceeded");
+    fatal_if(pendingRollbacks() || !canReserve(query->pc),
+             "Finite Hint metadata/LHR capacity exceeded or rollback active");
     auto record = std::make_shared<FiniteMeta>();
     record->query = query;
     record->branchPC = pc;
-    record->localIndex = localIndex(pc);
+    record->localIndex = localIndex(query ? query->pc : pc);
     record->localPhase = local_phase;
     record->ordinal = nextFiniteOrdinal++;
     finiteMeta.push_back(record);
@@ -1094,7 +1166,8 @@ HintIndirect::bind(const std::shared_ptr<HintQuery> &query, uint64_t ftq_id,
 void
 HintIndirect::drainFiniteResolved()
 {
-    while (!finiteScoreOrder.empty() && finiteScoreOrder.front()->resolved) {
+    while (!finiteScoreOrder.empty() && finiteScoreOrder.front()->resolved &&
+           !finiteScoreOrder.front()->undoPending) {
         auto record = finiteScoreOrder.front();
         finiteScoreOrder.pop_front();
         if (!record->scoreEligible)
@@ -1121,7 +1194,8 @@ void
 HintIndirect::releaseCommittedFinite()
 {
     while (!finiteMeta.empty() && finiteMeta.front()->committed &&
-           finiteMeta.front()->resolved) {
+           finiteMeta.front()->resolved && !finiteMeta.front()->undoPending &&
+           !finiteMeta.front()->discarded) {
         // drainFiniteResolved already transferred the write request (or its
         // explicit drop decision) out of the metadata queue's age ordering.
         const auto record = finiteMeta.front();
@@ -1142,7 +1216,8 @@ HintIndirect::resolve(const std::shared_ptr<HintQuery> &query, Addr pc,
         return;
     const auto found = std::find_if(finiteMeta.begin(), finiteMeta.end(),
         [&](const auto &record) {
-            return record->query == query && record->branchPC == pc;
+            return !record->discarded && record->query == query &&
+                   record->branchPC == pc;
         });
     if (found == finiteMeta.end() || (*found)->resolved)
         return;
@@ -1155,7 +1230,11 @@ HintIndirect::resolve(const std::shared_ptr<HintQuery> &query, Addr pc,
     record.scoreEligible = actual_taken &&
         measure_at_resolve.value_or(measurementActive) &&
         isReplay() &&
-        query->eligible && query->tagHit && query->pc == pc;
+        query->eligible && query->tagHit && query->overridden &&
+        !query->canceled && query->baselinePC == pc;
+    record.newConf = query->hintTarget == actual ?
+        std::min(3U, query->conf + 1) :
+        (query->conf ? query->conf - 1 : 0);
     drainFiniteResolved();
     releaseCommittedFinite();
 }
@@ -1169,15 +1248,24 @@ HintIndirect::resolveByFTQId(uint64_t ftq_id, Addr pc, Addr actual,
         return;
     const auto found = std::find_if(finiteMeta.begin(), finiteMeta.end(),
         [&](const auto &record) {
-            return record->ftqId == ftq_id && record->branchPC == pc;
+            return !record->discarded && record->ftqId == ftq_id &&
+                   record->branchPC == pc;
         });
     if (found != finiteMeta.end())
         resolve((*found)->query, pc, actual, sequence, cycle,
                 measure_at_resolve, actual_taken);
 }
 
+size_t
+HintIndirect::pendingRollbacks() const
+{
+    return std::count_if(finiteMeta.begin(), finiteMeta.end(),
+        [](const auto &record) { return record->undoPending; });
+}
+
 void
-HintIndirect::undoFinite(const std::shared_ptr<FiniteMeta> &record)
+HintIndirect::undoFinite(const std::shared_ptr<FiniteMeta> &record,
+                         uint64_t cycle)
 {
     const auto pending = std::find(finiteUpdates.begin(), finiteUpdates.end(),
                                    record);
@@ -1185,12 +1273,13 @@ HintIndirect::undoFinite(const std::shared_ptr<FiniteMeta> &record)
         finiteUpdates.erase(pending);
         ++queueStats.canceled;
     }
-    if (record->applied) {
+    if (record->applied && !record->undoPending) {
         fatal_if(!record->query || record->query->entryId >= entries.size(),
                  "Finite Hint rollback lacks Context identity");
-        entries[record->query->entryId].conf = record->oldConf;
-        record->applied = false;
-        ++queueStats.reverted;
+        // Do not write SRAM from redirect. Keep the old value in its original
+        // journal slot until the one shared port can perform this undo.
+        record->undoPending = true;
+        record->undoReadyCycle = cycle + 1;
     }
     finiteScoreOrder.erase(std::remove(finiteScoreOrder.begin(),
         finiteScoreOrder.end(), record), finiteScoreOrder.end());
@@ -1209,15 +1298,17 @@ HintIndirect::redirect(HintFiniteHistory &history, uint64_t ftq_id,
 {
     if (!isFiniteV3())
         return;
-    while (!finiteMeta.empty()) {
-        const auto record = finiteMeta.back();
+    // At most 16 journal entries are visited. Discarded entries remain here
+    // solely until their SRAM undo is serialized; their local write has
+    // already been rewound and must not be rewound a second time.
+    for (size_t position = finiteMeta.size(); position > 0; --position) {
+        const auto record = finiteMeta[position - 1];
+        if (record->discarded)
+            continue;
         if (record->ftqId < ftq_id)
             break;
         if (record->ftqId == ftq_id && record->branchPC < squash_pc) {
-            // Global recovery replays the retained retired prefix from this
-            // block's entry snapshot, so its local ring must do the same.
-            history.restoreLocalPhase(record->localIndex,
-                                      record->localPhase);
+            history.rewindLocalPhase(record->localIndex, record->localPhase);
             break;
         }
         const bool keep = record->ftqId == ftq_id &&
@@ -1227,13 +1318,12 @@ HintIndirect::redirect(HintFiniteHistory &history, uint64_t ftq_id,
         const uint64_t old_cycle = record->resolveCycle;
         const uint64_t old_sequence = record->sequence;
         const Addr old_actual = record->actual;
-        if (keep && old_resolved && old_actual == actual) {
-            history.restoreLocalPhase(record->localIndex,
-                                      record->localPhase);
+        history.rewindLocalPhase(record->localIndex, record->localPhase);
+        if (keep && old_resolved && old_actual == actual)
             break;
-        }
-        undoFinite(record);
-        history.restoreLocalPhase(record->localIndex, record->localPhase);
+        if (!keep && record->query)
+            record->query->canceled = true;
+        undoFinite(record, cycle);
         if (keep) {
             finiteScoreOrder.push_back(record);
             record->resolved = old_resolved;
@@ -1241,13 +1331,20 @@ HintIndirect::redirect(HintFiniteHistory &history, uint64_t ftq_id,
             record->sequence = old_resolved ? old_sequence : sequence;
             record->resolveCycle = old_resolved ? old_cycle : cycle;
             record->scoreEligible = old_resolved && old_score_eligible;
+            const auto &query = *record->query;
+            record->newConf = query.hintTarget == actual ?
+                std::min(3U, query.conf + 1) : (query.conf ? query.conf - 1 : 0);
             if (record->query)
                 record->query->resolved = old_resolved;
             drainFiniteResolved();
             break;
         }
-        finiteMeta.pop_back();
+        record->discarded = true;
+        if (!record->undoPending)
+            finiteMeta.erase(finiteMeta.begin() + position - 1);
     }
+    fatal_if(finiteMeta.size() > 16,
+             "Finite Hint active and rollback journal exceeded 16 entries");
 }
 
 void
@@ -1256,6 +1353,8 @@ HintIndirect::commitTarget(uint64_t ftq_id)
     if (!isFiniteV3())
         return;
     for (const auto &record : finiteMeta) {
+        if (record->discarded)
+            continue;
         fatal_if(!record->ftqId,
                  "Finite Hint metadata reservation was not bound");
         if (record->ftqId > ftq_id)
@@ -1273,20 +1372,14 @@ HintIndirect::commitTarget(uint64_t ftq_id)
     releaseCommittedFinite();
 }
 
-unsigned
-HintIndirect::forwardedConfidence(size_t entry_id) const
+void
+HintIndirect::cancelPending()
 {
-    unsigned conf = entries[entry_id].conf;
-    for (const auto &record : finiteUpdates) {
-        const auto &query = record->query;
-        if (query && query->entryId == entry_id) {
-            if (query->hintTarget == record->actual)
-                conf = std::min(3U, conf + 1);
-            else if (conf)
-                --conf;
-        }
-    }
-    return conf;
+    if (auto query = busyQuery.lock(); query && !query->ftqId)
+        query->canceled = true;
+    busyQuery.reset();
+    // Already consumed/reserved Context port cycles remain consumed.
+    busyUntil = 0;
 }
 
 void
@@ -1298,18 +1391,24 @@ HintIndirect::tickFinite(uint64_t cycle)
     uint64_t first = finiteServiceThrough ? *finiteServiceThrough + 1 : 0;
     if (first > end)
         return;
-    // A query occupies the read port for its cycle. Only the previous cycle
-    // is serviced here, after its read/no-read decision is known.
-    while (!finiteUpdates.empty() && first <= end) {
-        const auto record = finiteUpdates.front();
-        first = std::max(first, record->readyCycle);
+    // A reserved S2 read wins over either a normal write or a rollback.
+    // Both kinds of write consume the same one-cycle port opportunity.
+    while (first <= end) {
+        auto undo = std::find_if(finiteMeta.rbegin(), finiteMeta.rend(),
+            [](const auto &record) { return record->undoPending; });
+        const bool rolling_back = undo != finiteMeta.rend();
+        if (!rolling_back && finiteUpdates.empty())
+            break;
+        const auto record = rolling_back ? *undo : finiteUpdates.front();
+        first = std::max(first, rolling_back ? record->undoReadyCycle :
+                                               record->readyCycle);
         if (first > end)
             break;
-        if (lastQueryCycle && first == *lastQueryCycle) {
+        if (lastContextReadCycle && first == *lastContextReadCycle) {
+            if (rolling_back) ++queueStats.rollbackReadConflicts;
             ++first;
             continue;
         }
-        finiteUpdates.pop_front();
         const auto &query = *record->query;
         fatal_if(query.entryId >= entries.size(),
                  "Finite Hint confidence write has invalid Context identity");
@@ -1317,25 +1416,40 @@ HintIndirect::tickFinite(uint64_t cycle)
         fatal_if(!entry.valid || entry.key != query.key ||
                  entry.slot != query.slot,
                  "Finite Hint Context identity changed before writeback");
-        record->oldConf = entry.conf;
-        if (query.hintTarget == record->actual)
-            entry.conf = std::min(3U, entry.conf + 1);
-        else if (entry.conf)
-            --entry.conf;
-        record->applied = true;
-        ++queueStats.applied;
-        if (stats)
-            ++stats->queueApplied;
-        if (record->oldConf == 1 && entry.conf == 0) {
-            ++queueStats.zeroTransitions;
+        if (rolling_back) {
+            entry.conf = record->oldConf;
+            record->applied = false;
+            record->undoPending = false;
+            ++queueStats.reverted;
+            ++queueStats.rollbackWrites;
+            if (record->discarded) {
+                const auto owned = std::find(finiteMeta.begin(), finiteMeta.end(), record);
+                fatal_if(owned == finiteMeta.end(), "Hint rollback lost journal ownership");
+                finiteMeta.erase(owned);
+            }
+            // A retained redirected branch may now enqueue its replacement
+            // score. It can only write on a subsequent port opportunity.
+            drainFiniteResolved();
+            releaseCommittedFinite();
+        } else {
+            finiteUpdates.pop_front();
+            record->oldConf = entry.conf;
+            entry.conf = record->newConf;
+            record->applied = true;
+            ++queueStats.applied;
             if (stats)
-                ++stats->zeroTransitions;
-            writeConfZero({record->query, record->actual, record->sequence,
-                           record->resolveCycle, record->readyCycle}, first);
-        } else if (record->oldConf == 0 && entry.conf == 1) {
-            ++queueStats.recoveries;
-            if (stats)
-                ++stats->recoveries;
+                ++stats->queueApplied;
+            if (record->oldConf > 0 && entry.conf == 0) {
+                ++queueStats.zeroTransitions;
+                if (stats)
+                    ++stats->zeroTransitions;
+                writeConfZero({record->query, record->actual, record->sequence,
+                               record->resolveCycle, record->readyCycle}, first);
+            } else if (record->oldConf == 0 && entry.conf > 0) {
+                ++queueStats.recoveries;
+                if (stats)
+                    ++stats->recoveries;
+            }
         }
         ++first;
     }
@@ -1361,11 +1475,12 @@ HintIndirect::complete(const std::shared_ptr<HintQuery> &query,
     if (isCollect()) {
         // CAM arbitration depends on the frozen image and is replayed offline.
         // Preserve later candidates for rebuilding a different CAM selection.
-        query->eligible = query->snapshot && taken && indirect &&
-                          !is_return && btb_identified;
+        query->eligible = query->snapshot && query->admitted &&
+                          taken && indirect && !is_return && btb_identified;
         return std::nullopt;
     }
-    if (!query->hasCandidate || !query->snapshot) {
+    if (!query->hasCandidate || !query->snapshot || query->canceled ||
+        (!config.ideal && !query->admitted)) {
         return std::nullopt;
     }
     auto cancel = [&](uint64_t QueryCounts::*counter) {
@@ -1379,7 +1494,7 @@ HintIndirect::complete(const std::shared_ptr<HintQuery> &query,
         cancel(&QueryCounts::cancelReturn);
     } else if (!indirect) {
         cancel(&QueryCounts::cancelNotIndirect);
-    } else if (selected_pc != query->pc) {
+    } else if (config.ideal && selected_pc != query->pc) {
         cancel(&QueryCounts::cancelPcMismatch);
     } else if (!btb_identified) {
         cancel(&QueryCounts::cancelNoBtb);
@@ -1401,7 +1516,8 @@ HintIndirect::complete(const std::shared_ptr<HintQuery> &query,
 
 void
 HintIndirect::commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
-    Addr pc, Addr actual, bool final_valid, Addr final_target, uint64_t cycle)
+    Addr pc, Addr actual, bool final_valid, Addr final_target, uint64_t cycle,
+    const HintSnapshot *profile_snapshot, uint64_t commit_event_ordinal)
 {
     if (!enabled() || !measurementActive || finished) {
         return;
@@ -1418,7 +1534,7 @@ HintIndirect::commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
     const bool eligible = have_baseline && query->snapshot && query->eligible &&
                           query->baselinePC == pc;
     const bool tag_hit = isReplay() && eligible && query->tagHit &&
-                         query->pc == pc;
+                         query->baselinePC == pc;
     const bool conf_enabled = tag_hit && query->conf > 0;
     const bool overridden = tag_hit && query->overridden;
     auto record = [&](Counts &counts) {
@@ -1433,7 +1549,8 @@ HintIndirect::commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
         counts.overrides += overridden;
     };
     record(global);
-    auto entry = perPc.find(pc);
+    const Addr query_pc = query ? query->blockStart : 0;
+    auto entry = perPc.find(config.ideal ? pc : query_pc);
     if (entry != perPc.end()) {
         record(entry->second);
     }
@@ -1444,12 +1561,15 @@ HintIndirect::commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
     }
     if (isCollect() && entry != perPc.end()) {
         writeProfile(query, sequence, pc, actual, baseline_valid,
-                     baseline_pc, baseline_target, eligible, cycle);
+                     baseline_pc, baseline_target, eligible, cycle,
+                     profile_snapshot, commit_event_ordinal);
     }
     if (isReplay() && !config.ideal && entry != perPc.end()) {
         std::ostringstream line;
         line << "{\"kind\":\"branch\",\"seq\":" << sequence
              << ",\"pc\":" << jsonString(hexAddress(pc))
+             << ",\"query_pc\":" << jsonString(hexAddress(query ? query->blockStart : 0))
+             << ",\"query_valid\":" << ((query && query->admitted && !query->canceled) ? "true" : "false")
              << ",\"actual\":" << jsonString(hexAddress(actual))
              << ",\"baseline_valid\":" << (baseline_valid ? "true" : "false")
              << ",\"baseline_pc\":" << jsonString(hexAddress(baseline_pc))
@@ -1489,12 +1609,15 @@ HintIndirect::commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
 void
 HintIndirect::writeProfile(const std::shared_ptr<HintQuery> &query,
     uint64_t sequence, Addr pc, Addr actual, bool baseline_valid,
-    Addr baseline_pc, Addr baseline_target, bool eligible, uint64_t cycle)
+    Addr baseline_pc, Addr baseline_target, bool eligible, uint64_t cycle,
+    const HintSnapshot *profile_snapshot, uint64_t commit_event_ordinal)
 {
     std::ostringstream line;
     line << "{\"kind\":\"branch\",\"seq\":" << sequence
          << ",\"pc\":" << jsonString(hexAddress(pc))
-         << ",\"actual\":" << jsonString(hexAddress(actual))
+         << ",\"query_pc\":" << jsonString(hexAddress(query ? query->blockStart : 0))
+             << ",\"query_valid\":" << ((query && query->admitted && !query->canceled) ? "true" : "false")
+             << ",\"actual\":" << jsonString(hexAddress(actual))
          << ",\"baseline_valid\":" << (baseline_valid ? "true" : "false")
          << ",\"baseline_pc\":" << jsonString(hexAddress(baseline_pc))
          << ",\"baseline_target\":" << jsonString(hexAddress(baseline_target))
@@ -1504,35 +1627,78 @@ HintIndirect::writeProfile(const std::shared_ptr<HintQuery> &query,
     } else {
         line << "null";
     }
+    if (needsCommitProfileContext())
+        line << ",\"commit_event_ordinal\":" << commit_event_ordinal;
     line << ",\"commit_cycle\":" << cycle << ",\"block_start\":"
          << jsonString(hexAddress(query ? query->blockStart : 0))
          << ",\"block_end\":"
          << jsonString(hexAddress(query ? query->blockEnd : 0))
          << ",\"eligible\":" << (eligible ? "true" : "false")
          << ",\"contexts\":";
-    if (query && query->snapshot) {
-        if (config.ideal) {
-            writeContexts(line, query->snapshot->contextsFor(pc));
-        } else {
-            const int index = localIndex(pc);
-            if (index >= 0)
-                writeContexts(line,
-                    query->snapshot->v3ContextsFor(index));
-            else
-                line << "null";
-        }
-    } else {
-        line << "null";
-    }
-    if (!config.ideal) {
-        line << ",\"history\":";
-        if (query && query->snapshot && localIndex(pc) >= 0)
-            line << query->snapshot->historyJson(pc, localIndex(pc));
+    const HintSnapshot *prediction_snapshot =
+        query && query->snapshot ? query->snapshot.get() : nullptr;
+    fatal_if(needsCommitProfileContext() && !profile_snapshot,
+             "Commit-pre Hint profile lacks retired history snapshot");
+    const HintSnapshot *selected_snapshot = needsCommitProfileContext() ?
+        profile_snapshot : prediction_snapshot;
+    const int index = query ? localIndex(query->blockStart) : -1;
+    const auto write_contexts = [&](const HintSnapshot *snapshot) {
+        if (snapshot && config.ideal)
+            writeContexts(line, snapshot->contextsFor(pc));
+        else if (snapshot && index >= 0)
+            writeContexts(line, snapshot->v3ContextsFor(index));
         else
             line << "null";
+    };
+    const auto write_history = [&](const HintSnapshot *snapshot) {
+        if (snapshot && query && index >= 0)
+            line << snapshot->historyJson(query->blockStart, index);
+        else
+            line << "null";
+    };
+    write_contexts(selected_snapshot);
+    if (!config.ideal) {
+        line << ",\"history\":";
+        write_history(selected_snapshot);
+        line << ",\"prediction_contexts\":";
+        write_contexts(prediction_snapshot);
+        line << ",\"prediction_history\":";
+        write_history(prediction_snapshot);
     }
     line << "}\n";
     output->writeProfile(line.str());
+}
+
+uint64_t
+HintIndirect::recordCommittedControl(const HintFiniteHistory &history,
+    uint64_t sequence, uint64_t cycle, Addr start_pc, Addr actual_pc,
+    Addr target, bool indirect, bool call, bool is_return, bool taken,
+    int local_selector)
+{
+    if (!needsCommitProfileContext() || finished)
+        return 0;
+    fatal_if(!output || !output->commitHistory,
+             "Committed Hint diagnostic output is not open");
+    const uint64_t ordinal = ++commitEventOrdinal;
+    const HintSnapshot snapshot(history);
+    std::ostringstream line;
+    line << "{\"kind\":\"control\",\"ordinal\":" << ordinal
+         << ",\"measured\":" << (measurementActive ? "true" : "false")
+         << ",\"cycle\":" << cycle << ",\"seq\":" << sequence
+         << ",\"start_pc\":" << jsonString(hexAddress(start_pc))
+         << ",\"actual_pc\":" << jsonString(hexAddress(actual_pc))
+         << ",\"target\":" << jsonString(hexAddress(target))
+         << ",\"indirect\":" << (indirect ? "true" : "false")
+         << ",\"call\":" << (call ? "true" : "false")
+         << ",\"return\":" << (is_return ? "true" : "false")
+         << ",\"taken\":" << (taken ? "true" : "false")
+         << ",\"local_selector\":" << local_selector
+         << ",\"history\":" << snapshot.historyJson(start_pc, local_selector)
+         << "}\n";
+    const std::string text = line.str();
+    fatal_if(gzwrite(output->commitHistory, text.data(), text.size()) !=
+             int(text.size()), "Cannot write committed Hint control event");
+    return ordinal;
 }
 
 void
@@ -1728,8 +1894,8 @@ HintIndirect::resetStats(uint64_t cycle)
             writeHeader();
         else
             output->writeProfile("{\"kind\":\"header\",\"format\":\"h2p-hint-replay\","
-                                 "\"version\":5,\"storage\":\"finite\",\"hash_version\":5,"
-                             "\"context_encoding\":\"xs-gem5-fork-ith128-path128-lhr16-v1\"}\n");
+                                 "\"version\":7,\"storage\":\"finite\",\"hash_version\":7,"
+                             "\"context_encoding\":\"xs-gem5-spec-startpc-ith128-path128-lhr16-inflight8-v1\"}\n");
     }
     if (isReplay()) {
         output->confZero.close();
@@ -1782,7 +1948,7 @@ HintIndirect::writeStats()
     auto &line = *out->stream();
     line << std::setprecision(17)
          << "{\"format\":\"h2p-hint-stats\",\"version\":"
-         << (config.ideal ? 3 : 5) << ",\"mode\":"
+         << (config.ideal ? 3 : 7) << ",\"mode\":"
          << jsonString(config.mode) << ",\"storage\":"
          << jsonString(config.ideal ? "unlimited" : "finite")
          << ",\"occupancy_applicable\":" << (isReplay() ? "true" : "false")
@@ -1793,7 +1959,7 @@ HintIndirect::writeStats()
     line << ",\"slots\":";
     writeOccupancy(line, occupancy(Table::Slots));
     if (!config.ideal)
-        line << "},\"hash_version\":5,\"context_encoding\":"
+        line << "},\"hash_version\":7,\"context_encoding\":"
              << jsonString(ForkContextEncoding) << ",\"global\":{";
     else
         line << "},\"global\":{";
@@ -1816,6 +1982,10 @@ HintIndirect::writeStats()
          << ",\"pending\":" << pendingUpdates()
          << ",\"canceled\":" << queueStats.canceled
          << ",\"reverted\":" << queueStats.reverted
+         << ",\"rollback_writes\":" << queueStats.rollbackWrites
+         << ",\"rollback_fallbacks\":" << queueStats.rollbackFallbacks
+         << ",\"rollback_pending\":" << pendingRollbacks()
+         << ",\"rollback_read_conflicts\":" << queueStats.rollbackReadConflicts
          << ",\"zero_transitions\":" << queueStats.zeroTransitions
          << ",\"recoveries\":" << queueStats.recoveries
          << ",\"max_occupancy\":" << queueStats.maxOccupancy
@@ -1829,6 +1999,9 @@ HintIndirect::writeStats()
          << ",\"cam_contentions\":" << queryStats.camContentions
          << ",\"cam_extra_candidates\":" << queryStats.camExtraCandidates
          << ",\"tag_hits\":" << queryStats.tagHits
+         << ",\"busy_fallbacks\":" << queryStats.busyFallbacks
+         << ",\"context_reads\":" << queryStats.contextReads
+         << ",\"frontend_hint_blocked_cycles\":0"
          << ",\"conf_enabled\":" << queryStats.confEnabled
          << ",\"overrides\":" << queryStats.overrides
          << ",\"cancel_no_btb\":" << queryStats.cancelNoBtb
@@ -1861,6 +2034,11 @@ HintIndirect::finish()
         fatal_if(gzclose(output->profile) != Z_OK,
                  "Failed to finish Hint profile output");
         output->profile = nullptr;
+    }
+    if (output->commitHistory) {
+        fatal_if(gzclose(output->commitHistory) != Z_OK,
+                 "Failed to finish committed Hint diagnostic trace");
+        output->commitHistory = nullptr;
     }
     if (output->confZero.is_open()) {
         output->confZero.flush();

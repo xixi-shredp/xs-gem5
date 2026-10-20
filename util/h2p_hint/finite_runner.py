@@ -1,4 +1,4 @@
-"""Audited finite-v5-fork Hint experiment for selected CPython checkpoints."""
+"""Audited finite-v7-spec Hint experiment for selected CPython checkpoints."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,6 +20,7 @@ from .finite_v3 import (build_image, choose_best, contract, digest,
                         merge_profiles, read_profile, score_image, baseline_miss)
 from .model import address, write_json
 from .runner import file_identity, load_workloads, now, tag, validate_runtime_gate
+from .retirement_boundary import retirement_window
 
 
 NO_RVV_SLICES = [("scimark_fft", "73"), ("pickle_pure_python", "39"),
@@ -77,9 +78,22 @@ def load_finite_workloads(workload_list, workload_root, warmup, measure):
 
 def ranked_candidates(baseline):
     """Rank this run's indirect branches by measured target misses."""
-    data = legacy().parse_h2p_output(baseline / "h2p-indirect.txt")
-    ranked = sorted(((pc, values[0]) for pc, values in data.items() if values[0] > 0),
-                    key=lambda item: (-item[1], item[0]))[:20]
+    data = json.loads((Path(baseline) / "hint-discovery.json").read_text())
+    if data.get("schema") != "hint-discovery/v1" or data.get("key") != "query_start_pc":
+        raise ValueError("Discovery requires committed query start-PC identity")
+    entries = data.get("branches")
+    if not isinstance(entries, list):
+        raise ValueError("Discovery branches must be an array")
+    counts = {}
+    for row in entries:
+        pc = address(row["pc"])
+        contract.address_word(pc)
+        misses, executions = row["target_misses"], row["executions"]
+        if pc in counts or type(misses) is not int or type(executions) is not int or not 0 <= misses <= executions:
+            raise ValueError("invalid or duplicate Discovery start-PC counters")
+        counts[pc] = misses
+    ranked = sorted(((pc, misses) for pc, misses in counts.items() if misses > 0),
+                    key=lambda item: (-item[1], item[0]))[:16]
     return [pc for pc, _ in ranked], ranked
 
 
@@ -110,6 +124,8 @@ def _command(args, task, stage, output, candidate=None, metadata=None):
         "--enable-difftest" if args.enable_difftest else "--disable-difftest",
         f"--mem-type={getattr(args, 'mem_type', 'DDR4_2400_8x8')}", "--h2p-stat",
         f"--h2p-stat-interval={args.h2p_stat_interval}", f"--h2p-hint-mode={mode}"]
+    command.append("--h2p-hint-profile-context=" +
+                   getattr(args, "profile_context_source", "prediction"))
     if args.enable_difftest:
         command.append(f"--difftest-ref-so={args.difftest_ref_so}")
     if getattr(args, 'experiment_contract', None):
@@ -178,14 +194,11 @@ def audit_backend_run(args, output, status):
                 phases[phase] = {key: int(value) for key, value in row.items()}
         restore, reset, end = (phases[name] for name in
                               ('restore_complete', 'warmup_complete', 'measure_complete'))
-        actual_warmup = reset['retired_post_restore'] - restore['retired_post_restore']
-        actual_measure = end['retired_post_restore'] - reset['reset_retired']
-        cycles = end['core_cycle'] - reset['core_cycle']
-        if not (args.warmup_insts <= actual_warmup <= args.warmup_insts + 7 and
-                args.measure_insts <= actual_measure <= args.measure_insts + 7 and cycles > 0):
-            raise ValueError('actual independently retired warmup/measure window differs')
-        if end['tick'] - reset['tick'] != cycles * 1000:
-            raise ValueError('phase core-cycle and 3THz tick delta disagree')
+        window, boundary = retirement_window(phases, args.warmup_insts,
+                                              args.measure_insts, stats_values(output / 'stats.txt'))
+        actual_warmup = window['warmup_instructions']
+        actual_measure = window['measure_instructions']
+        cycles = window['measure_cycles']
         summary = json.loads((output / 'h2p-target-summary.json').read_text())
         if (summary['format'] != 'committed-nonreturn-indirect-targets' or
                 summary['target_misses'] != status['final_misses'] or
@@ -194,12 +207,8 @@ def audit_backend_run(args, output, status):
                 summary['target_misses'] > summary['executions']):
             raise ValueError('committed nonreturn indirect target-summary conservation failed')
         status['target_summary'] = summary
-        status['actual_window'] = {
-            'warmup_instructions': actual_warmup, 'measure_instructions': actual_measure,
-            'measure_cycles': cycles, 'measure_ipc': actual_measure / cycles,
-            'reset_retired': reset['reset_retired'], 'end_retired': end['retired_post_restore'],
-            'reset_core_cycle': reset['core_cycle'], 'end_core_cycle': end['core_cycle'],
-        }
+        status['actual_window'] = window
+        status['retirement_boundary_audit'] = boundary
         for name in ('warmup-stats.txt', 'stats-all-phases.txt', 'h2p-target-summary.json',
                      'backend-v2-effective-parameters.json'):
             status.setdefault('backend_evidence_sha256', {})[name] = digest(output / name)
@@ -218,7 +227,7 @@ def run_one(args, task, stage, *, group=None, candidate=None, metadata=None):
         if candidate is None or metadata is None:
             raise ValueError("joint replay requires audited candidate and metadata")
         image_dir = metadata.parent
-        image = image_dir / "hint-context-v5.bin"
+        image = image_dir / "hint-context-v7.bin"
         data = json.loads(metadata.read_text())
         source = data["source"]
         groups = sorted((args.output_root / "runs" / "collect" / tag(task)).glob("group-*"))
@@ -300,10 +309,10 @@ def run_one(args, task, stage, *, group=None, candidate=None, metadata=None):
 
 def candidate_file(args, task, group, pcs, ranking):
     path = args.output_root / "inputs" / tag(task) / f"candidates-{group}.json"
-    data = {"format": "h2p-hint-candidates", "version": 5,
+    data = {"format": "h2p-hint-candidates", "version": 7,
             "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING, "pcs": [hex(pc) for pc in pcs],
-            "source": {"baseline_h2p_sha256": digest(run_path(args.output_root, task, "baseline") /
-                                                       "h2p-indirect.txt"),
+            "source": {"baseline_discovery_sha256": digest(run_path(args.output_root, task, "baseline") /
+                                                       "hint-discovery.json"),
                        "ranking": [{"pc": hex(pc), "misses": misses} for pc, misses in ranking]}}
     if path.exists():
         if json.loads(path.read_text()) != data:
@@ -324,6 +333,12 @@ def _source(args, task, profile_hash):
             "checkpoint_sha256": task["checkpoint"]["sha256"],
             "profile_sha256": profile_hash,
             "builder_sha256": digest(Path(__file__).with_name("finite_v3.py"))}
+    source["profile_context_source"] = getattr(args, "profile_context_source", "prediction")
+    source["online_context_source"] = "prediction"
+    source["host_module_sha256"] = {
+        name: digest(Path(__file__).with_name(name))
+        for name in ("finite_v3.py", "finite_runner.py", "context_v5_contract.py",
+                     "builder.py", "model.py")}
     if getattr(args, 'experiment_contract', None):
         source['experiment_contract_sha256'] = args.identity['experiment_contract']['sha256']
         source['dram_ini_sha256'] = args.identity['dram_ini']['sha256']
@@ -345,7 +360,7 @@ def build_and_score(args, task, rows, pcs, source):
         if (status.get("result") != "pass" or
                 status.get("source") != source or
                 digest(metadata_path) != status.get("metadata_sha256") or
-                digest(directory / "hint-context-v5.bin") != status.get("image_sha256")):
+                digest(directory / "hint-context-v7.bin") != status.get("image_sha256")):
             raise ValueError(f"existing image audit differs: {directory}")
         return metadata_path
     directory.mkdir(parents=True)
@@ -374,12 +389,12 @@ def build_and_score(args, task, rows, pcs, source):
             choice["loaded_candidate"] = int(choice["pc"], 16) in active
         estimate = score_image(rows, metadata)
         write_json(directory / "metadata.json", metadata)
-        (directory / "hint-context-v5.bin").write_bytes(image)
+        (directory / "hint-context-v7.bin").write_bytes(image)
         write_json(directory / "builder.json", report)
         write_json(directory / "best-masks.json", choices)
         write_json(directory / "fixed-conf3-estimate.json", estimate)
         write_json(directory / "candidates-joint.json", {
-            "format": "h2p-hint-candidates", "version": 5, "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING,
+            "format": "h2p-hint-candidates", "version": 7, "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING,
             "pcs": [entry["pc"] for entry in metadata["cam"]],
             "source": {"metadata_sha256": digest(directory / "metadata.json")}})
         with (directory / "mask-sweep.jsonl").open("w") as stream:
@@ -395,7 +410,7 @@ def build_and_score(args, task, rows, pcs, source):
                     stream.write(json.dumps(entry, sort_keys=True) + "\n")
         status = {"result": "pass", "source": source,
                   "metadata_sha256": digest(directory / "metadata.json"),
-                  "image_sha256": digest(directory / "hint-context-v5.bin"),
+                  "image_sha256": digest(directory / "hint-context-v7.bin"),
                   "mask_trials": len(scores), "finished_utc": now()}
         write_json(directory / "build-status.json", status)
     except Exception:
@@ -454,7 +469,7 @@ def report(args, tasks):
                      "loaded_pcs": len(metadata["cam"]),
                      "fixed_conf3_estimate": estimate,
                      "metadata_sha256": digest(image / "metadata.json"),
-                     "image_sha256": digest(image / "hint-context-v5.bin")})
+                     "image_sha256": digest(image / "hint-context-v7.bin")})
     status_paths = sorted((args.output_root / "runs").rglob("status.json"))
     expected_runs = sum(2 + max(1, (len(ranked_candidates(
         run_path(args.output_root, task, "baseline"))[0]) + 15) // 16)
@@ -462,7 +477,7 @@ def report(args, tasks):
     if (len(status_paths) != expected_runs or any(
             json.loads(path.read_text()).get("result") != "pass" for path in status_paths)):
         raise ValueError(f"formal result audit requires {expected_runs} passed simulations")
-    summary = {"format": "h2p-hint-experiment-summary", "version": 5,
+    summary = {"format": "h2p-hint-experiment-summary", "version": 7,
                "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING,
                "window": f"{args.warmup_insts} warmup + {args.measure_insts} measure",
                "warmup_insts": args.warmup_insts,
@@ -479,7 +494,7 @@ def report(args, tasks):
         "statuses": [{"path": str(path), "sha256": digest(path)} for path in status_paths],
         "summary_sha256": digest(args.output_root / "summary.json"),
         "finished_utc": now()})
-    lines = [f"# xs-gem5 Hint Context fork v5: {args.warmup_insts}+{args.measure_insts}", "",
+    lines = [f"# xs-gem5 Hint Spec v7: {args.warmup_insts}+{args.measure_insts}", "",
              f"{len(tasks)} 片各自按 baseline → collect (最多 16+4) → 离线构表 → Hint replay 执行。",
              "mask-sweep 是基于实际 baseline 目标与原预测的固定 conf=3 离线估计；",
              "下表是含动态置信度与错误路径影响的真实 gem5 replay。", "",
@@ -504,6 +519,8 @@ def parse_args(argv=None):
                         help='Frozen BackendV2 no-RVV/no-LLC experiment contract')
     parser.add_argument("--library-path", default="")
     parser.add_argument("--jobs", type=int, default=5)
+    parser.add_argument("--profile-context-source", choices=("prediction", "commit-pre"),
+                        default="prediction")
     parser.add_argument("--warmup-insts", type=int, default=1_000_000)
     parser.add_argument("--measure-insts", type=int, default=1_000_000)
     parser.add_argument("--h2p-stat-interval", type=int, default=1_000_000)
@@ -573,21 +590,23 @@ def process_task(args, task):
         if not observer["pass"]:
             raise ValueError(f"collect changed baseline: {collect}")
         profile_path = collect / "hint-profile.jsonl.gz"
-        _, group_rows = read_profile(profile_path)
+        _, group_rows = read_profile(profile_path, expected_context_source=
+                                     getattr(args, "profile_context_source", "prediction"))
         collected_pcs = {address(pc) for pc in json.loads(candidate.read_text())["pcs"]}
-        if {row["pc"] for row in group_rows} - collected_pcs:
+        if {row["query_pc"] for row in group_rows} - collected_pcs:
             raise ValueError("collect profile contains a PC outside its physical CAM")
         status = json.loads((collect / "status.json").read_text())
         for stat in status["hint"]["pcs"]:
             pc = address(stat["pc"])
             if pc not in collected_pcs:
                 continue
-            observed = [row for row in group_rows if row["pc"] == pc]
+            observed = [row for row in group_rows if row["query_pc"] == pc]
             if (len(observed) != stat["executions"] or
                     sum(baseline_miss(row) for row in observed) != stat["baseline_misses"]):
                 raise ValueError(f"collect profile/count mismatch for {pc:#x}")
         profiles.append(profile_path)
-    _, rows = merge_profiles(profiles, pcs)
+    _, rows = merge_profiles(profiles, pcs, expected_context_source=
+                             getattr(args, "profile_context_source", "prediction"))
     source = _source(args, task, profile_identity(profiles))
     metadata = build_and_score(args, task, rows, pcs, source)
     if args.stage == "build":

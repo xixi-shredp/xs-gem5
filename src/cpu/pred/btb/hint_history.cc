@@ -62,16 +62,40 @@ hintFold128(const std::array<uint64_t, 2> &value)
     return hintFold28(value[0]) ^ hintRotate28(hintFold28(value[1]), 8);
 }
 
+// Fold by source bit position so the 64-bit storage boundary does not
+// introduce padding or a rotation. This is a fixed XOR network in hardware.
+uint32_t
+hintEncode128(const std::array<uint64_t, 2> &value)
+{
+    uint32_t index = 0, fold17 = 0, fold16 = 0;
+    for (unsigned bit = 0; bit < 128; ++bit) {
+        if ((value[bit / 64] >> (bit % 64)) & 1) {
+            index ^= uint32_t(1) << (bit % 11);
+            fold17 ^= uint32_t(1) << (bit % 17);
+            fold16 ^= uint32_t(1) << (bit % 16);
+        }
+    }
+    const uint32_t tag = fold17 ^ ((fold16 << 2) & 0x1ffff);
+    return (tag << 11) | index;
+}
+
+uint32_t
+hintEncodeWord(uint64_t value)
+{
+    return hintEncode128({value, 0});
+}
+
 uint32_t
 hintHashV3(Addr pc, const HintV3Contexts &contexts, uint8_t mask)
 {
     assert(mask < 16);
-    uint32_t key = hintFold28((pc >> 1) & HintAddressWordMask);
+    uint32_t key = hintEncodeWord((pc >> 1) & HintAddressWordMask);
     for (unsigned i = 0; i < contexts.size(); ++i) {
+        assert((contexts[i] & ~HintHashMask) == 0);
         if (mask & (1U << i))
-            key ^= hintRotate28(contexts[i], i + 2);
+            key ^= contexts[i];
     }
-    return key & HintHashMask;
+    return key;
 }
 
 void
@@ -127,12 +151,6 @@ HintFiniteHistory::low12(const Ring &ring) const
     return value;
 }
 
-uint8_t
-HintFiniteHistory::localLow8(unsigned index) const
-{
-    return localLow16(index) & 0xff;
-}
-
 uint16_t
 HintFiniteHistory::localLow16(unsigned index) const
 {
@@ -166,6 +184,18 @@ HintFiniteHistory::restoreLocalPhase(unsigned index, uint8_t phase)
     locals[index].head = phase & 15;
 }
 
+void
+HintFiniteHistory::rewindLocalPhase(unsigned index, uint8_t phase)
+{
+    assert(index < locals.size() && phase < 32);
+    auto &ring = locals[index];
+    const unsigned distance = (ring.phase - phase) & 31;
+    fatal_if(distance > 8 || ring.writes < distance,
+             "Finite Hint local metadata rewind exceeds protected writes");
+    ring.writes -= distance;
+    restoreLocalPhase(index, phase);
+}
+
 HintFiniteHistory::Snapshot
 HintFiniteHistory::snapshot() const
 {
@@ -180,12 +210,27 @@ HintFiniteHistory::snapshot() const
     for (unsigned i = 0; i < locals.size(); ++i) {
         result.localLow16[i] = localLow16(i);
         result.localPhases[i] = localPhase(i);
+        result.localWrites[i] = locals[i].writes;
     }
     return result;
 }
 
 void
 HintFiniteHistory::restore(const Snapshot &saved)
+{
+    // Test/collect-only helper. Runtime recovery must use the finite metadata
+    // queue rather than the observer's per-FTQ array of local heads.
+    for (unsigned i = 0; i < locals.size(); ++i) {
+        fatal_if(locals[i].writes < saved.localWrites[i] ||
+                 locals[i].writes - saved.localWrites[i] > 8,
+                 "Finite Hint local ring exceeded eight younger writes");
+        rewindLocalPhase(i, saved.localPhases[i]);
+    }
+    restoreGlobals(saved);
+}
+
+void
+HintFiniteHistory::restoreGlobals(const Snapshot &saved)
 {
     const std::array<Ring *, 3> rings = {&ith, &calls, &returns};
     for (unsigned i = 0; i < rings.size(); ++i) {
@@ -205,12 +250,14 @@ HintFiniteHistory::restore(const Snapshot &saved)
     for (unsigned i = 0; i < rings.size(); ++i)
         fatal_if(low128(*rings[i]) != saved.low128[i],
                  "Finite Hint compact global-ring recovery mismatch");
-    // Restore every selector on any redirect, including a non-H2P branch.
-    // The caller's admission policy protects read-enabled LHR windows. An
-    // immutable mask that excludes LHR can bypass that limit; its old cells
-    // are not guaranteed to match an observer after arbitrary younger writes.
-    for (unsigned i = 0; i < locals.size(); ++i)
-        restoreLocalPhase(i, saved.localPhases[i]);
+    // These snapshot fields are observers only: functional local recovery
+    // has already happened through the sixteen-entry Hint metadata queue.
+    for (unsigned i = 0; i < locals.size(); ++i) {
+        fatal_if(localPhase(i) != saved.localPhases[i] ||
+                 locals[i].writes != saved.localWrites[i] ||
+                 localLow16(i) != saved.localLow16[i],
+                 "Finite Hint metadata-only local recovery mismatch");
+    }
 }
 
 bool
@@ -234,7 +281,7 @@ HintFiniteHistory::canUpdateAfter(const Snapshot &oldest, bool indirect,
 void
 HintFiniteHistory::push(Ring &ring, uint8_t bits)
 {
-    ring.head = uint8_t(ring.head + 1);
+    ring.head = (ring.head + 1) & 127;
     ring.cells[ring.head & 127] = bits & 3;
     ++ring.writes;
 }
@@ -251,7 +298,8 @@ HintFiniteHistory::pushPath(Ring &ring, Addr pc)
 
 void
 HintFiniteHistory::update(Addr pc, Addr target, bool indirect, bool call,
-                          bool is_return, bool taken)
+                          bool is_return, bool taken, int local_selector,
+                          bool write_local)
 {
     if (!taken)
         return;
@@ -263,9 +311,10 @@ HintFiniteHistory::update(Addr pc, Addr target, bool indirect, bool call,
         return;
     const uint8_t bits = (target >> 1) & 3;
     push(ith, bits);
-    const int index = localIndex(pc);
-    if (index >= 0) {
-        auto &ring = locals[index];
+    if (write_local) {
+        fatal_if(local_selector < 0 || local_selector >= int(pcs.size()),
+                 "Finite Hint local update lacks a valid CAM selector");
+        auto &ring = locals[local_selector];
         ring.phase = (ring.phase + 1) & 31;
         ring.head = ring.phase & 15;
         ring.cells[ring.head] = bits;
@@ -276,80 +325,93 @@ HintFiniteHistory::update(Addr pc, Addr target, bool indirect, bool call,
 HintV3Contexts
 HintFiniteHistory::contexts(const Snapshot &saved, int local_index) const
 {
-    return {hintFold128(saved.low128[0]),
-            local_index >= 0 ? saved.localLow16[local_index] : 0U,
-            hintFold128(saved.low128[1]), hintFold128(saved.low128[2])};
+    return {hintEncode128(saved.low128[0]),
+            hintEncode128(saved.low128[1]), hintEncode128(saved.low128[2]),
+            hintEncodeWord(local_index >= 0 ?
+                saved.localLow16[local_index] : 0U)};
 }
 
 void
 verifyHintContextForkHistory()
 {
     const auto require = [](bool ok, const char *message) {
-        fatal_if(!ok, "Hint fork history self-test: %s", message);
+        fatal_if(!ok, "Hint spec history self-test: %s", message);
     };
-    // Independent logical shift registers, rather than a second ring reader.
     using Wide = std::array<uint64_t, 4>;
     const auto shift = [](Wide &value, uint8_t bits) {
         for (unsigned i = value.size() - 1; i > 0; --i)
             value[i] = (value[i] << 2) | (value[i - 1] >> 62);
         value[0] = (value[0] << 2) | (bits & 3);
     };
-    const auto fold_reference = [](const std::array<uint64_t, 2> &value) {
-        uint32_t result = 0;
-        for (unsigned bit = 0; bit < 128; ++bit) {
-            if ((value[bit / 64] >> (bit % 64)) & 1)
-                result ^= uint32_t(1) << (bit % 28);
-        }
-        return result;
+    // Independent chunk-wise fold, including chunks crossing bit 64.
+    const auto reference_encode = [](const std::array<uint64_t, 2> &value) {
+        const auto fold = [&value](unsigned width) {
+            uint32_t result = 0;
+            for (unsigned begin = 0; begin < 128; begin += width) {
+                uint32_t chunk = 0;
+                for (unsigned offset = 0;
+                     offset < width && begin + offset < 128; ++offset) {
+                    const unsigned bit = begin + offset;
+                    chunk |= ((value[bit / 64] >> (bit % 64)) & 1)
+                        << offset;
+                }
+                result ^= chunk;
+            }
+            return result;
+        };
+        return ((fold(17) ^ ((fold(16) << 2) & 0x1ffff)) << 11)
+            | fold(11);
     };
-    // Exercise both sides of the 64-bit word boundary and the highest bit.
     for (unsigned bit = 0; bit < 128; ++bit) {
         std::array<uint64_t, 2> value{};
         value[bit / 64] = uint64_t(1) << (bit % 64);
-        require(hintFold128(value) == fold_reference(value),
-                "128-bit fold bit placement");
+        require(hintEncode128(value) == reference_encode(value),
+                "128-bit independent index/tag fold placement");
     }
     const std::array<uint64_t, 2> mixed = {
         0x0123456789abcdefULL, 0xfedcba9876543210ULL};
-    require(hintFold128(mixed) == fold_reference(mixed),
-            "128-bit mixed fold");
-    const HintV3Contexts hash_contexts = {
-        hintFold128(mixed), 0x8001, hintFold128({mixed[1], mixed[0]}),
-        hintFold128({0x1, 0x8000000000000000ULL})};
-    const Addr hash_pc = 0x123456789abcULL;
+    require(hintEncode128(mixed) == reference_encode(mixed),
+            "mixed independent index/tag fold");
+    const std::array<std::array<uint64_t, 2>, 4> raw = {{
+        mixed, {mixed[1], mixed[0]}, {1, 0x8000000000000000ULL},
+        {0x81, 0}}};
+    HintV3Contexts encoded{};
+    for (unsigned i = 0; i < encoded.size(); ++i)
+        encoded[i] = hintEncode128(raw[i]);
+    const Addr query_pc = 0x123456789abcULL;
     for (unsigned mask = 0; mask < 16; ++mask) {
-        uint32_t expected = 0;
-        const auto pc_word = (hash_pc >> 1) & HintAddressWordMask;
-        for (unsigned bit = 0; bit < 47; ++bit)
-            if ((pc_word >> bit) & 1)
-                expected ^= uint32_t(1) << (bit % 28);
-        for (unsigned context = 0; context < 4; ++context) {
-            if (!(mask & (1U << context))) continue;
-            for (unsigned bit = 0; bit < 28; ++bit)
-                if ((hash_contexts[context] >> bit) & 1)
-                    expected ^= uint32_t(1) << ((bit + context + 2) % 28);
+        auto combined = std::array<uint64_t, 2>{
+            (query_pc >> 1) & HintAddressWordMask, 0};
+        for (unsigned i = 0; i < raw.size(); ++i) {
+            if (mask & (1U << i)) {
+                combined[0] ^= raw[i][0];
+                combined[1] ^= raw[i][1];
+            }
         }
-        require(hintHashV3(hash_pc, hash_contexts, mask) == expected,
-                "all-mask hash encoding");
+        require(hintHashV3(query_pc, encoded, mask) ==
+                    reference_encode(combined),
+                "all-mask no-rotation independent-fold hash");
     }
 
     std::vector<Addr> pcs;
-    for (unsigned index = 0; index < 16; ++index)
-        pcs.push_back(0x1000 + index * 0x100);
+    for (unsigned i = 0; i < 16; ++i)
+        pcs.push_back(0x1000 + i * 0x100);
     HintFiniteHistory history;
     history.configure(pcs);
     Wide ith{}, calls{}, returns{};
-    std::array<uint32_t, 16> local{};
+    std::array<uint16_t, 16> local{};
     std::array<unsigned, 16> local_events{};
     unsigned ith_events = 0;
     for (unsigned event = 0; event < 640; ++event) {
         const unsigned selector = event % 16;
-        const Addr pc = pcs[selector];
-        const Addr target = 0x2000 + ((event * 13 + 3) & 0x3f) * 2;
+        // Branch instruction PC deliberately differs from query-window PC.
+        const Addr pc = pcs[selector] + 6;
+        const Addr target = 0x2000 + ((event * 13 + event / 16 + 3) & 0x3f) * 2;
         const bool call = event % 3 == 0;
         const bool is_return = event % 5 == 0;
         const bool indirect = event % 2 == 0;
-        history.update(pc, target, indirect, call, is_return, true);
+        history.update(pc, target, indirect, call, is_return, true,
+                       selector, true);
         if (call) {
             shift(calls, 0);
             calls[0] ^= hintFold14(pc);
@@ -365,37 +427,60 @@ verifyHintContextForkHistory()
             ++local_events[selector];
             ++ith_events;
         }
-        const auto snapshot = history.snapshot();
-        require(snapshot.low128[0] ==
-                    std::array<uint64_t, 2>{ith[0], ith[1]} &&
-                snapshot.low128[1] ==
-                    std::array<uint64_t, 2>{calls[0], calls[1]} &&
-                snapshot.low128[2] ==
-                    std::array<uint64_t, 2>{returns[0], returns[1]},
+        const auto snap = history.snapshot();
+        require(snap.low128[0] == std::array<uint64_t, 2>{ith[0], ith[1]} &&
+                snap.low128[1] == std::array<uint64_t, 2>{calls[0], calls[1]} &&
+                snap.low128[2] == std::array<uint64_t, 2>{returns[0], returns[1]},
                 "global ring versus logical shifts across wraps");
-        for (unsigned index = 0; index < 16; ++index) {
-            require(history.localLow16(index) == (local[index] & 0xffff),
-                    "local 16-bit read versus 32-bit physical shifts");
-            require(history.localPhase(index) ==
-                        ((31 + local_events[index]) & 31),
+        for (unsigned i = 0; i < 16; ++i) {
+            require(history.localLow16(i) == local[i],
+                    "local sixteen-bit read versus logical shifts");
+            require(history.localPhase(i) == ((31 + local_events[i]) & 31),
                     "local five-bit phase wrap");
+            require(history.localHead(i) == ((15 + local_events[i]) & 15),
+                    "local sixteen-cell physical head wrap");
         }
-        require(history.ith.head == uint8_t(255 + ith_events),
-                "global eight-bit phase wrap");
+        require(history.ith.head == ((127 + ith_events) & 127),
+                "global seven-bit head wrap");
+        const auto contexts = history.contexts(snap, selector);
+        require(contexts == HintV3Contexts{
+                    reference_encode(snap.low128[0]),
+                    reference_encode(snap.low128[1]),
+                    reference_encode(snap.low128[2]),
+                    reference_encode({local[selector], 0})},
+                "ITH Call Ret LHR component order");
     }
     const auto saved = history.snapshot();
-    for (unsigned index = 0; index < 16; ++index)
-        for (unsigned write = 0; write < 4; ++write)
-            history.update(pcs[index], 0x4000 + write * 2,
-                           true, false, false, true);
-    history.restore(saved);
+    // Model sixteen bounded per-update metadata records. Runtime restoration
+    // uses these records, not all-selector arrays copied into every FTQ slot.
+    std::vector<std::pair<unsigned, uint8_t>> metadata;
+    for (unsigned write = 0; write < 8; ++write) {
+        for (unsigned i = 0; i < 2; ++i) {
+            metadata.emplace_back(i, history.localPhase(i));
+            history.update(pcs[i] + 6, 0x3800 + write * 2,
+                           true, false, false, true, i, true);
+        }
+    }
+    for (auto it = metadata.rbegin(); it != metadata.rend(); ++it)
+        history.rewindLocalPhase(it->first, it->second);
+    history.restoreGlobals(saved);
     require(history.snapshot().localLow16 == saved.localLow16 &&
-            history.snapshot().localPhases == saved.localPhases,
-            "all selectors recover on a non-H2P redirect");
-    // A correct redirected event is reapplied from the entry state; repeat
-    // rollback must restore the same window, not accumulate its target twice.
+            history.snapshot().localWrites == saved.localWrites,
+            "metadata-only local rewind plus global-only recovery");
+    // Two independent batches cover all selectors without exceeding the
+    // unchanged global limit of 64 writes from any protected snapshot.
+    for (unsigned batch = 0; batch < 2; ++batch) {
+        for (unsigned i = batch * 8; i < (batch + 1) * 8; ++i)
+            for (unsigned write = 0; write < 8; ++write)
+                history.update(pcs[i] + 6, 0x4000 + write * 2,
+                               true, false, false, true, i, true);
+        history.restore(saved);
+        require(history.snapshot().localLow16 == saved.localLow16 &&
+                history.snapshot().localPhases == saved.localPhases,
+                "all selectors recover after eight writes on non-H2P redirect");
+    }
     for (unsigned retry = 0; retry < 2; ++retry) {
-        history.update(pcs[0], 0x5006, true, false, false, true);
+        history.update(pcs[0] + 6, 0x5006, true, false, false, true, 0, true);
         require(history.localLow16(0) ==
                     uint16_t((saved.localLow16[0] << 2) | 3),
                 "correct target replay");
@@ -403,31 +488,34 @@ verifyHintContextForkHistory()
         require(history.localLow16(0) == saved.localLow16[0],
                 "repeated redirect does not duplicate an event");
     }
-    // The guard band protects the last eight old local cells. Admission is
-    // still four; this verifies physical capacity without changing policy.
+    // The ninth instance falls back without writing its LHR. Global history
+    // continues to include that branch and restore remains precise.
     for (unsigned write = 0; write < 8; ++write)
-        history.update(pcs[0], 0x6000 + write * 2,
-                       true, false, false, true);
+        history.update(pcs[0] + 6, 0x6000 + write * 2,
+                       true, false, false, true, 0, true);
+    const auto before_fallback = history.snapshot();
+    history.update(pcs[0] + 6, 0x7006, true, false, false, true, 0, false);
+    require(history.localLow16(0) == before_fallback.localLow16[0] &&
+            history.localPhase(0) == before_fallback.localPhases[0] &&
+            history.ith.writes == before_fallback.writes[0] + 1,
+            "local fallback skips write while global history continues");
     history.restore(saved);
-    require(history.localLow16(0) == saved.localLow16[0],
-            "eight-write physical local guard band");
-    // Independently exercise the global 64-write protection on all rings.
+
     const Addr untracked = 0xa000;
     for (unsigned write = 0; write < 64; ++write) {
         require(history.canUpdateAfter(saved, true, true, false, true) &&
                 history.canUpdateAfter(saved, false, false, true, true),
-                "global admission before the last safe write");
+                "global bound before the last safe write");
         history.update(untracked, 0xb000 + write * 2,
                        true, true, false, true);
-        history.update(untracked + 2, 0xb006,
-                       false, false, true, true);
+        history.update(untracked + 2, 0xb006, false, false, true, true);
     }
     require(!history.canUpdateAfter(saved, true, false, false, true) &&
             !history.canUpdateAfter(saved, false, true, false, true) &&
             !history.canUpdateAfter(saved, false, false, true, true) &&
             history.canUpdateAfter(saved, false, false, false, true) &&
             history.canUpdateAfter(saved, true, true, true, false),
-            "global write 65 is blocked without blocking a non-write");
+            "detect an invalid global write 65 without blocking non-writes");
     history.restore(saved);
     require(history.snapshot().low128 == saved.low128,
             "global heads plus path low12 recover 128-bit windows");
@@ -639,10 +727,10 @@ HintV3Contexts
 HintSnapshot::v3ContextsFor(int local_index) const
 {
     assert(finite && local_index >= 0 && local_index < 16);
-    return {hintFold128(finite->low128[0]),
-            finite->localLow16[local_index],
-            hintFold128(finite->low128[1]),
-            hintFold128(finite->low128[2])};
+    return {hintEncode128(finite->low128[0]),
+            hintEncode128(finite->low128[1]),
+            hintEncode128(finite->low128[2]),
+            hintEncodeWord(finite->localLow16[local_index])};
 }
 
 HintContexts

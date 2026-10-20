@@ -1,4 +1,4 @@
-"""Shared finite-v5-fork profile reader, deterministic builder, and image codec.
+"""Shared finite-v7-spec profile reader, deterministic builder, and image codec.
 
 xs-gem5 and RTL collect their own gzip JSONL traces. Both use this module to
 score fixed-confidence target corrections and build the same packed image.
@@ -20,9 +20,23 @@ from . import context_v5_contract as contract
 _CONTRACT_PATH = Path(contract.__file__).resolve()
 
 
-def load_metadata(path):
+def load_metadata(path, *, expected_context_source=None):
     metadata = json_loads(Path(path).read_text())
     contract.pack_image(metadata)
+    source = metadata["source"]
+    present = {name for name in ("profile_context_source", "online_context_source")
+               if name in source}
+    if present and len(present) != 2:
+        raise ValueError("metadata has incomplete context provenance")
+    context_source = source.get("profile_context_source", "prediction")
+    if (context_source not in ("prediction", "commit-pre") or
+            source.get("online_context_source", "prediction") != "prediction"):
+        raise ValueError("invalid metadata context provenance")
+    if expected_context_source is not None:
+        if expected_context_source not in ("prediction", "commit-pre"):
+            raise ValueError("invalid expected metadata context source")
+        if context_source != expected_context_source:
+            raise ValueError("metadata context source mismatch")
     return metadata
 
 
@@ -36,14 +50,14 @@ def load_candidates(path):
         not isinstance(data, dict)
         or data.get("format") != "h2p-hint-candidates"
         or type(data.get("version")) is not int
-        or data["version"] != 5
+        or data["version"] != 7
         or data.get("storage") != "finite"
         or data.get("context_encoding") != contract.CONTEXT_ENCODING
         or not isinstance(data.get("source"), dict)
         or not isinstance(data.get("pcs"), list)
         or len(data["pcs"]) > 16
     ):
-        raise ValueError("candidate file is not finite Hint v5 fork")
+        raise ValueError("candidate file is not finite Hint v7 spec")
     if any(not isinstance(pc, str) or not re.fullmatch(
             r"0x[0-9a-fA-F]{1,16}", pc) for pc in data["pcs"]):
         raise ValueError("candidate PCs must be hexadecimal address strings")
@@ -63,11 +77,34 @@ def digest(path):
     return sha.hexdigest()
 
 
-def read_profile(path):
-    """Read the simulator-neutral finite-v5-fork gzip JSONL profile."""
+def _validate_profile_context(contexts, history):
+    if (not isinstance(contexts, list) or len(contexts) != 4 or
+            any(type(x) is not int or not 0 <= x <= contract.MASK28
+                for x in contexts)):
+        raise ValueError("profile requires four folded contexts")
+    if not isinstance(history, dict):
+        raise ValueError("fork profile lacks full history evidence")
+    try:
+        components = contract.context_components(
+            int(history["ith_low128"], 16), int(history["lhr_low16"], 16),
+            int(history["call_low128"], 16), int(history["ret_low128"], 16))
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("invalid fork full history evidence") from error
+    if list(components) != contexts:
+        raise ValueError("fork history and folded contexts differ")
+
+
+def read_profile(path, *, expected_context_source="prediction"):
+    """Read finite-v7 JSONL, rejecting a mismatched context provenance.
+
+    Legacy headers are accepted only for prediction-context callers. Commit-pre
+    callers must explicitly opt in and present both provenance header fields.
+    """
+    if expected_context_source not in ("prediction", "commit-pre"):
+        raise ValueError("invalid expected profile context source")
     with gzip.open(path, "rt") as stream:
         header = json_loads(next(stream))
-        expected = {"version": 5, "storage": "finite", "hash_version": 5,
+        expected = {"version": 7, "storage": "finite", "hash_version": 7,
                     "context_encoding": contract.CONTEXT_ENCODING,
                     "mask_order": contract.MASK_ORDER, "history": contract.HISTORY,
                     "layout": contract.LAYOUT}
@@ -75,7 +112,20 @@ def read_profile(path):
                 header.get("format") != "h2p-hint-profile" or
                 any(not contract._same_typed(header.get(k), v)
                     for k, v in expected.items())):
-            raise ValueError("profile header does not match finite Hint v5 fork")
+            raise ValueError("profile header does not match finite Hint v7 spec")
+        provenance_fields = {name for name in
+                             ("profile_context_source", "online_context_source")
+                             if name in header}
+        if provenance_fields and len(provenance_fields) != 2:
+            raise ValueError("profile header has incomplete context provenance")
+        source = header.get("profile_context_source", "prediction")
+        online = header.get("online_context_source", "prediction")
+        if source != expected_context_source or online != "prediction":
+            raise ValueError("profile context source mismatch")
+        if expected_context_source == "commit-pre" and (
+                header.get("profile_context_source") != "commit-pre" or
+                header.get("online_context_source") != "prediction"):
+            raise ValueError("commit-pre profile lacks explicit context provenance")
         pcs = [contract.address_word(int(pc, 16)) for pc in header["pcs"]]
         if len(pcs) > 16 or len(set(pcs)) != len(pcs):
             raise ValueError("one physical CAM profile needs <=16 unique PCs")
@@ -86,58 +136,76 @@ def read_profile(path):
             row = json_loads(line)
             if row.get("kind") != "branch":
                 raise ValueError("expected profile branch")
-            for key in ("pc", "actual", "baseline_pc", "block_start", "block_end"):
+            for key in ("pc", "query_pc", "actual", "baseline_pc", "block_start", "block_end"):
                 row[key] = address(row[key])
             row["baseline_target"] = int(row["baseline_target"], 16)
             if not 0 <= row["baseline_target"] <= contract.MASK64:
                 raise ValueError("baseline target out of 64-bit range")
-            if (contract.address_word(row["pc"]) not in pcs or
+            if (contract.address_word(row["query_pc"]) not in pcs or
                     type(row.get("seq")) is not int or row["seq"] <= previous_seq or
                     type(row.get("commit_cycle")) is not int or
                     row["commit_cycle"] < previous_commit):
                 raise ValueError("profile sequence/order/PC mismatch")
             previous_seq, previous_commit = row["seq"], row["commit_cycle"]
-            if (type(row.get("eligible")) is not bool or
+            if (type(row.get("query_valid")) is not bool or
+                    type(row.get("eligible")) is not bool or
                     type(row.get("baseline_valid")) is not bool):
                 raise ValueError("profile eligibility must be boolean")
             query = row.get("query_cycle")
             if query is not None and (type(query) is not int or query > row["commit_cycle"]):
                 raise ValueError("invalid query cycle")
             contexts = row.get("contexts")
-            if contexts is not None and (not isinstance(contexts, list) or
-                    len(contexts) != 4 or any(type(x) is not int or
-                    not 0 <= x <= contract.MASK28 for x in contexts)):
-                raise ValueError("profile requires four folded contexts")
             if contexts is not None:
-                history = row.get("history")
-                if not isinstance(history, dict):
-                    raise ValueError("fork profile lacks full history evidence")
-                try:
-                    components = contract.context_components(
-                        int(history["ith_low128"], 16), int(history["lhr_low16"], 16),
-                        int(history["call_low128"], 16), int(history["ret_low128"], 16))
-                except (KeyError, TypeError, ValueError) as error:
-                    raise ValueError("invalid fork full history evidence") from error
-                if list(components) != contexts:
-                    raise ValueError("fork history and folded contexts differ")
-            if row["eligible"] and (contexts is None or query is None or
+                _validate_profile_context(contexts, row.get("history"))
+            if source == "commit-pre":
+                if not {"prediction_contexts", "prediction_history"} <= row.keys():
+                    raise ValueError("commit-pre row lacks prediction diagnostics")
+                predicted = row["prediction_contexts"]
+                predicted_history = row["prediction_history"]
+                if predicted is not None:
+                    _validate_profile_context(predicted, predicted_history)
+                elif predicted_history is not None:
+                    raise ValueError("null prediction context has non-null history")
+                if row["query_valid"] and predicted is None:
+                    raise ValueError("query_valid row lacks prediction context evidence")
+            if "profile_context_source" in header:
+                # Retain provenance on decoded rows, preventing accidental use
+                # of commit histories with prediction-labelled metadata.
+                if row.get("profile_context_source", source) != source:
+                    raise ValueError("profile row/header context source mismatch")
+                if row.get("online_context_source", online) != online:
+                    raise ValueError("profile row/header online context source mismatch")
+                row["profile_context_source"] = source
+                row["online_context_source"] = online
+            if row["query_pc"] != row["block_start"]:
+                raise ValueError("profile query PC differs from window start")
+            if row["query_valid"] and (contexts is None or query is None):
+                raise ValueError("query_valid profile row lacks a valid query")
+            if row["eligible"] and (not row["query_valid"] or
                     not row["baseline_valid"] or row["baseline_pc"] != row["pc"] or
                     not row["block_start"] <= row["pc"] < row["block_end"]):
-                raise ValueError("eligible profile row lacks a valid query")
+                raise ValueError("eligible profile row lacks a matching baseline branch")
+            if "window_delta" in row:
+                delta = (row["pc"] - row["query_pc"]) // 2
+                if type(row["window_delta"]) is not int or not -64 <= delta <= 63 or row["window_delta"] != delta:
+                    raise ValueError("invalid signed halfword window delta")
             rows.append(row)
     return header, rows
 
 
-def merge_profiles(paths, expected_pcs):
-    """Merge disjoint 16+4 collect groups in committed sequence order."""
-    groups = [read_profile(path) for path in paths]
+def merge_profiles(paths, expected_pcs, *, expected_context_source="prediction"):
+    """Merge independently audited collect groups covering at most 16 start PCs."""
+    if len(expected_pcs) > 16 or len(set(expected_pcs)) != len(expected_pcs):
+        raise ValueError("Discovery must select at most 16 unique start PCs")
+    groups = [read_profile(path, expected_context_source=expected_context_source)
+              for path in paths]
     if not groups:
         raise ValueError("no profiles")
     if len({header["clock_period"] for header, _ in groups}) != 1:
         raise ValueError("profile group clock periods differ")
     pcs = [address(pc) for header, _ in groups for pc in header["pcs"]]
     if len(set(pcs)) != len(pcs) or set(pcs) != set(expected_pcs):
-        raise ValueError("profile groups must cover top20 exactly once")
+        raise ValueError("profile groups must cover top16 exactly once")
     # Independent passes may restart their sequence counter at zero. Table
     # construction scores each committed observation; it does not depend on
     # cross-pass retirement order. Preserve the collector's sequence in each
@@ -151,12 +219,32 @@ def baseline_miss(row):
 
 
 def query_eligible(row, masks):
-    return (row["eligible"] and row["contexts"] is not None and
-            contract.select_cam_pc(row["block_start"], list(masks)) == row["pc"])
+    return (row["query_valid"] and row["eligible"] and row["contexts"] is not None and
+            contract.select_cam_pc(row["block_start"], list(masks)) == row["query_pc"])
 
 
-def build_image(rows, masks, source):
-    """Greedy shared-slot and two-way finite table, scored on actual trace rows."""
+def build_image(rows, masks, source, *, stable_fill=False,
+                stable_fill_min_observations=1):
+    """Build the positive-gain table, optionally filling unused ways.
+
+    Stable fill adds only observed single-target zero-gain keys belonging to
+    already active CAM PCs and reuses existing slots. Positive entries retain
+    their physical positions; the default image and report are unchanged.
+    """
+    source = dict(source)
+    source.setdefault("profile_context_source", "prediction")
+    source.setdefault("online_context_source", "prediction")
+    if (source["profile_context_source"] not in ("prediction", "commit-pre") or
+            source["online_context_source"] != "prediction"):
+        raise ValueError("invalid image context provenance")
+    if any(row.get("profile_context_source", "prediction") !=
+           source["profile_context_source"] for row in rows):
+        raise ValueError("profile rows and image context provenance differ")
+    if type(stable_fill) is not bool:
+        raise ValueError("stable_fill must be boolean")
+    if (type(stable_fill_min_observations) is not int or
+            stable_fill_min_observations < 1):
+        raise ValueError("stable_fill_min_observations must be a positive integer")
     if len(masks) > 16 or any(not 0 <= mask < 16 for mask in masks.values()):
         raise ValueError("finite Hint uses <=16 PCs and four-bit masks")
     masks = dict(sorted(masks.items()))
@@ -164,7 +252,7 @@ def build_image(rows, masks, source):
     own_keys = defaultdict(set)
     coverage = Counter()
     for row in rows:
-        pc = row["pc"]
+        pc = row["query_pc"]
         if pc not in masks:
             continue
         coverage[(pc, "executions")] += 1
@@ -190,15 +278,65 @@ def build_image(rows, masks, source):
                for set_id, values in sorted(by_set.items())
                for way, (key, target) in enumerate(sorted(values))]
     active = [pc for pc in masks if mapped.intersection(own_keys[pc])]
-    metadata = {"format": "h2p-hint", "version": 5, "storage": "finite",
-                "hash_version": 5, "context_encoding": contract.CONTEXT_ENCODING,
+    fill_report = None
+    if stable_fill:
+        active_pcs = set(active)
+        used_ways = defaultdict(set)
+        for entry in entries:
+            used_ways[entry["set"]].add(entry["way"])
+        candidates = []
+        rejected = Counter()
+        for key, observations in sorted(keys.items()):
+            if key in mapped:
+                continue
+            if not set(observations["pcs"]) <= active_pcs:
+                rejected["inactive_cam_source"] += 1
+                continue
+            if len(observations["targets"]) != 1:
+                rejected["multiple_targets"] += 1
+                continue
+            target, count = next(iter(observations["targets"].items()))
+            if count - observations["correct"] != 0:
+                rejected["nonzero_gain"] += 1
+                continue
+            if count < stable_fill_min_observations:
+                rejected["too_few_observations"] += 1
+                continue
+            if target not in slot_ids:
+                rejected["target_not_in_slots"] += 1
+                continue
+            candidates.append((count, key, target))
+        additions = []
+        for count, key, target in sorted(candidates, key=lambda x: (-x[0], x[1])):
+            set_id = key & 2047
+            free = sorted(set(range(layout["ways"])) - used_ways[set_id])
+            if not free:
+                rejected["set_full"] += 1
+                continue
+            way = free[0]
+            entries.append({"set": set_id, "way": way, "tag": key >> 11,
+                            "slot": slot_ids[target], "conf": 3})
+            used_ways[set_id].add(way)
+            mapped.add(key)
+            additions.append({"key": key, "target": hex(target),
+                              "observations": count, "set": set_id,
+                              "way": way, "slot": slot_ids[target]})
+        fill_report = {
+            "policy": "stable-single-target-zero-gain-existing-slot-free-way-v1",
+            "min_observations": stable_fill_min_observations,
+            "candidate_keys": len(candidates), "added_keys": len(additions),
+            "added_observations": sum(row["observations"] for row in additions),
+            "rejected_keys": dict(sorted(rejected.items())), "entries": additions,
+        }
+    metadata = {"format": "h2p-hint", "version": 7, "storage": "finite",
+                "hash_version": 7, "context_encoding": contract.CONTEXT_ENCODING,
                 "mask_order": contract.MASK_ORDER,
                 "history": contract.HISTORY, "layout": layout,
                 "cam": [{"pc": hex(pc), "mask": masks[pc]} for pc in active],
                 "slots": [hex(target) for target in slots],
                 "entries": entries, "source": source}
     image = contract.pack_image(metadata)
-    report = {"format": "h2p-hint-builder", "version": 5, "storage": "finite",
+    report = {"format": "h2p-hint-builder", "version": 7, "storage": "finite",
               "loaded_pcs": len(active), "observed_keys": len(keys),
               "mapped_keys": len(entries), "slot_targets": len(slots),
               "estimated_net_correction_before_confidence": sum(x[0] for x in selected),
@@ -211,6 +349,8 @@ def build_image(rows, masks, source):
                        "loaded": pc in active,
                        "reasons": [] if pc in active else ["no_mapping"]}
                       for pc in masks]}
+    if fill_report is not None:
+        report["stable_fill"] = fill_report
     return metadata, image, report
 
 
@@ -222,7 +362,7 @@ def score_image(rows, metadata):
              for entry in metadata["entries"]}
     per_pc = defaultdict(Counter)
     for row in rows:
-        pc = row["pc"]
+        pc = row["query_pc"]
         if pc not in cam:
             continue
         counters = per_pc[pc]
@@ -268,6 +408,8 @@ def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", type=Path, action="append", required=True)
+    parser.add_argument("--profile-context-source",
+                        choices=("prediction", "commit-pre"), default="prediction")
     parser.add_argument("--masks", type=Path, required=True,
                         help="JSON object mapping hexadecimal PC to mask 0..15")
     parser.add_argument("--source", type=Path, required=True,
@@ -275,18 +417,22 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     masks = {address(pc): value for pc, value in json_loads(args.masks.read_text()).items()}
-    collected = [address(pc) for path in args.profile for pc in read_profile(path)[0]["pcs"]]
+    collected = [address(pc) for path in args.profile for pc in read_profile(path, expected_context_source=args.profile_context_source)[0]["pcs"]]
     if not set(masks) <= set(collected):
         raise ValueError("mask PC was not independently profiled")
-    _, rows = merge_profiles(args.profile, collected)
+    _, rows = merge_profiles(args.profile, collected,
+                             expected_context_source=args.profile_context_source)
     source = json_loads(args.source.read_text())
+    if (source.get("profile_context_source", "prediction") != args.profile_context_source or
+            source.get("online_context_source", "prediction") != "prediction"):
+        raise ValueError("source file context provenance mismatch")
     expected = hashlib.sha256("\n".join(digest(path) for path in args.profile).encode()).hexdigest()
     if source.get("profile_sha256") != expected or source.get("builder_sha256") != digest(__file__):
         raise ValueError("profile/builder provenance digest mismatch")
     metadata, image, report = build_image(rows, masks, source)
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
-    (args.output / "hint-context-v5.bin").write_bytes(image)
+    (args.output / "hint-context-v7.bin").write_bytes(image)
     (args.output / "builder.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     (args.output / "fixed-conf3-estimate.json").write_text(
         json.dumps(score_image(rows, metadata), indent=2, sort_keys=True) + "\n")

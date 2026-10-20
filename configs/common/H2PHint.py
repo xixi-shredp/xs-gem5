@@ -17,6 +17,11 @@ def add_h2p_hint_options(parser):
         "--h2p-hint-mode", choices=("off", "collect", "replay"), default="off"
     )
     parser.add_argument(
+        "--h2p-hint-profile-context", choices=("prediction", "commit-pre"),
+        default="prediction",
+        help="Offline profiling history source; online queries stay speculative",
+    )
+    parser.add_argument(
         "--ideal-hint-ibp",
         action="store_true",
         help="Remove Hint table capacities; keep hash and timing",
@@ -39,6 +44,8 @@ def add_h2p_hint_options(parser):
 
 def validate_h2p_hint_config(args):
     mode = getattr(args, "h2p_hint_mode", "off")
+    if getattr(args, "h2p_hint_profile_context", "prediction") not in ("prediction", "commit-pre"):
+        return "Hint profile context must be prediction or commit-pre"
     ideal = getattr(args, "ideal_hint_ibp", False)
     candidates = getattr(args, "h2p_hint_candidates", "")
     metadata = getattr(args, "h2p_hint_metadata", "")
@@ -92,6 +99,7 @@ def validate_h2p_hint_config(args):
 def h2p_hint_params(args):
     params = {
         "hintMode": getattr(args, "h2p_hint_mode", "off"),
+        "hintProfileContext": getattr(args, "h2p_hint_profile_context", "prediction"),
         "idealHintIBP": getattr(args, "ideal_hint_ibp", False),
         "hintCandidates": getattr(args, "h2p_hint_candidates", ""),
         "hintMetadata": getattr(args, "h2p_hint_metadata", ""),

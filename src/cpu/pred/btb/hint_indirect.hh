@@ -32,6 +32,10 @@ struct HintQuery
     Addr blockEnd = 0;
     uint64_t queryCycle = 0;
     bool hasCandidate = false;
+    bool admitted = false;
+    bool canceled = false;
+    bool localWrite = false;
+    uint64_t s3Cycle = 0;
     Addr pc = 0;
     unsigned mask = 0;
     int camIndex = -1;
@@ -62,6 +66,7 @@ class HintIndirect
     struct Config
     {
         std::string mode = "off";
+        std::string profileContext = "prediction";
         bool ideal = false;
         std::string candidatePath;
         std::string metadataPath;
@@ -99,6 +104,9 @@ class HintIndirect
         uint64_t recoveries = 0;
         uint64_t canceled = 0;
         uint64_t reverted = 0;
+        uint64_t rollbackWrites = 0;
+        uint64_t rollbackFallbacks = 0;
+        uint64_t rollbackReadConflicts = 0;
         uint64_t maxOccupancy = 0;
         uint64_t occupancySamples = 0;
         uint64_t occupancySum = 0;
@@ -127,6 +135,9 @@ class HintIndirect
     bool isCollect() const { return config.mode == "collect"; }
     bool isReplay() const { return config.mode == "replay"; }
     bool isIdeal() const { return config.ideal; }
+    bool needsCommitProfileContext() const {
+        return isCollect() && config.profileContext == "commit-pre";
+    }
     bool isFiniteV3() const { return enabled() && !config.ideal; }
     const std::vector<Addr> &historyPCs() const { return historyPcs; }
 
@@ -146,7 +157,15 @@ class HintIndirect
     // It must include non-candidate PCs so global final-miss counts are exact.
     void commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
         Addr pc, Addr actual, bool final_valid, Addr final_target,
-        uint64_t cycle);
+        uint64_t cycle, const HintSnapshot *profile_snapshot = nullptr,
+        uint64_t commit_event_ordinal = 0);
+
+    // Diagnostic stream of all retired controls, including warmup. This never
+    // changes prediction state or modeled timing.
+    uint64_t recordCommittedControl(const HintFiniteHistory &history,
+        uint64_t sequence, uint64_t cycle, Addr start_pc, Addr actual_pc,
+        Addr target, bool indirect, bool call, bool is_return, bool taken,
+        int local_selector);
 
     bool canReserve(Addr pc) const;
     StallReason reserveBlockReason(Addr pc) const;
@@ -166,6 +185,7 @@ class HintIndirect
                   bool actual_h2p, Addr actual, uint64_t sequence,
                   uint64_t cycle);
     void commitTarget(uint64_t ftq_id);
+    void cancelPending();
 
     void tick(uint64_t cycle);
     void setMeasurementActive(bool active);
@@ -180,6 +200,7 @@ class HintIndirect
         return config.ideal ? updates.size() : finiteUpdates.size();
     }
     size_t inFlightHints() const { return finiteMeta.size(); }
+    size_t pendingRollbacks() const;
     unsigned confidenceAt(unsigned set, unsigned way) const;
     unsigned confidenceAtEntry(size_t entry_id) const;
     int localIndex(Addr pc) const;
@@ -222,12 +243,16 @@ class HintIndirect
         bool scoreEligible = false;
         bool enqueued = false;
         bool applied = false;
+        bool discarded = false;
+        bool undoPending = false;
+        uint64_t undoReadyCycle = 0;
         bool dropped = false;
         uint64_t sequence = 0;
         uint64_t resolveCycle = 0;
         uint64_t readyCycle = 0;
         Addr actual = 0;
         unsigned oldConf = 0;
+        unsigned newConf = 0;
     };
     struct QueryCounts
     {
@@ -235,6 +260,8 @@ class HintIndirect
         uint64_t camHits = 0;
         uint64_t camContentions = 0;
         uint64_t camExtraCandidates = 0;
+        uint64_t busyFallbacks = 0;
+        uint64_t contextReads = 0;
         uint64_t tagHits = 0;
         uint64_t confEnabled = 0;
         uint64_t overrides = 0;
@@ -255,7 +282,8 @@ class HintIndirect
     void writeProfile(const std::shared_ptr<HintQuery> &query,
         uint64_t sequence, Addr pc, Addr actual, bool baseline_valid,
         Addr baseline_pc, Addr baseline_target, bool eligible,
-        uint64_t cycle);
+        uint64_t cycle, const HintSnapshot *profile_snapshot,
+        uint64_t commit_event_ordinal);
     void writeConfZero(const Update &update, uint64_t cycle);
     void writeStats();
     void enqueue(const std::shared_ptr<HintQuery> &query,
@@ -263,11 +291,12 @@ class HintIndirect
     void drainFiniteResolved();
     void releaseCommittedFinite();
     void tickFinite(uint64_t cycle);
-    unsigned forwardedConfidence(size_t entry_id) const;
-    void undoFinite(const std::shared_ptr<FiniteMeta> &record);
+    // Future-stage BPU abstraction: query reserves S2, result belongs to S3.
+    void undoFinite(const std::shared_ptr<FiniteMeta> &record, uint64_t cycle);
     std::string outputName(const std::string &name) const;
 
     const Config config;
+    uint64_t commitEventOrdinal = 0;
     unsigned sets = 0;
     unsigned indexBits = 0;
     std::vector<Addr> candidates;
@@ -294,6 +323,9 @@ class HintIndirect
     bool finished = false;
     std::optional<uint64_t> lastTick;
     std::optional<uint64_t> lastQueryCycle;
+    std::optional<uint64_t> lastContextReadCycle;
+    uint64_t busyUntil = 0;
+    std::weak_ptr<HintQuery> busyQuery;
     std::unique_ptr<Statistics> stats;
     std::unique_ptr<Output> output;
 };

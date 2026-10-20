@@ -1243,6 +1243,8 @@ class DecoupledBPUWithBTB(BranchPredictor):
         0, "Measured instructions per H2P window; zero disables",
     )
     hintMode = Param.String("off", "H2P Hint mode: off, collect, or replay")
+    hintProfileContext = Param.String(
+        "prediction", "Offline profile context: prediction or commit-pre")
     idealHintIBP = Param.Bool(
         False, "Remove Hint table capacity limits while retaining hash and timing",
     )

@@ -1,0 +1,10 @@
+{
+  "format": "h2p-hint-candidates",
+  "version": 6,
+  "storage": "finite",
+  "context_encoding": "xs-gem5-spec-startpc-ith128-path128-lhr8-v1",
+  "pcs": [
+    "0x1000"
+  ],
+  "source": {}
+}

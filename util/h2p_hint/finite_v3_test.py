@@ -18,7 +18,7 @@ class FiniteV3Test(unittest.TestCase):
                 "profile_sha256": "1" * 64, "builder_sha256": "2" * 64}
 
     def row(self, pc, seq=1, actual=0x2000, baseline=0x3000):
-        return {"kind": "branch", "seq": seq, "pc": hex(pc), "actual": hex(actual),
+        return {"kind": "branch", "seq": seq, "pc": hex(pc), "query_pc": hex(pc), "query_valid": True, "actual": hex(actual),
                 "baseline_valid": True, "baseline_pc": hex(pc),
                 "baseline_target": hex(baseline), "query_cycle": seq,
                 "commit_cycle": seq + 1, "block_start": hex(pc),
@@ -27,8 +27,8 @@ class FiniteV3Test(unittest.TestCase):
                     "call_low128": "0x0", "ret_low128": "0x0", "lhr_low16": "0x0"}}
 
     def profile(self, path, pcs, rows):
-        header = {"kind": "header", "format": "h2p-hint-profile", "version": 5,
-                  "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING, "hash_version": 5,
+        header = {"kind": "header", "format": "h2p-hint-profile", "version": 7,
+                  "storage": "finite", "context_encoding": contract.CONTEXT_ENCODING, "hash_version": 7,
                   "mask_order": contract.MASK_ORDER, "history": contract.HISTORY,
                   "layout": contract.LAYOUT, "clock_period": 500, "pcs": [hex(pc) for pc in pcs]}
         with gzip.open(path, "wt") as stream:
@@ -38,12 +38,12 @@ class FiniteV3Test(unittest.TestCase):
     def test_disjoint_collect_groups_and_packed_image(self):
         with tempfile.TemporaryDirectory() as temporary:
             first, second = Path(temporary) / "g0.gz", Path(temporary) / "g1.gz"
-            pcs = [0x1000 + 0x100 * n for n in range(17)]
-            self.profile(first, pcs[:16], [self.row(pcs[0])])
-            self.profile(second, pcs[16:], [self.row(pcs[16])])
+            pcs = [0x1000 + 0x100 * n for n in range(16)]
+            self.profile(first, pcs[:8], [self.row(pcs[0])])
+            self.profile(second, pcs[8:], [self.row(pcs[8])])
             _, rows = merge_profiles([first, second], pcs)
             self.assertEqual(len(rows), 2)  # seq may restart in each pass
-            masks = {pcs[0]: 0, pcs[16]: 0}
+            masks = {pcs[0]: 0, pcs[8]: 0}
             metadata, image, report = build_image(rows, masks, self.source())
             self.assertEqual(len(image), contract.IMAGE_BYTES)
             self.assertEqual(report["loaded_pcs"], 2)
@@ -67,10 +67,37 @@ class FiniteV3Test(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "four folded contexts"):
                 read_profile(path)
 
+    def test_reject_v6_profiles_candidates_and_lhr_evidence(self):
+        from .finite_v3 import load_candidates
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'profile.gz'
+            self.profile(path, [0x1000], [self.row(0x1000)])
+            with gzip.open(path, 'rt') as stream:
+                records = [json.loads(line) for line in stream]
+            records[0].update(version=6, hash_version=6)
+            with gzip.open(path, 'wt') as stream:
+                for row in records: stream.write(json.dumps(row) + '\n')
+            with self.assertRaisesRegex(ValueError, 'profile header'):
+                read_profile(path)
+            candidates = json.loads(Path(contract.__file__).with_name('hint-context-v7-candidates.json').read_text())
+            candidates['version'] = 6
+            candidate_path = Path(temporary) / 'candidates.json'
+            candidate_path.write_text(json.dumps(candidates))
+            with self.assertRaises(ValueError): load_candidates(candidate_path)
+            bad = self.row(0x1000)
+            bad['history']['lhr_low8'] = bad['history'].pop('lhr_low16')
+            self.profile(path, [0x1000], [bad])
+            with self.assertRaisesRegex(ValueError, 'full history evidence'):
+                read_profile(path)
+            bad = self.row(0x1000); bad['history']['lhr_low16'] = '0x10000'
+            self.profile(path, [0x1000], [bad])
+            with self.assertRaisesRegex(ValueError, 'full history evidence'):
+                read_profile(path)
+
     def test_dynamic_replay_targets_reconcile_with_pc_counters(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "replay.gz"
-            row = {"kind": "branch", "seq": 10, "pc": "0x1000",
+            row = {"kind": "branch", "seq": 10, "pc": "0x1000", "query_pc": "0x1000",
                    "actual": "0x2000", "baseline_valid": True,
                    "baseline_pc": "0x1000", "baseline_target": "0x3000",
                    "final_valid": True, "final_target": "0x2000",
@@ -80,8 +107,8 @@ class FiniteV3Test(unittest.TestCase):
                    "query_cycle": 2, "commit_cycle": 20}
             with gzip.open(path, "wt") as stream:
                 stream.write(json.dumps({"kind": "header", "format": "h2p-hint-replay",
-                                         "version": 5, "storage": "finite",
-                                         "hash_version": 5, "context_encoding": contract.CONTEXT_ENCODING}) + "\n")
+                                         "version": 7, "storage": "finite",
+                                         "hash_version": 7, "context_encoding": contract.CONTEXT_ENCODING}) + "\n")
                 stream.write(json.dumps(row) + "\n")
             counts = empty_counters()
             counts.update(executions=1, baseline_misses=1, corrected=1,
@@ -91,8 +118,8 @@ class FiniteV3Test(unittest.TestCase):
             row["harmed"] = True
             with gzip.open(path, "wt") as stream:
                 stream.write(json.dumps({"kind": "header", "format": "h2p-hint-replay",
-                                         "version": 5, "storage": "finite",
-                                         "hash_version": 5, "context_encoding": contract.CONTEXT_ENCODING}) + "\n")
+                                         "version": 7, "storage": "finite",
+                                         "hash_version": 7, "context_encoding": contract.CONTEXT_ENCODING}) + "\n")
                 stream.write(json.dumps(row) + "\n")
             with self.assertRaisesRegex(ValueError, "correction/harm"):
                 validate_replay_trace(path, {"pcs": [{"pc": "0x1000", **counts}]})

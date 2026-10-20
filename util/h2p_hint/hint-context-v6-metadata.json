@@ -1,0 +1,64 @@
+{
+  "format": "h2p-hint",
+  "version": 6,
+  "storage": "finite",
+  "hash_version": 6,
+  "context_encoding": "xs-gem5-spec-startpc-ith128-path128-lhr8-v1",
+  "mask_order": [
+    "ITH",
+    "Call",
+    "Ret",
+    "LHR"
+  ],
+  "history": {
+    "ith_entries": 128,
+    "ith_use_bits": 128,
+    "lhr_entries": 16,
+    "lhr_bits": 16,
+    "lhr_use_bits": 8,
+    "call_entries": 128,
+    "ret_entries": 128,
+    "path_use_bits": 128,
+    "target_shift": 1
+  },
+  "layout": {
+    "cam_entries": 16,
+    "context_entries": 4096,
+    "ways": 2,
+    "slot_entries": 32,
+    "conf_queue_depth": 32,
+    "hint_meta_entries": 16,
+    "lhr_max_uncommitted": 4
+  },
+  "cam": [
+    {
+      "pc": "0x1000",
+      "mask": 15
+    }
+  ],
+  "slots": [
+    "0x2000"
+  ],
+  "entries": [
+    {
+      "set": 0,
+      "way": 0,
+      "tag": 1,
+      "slot": 0,
+      "conf": 3
+    },
+    {
+      "set": 0,
+      "way": 1,
+      "tag": 2,
+      "slot": 0,
+      "conf": 3
+    }
+  ],
+  "source": {
+    "workload_id": "self-test/0",
+    "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "profile_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "builder_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  }
+}

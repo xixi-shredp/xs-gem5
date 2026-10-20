@@ -78,13 +78,13 @@ def compare_observer(baseline, observed, check_windows=False):
 def validate_hint_stats(data, total_misses, mode, candidates, ideal=False, finite_v3=False):
     if (
         data.get("format") != "h2p-hint-stats"
-        or data.get("version") != (5 if finite_v3 else 3 if ideal else 2)
+        or data.get("version") != (7 if finite_v3 else 3 if ideal else 2)
         or data.get("mode") != mode
     ):
         raise ValueError("invalid Hint statistics identity")
     if finite_v3:
         from .finite_v3 import contract
-        if data.get("context_encoding") != contract.CONTEXT_ENCODING or data.get("hash_version") != 5:
+        if data.get("context_encoding") != contract.CONTEXT_ENCODING or data.get("hash_version") != 7:
             raise ValueError("Hint fork statistics encoding mismatch")
     rows = [data["global"], *data["pcs"]]
     for row in rows:
@@ -151,15 +151,15 @@ def validate_replay_trace(path, stats):
     with gzip.open(path, "rt") as stream:
         header = json.loads(next(stream))
         if header != {"kind": "header", "format": "h2p-hint-replay",
-                      "version": 5, "storage": "finite",
-                      "hash_version": 5, "context_encoding":
-                      "xs-gem5-fork-ith128-path128-lhr16-v1"}:
+                      "version": 7, "storage": "finite",
+                      "hash_version": 7, "context_encoding":
+                      "xs-gem5-spec-startpc-ith128-path128-lhr16-inflight8-v1"}:
             raise ValueError("invalid finite-v3 replay trace header")
         for line in stream:
             row = json.loads(line)
             if row.get("kind") != "branch":
                 raise ValueError("replay trace contains a non-branch row")
-            pc, actual = address(row["pc"]), address(row["actual"])
+            pc, actual = address(row["query_pc"]), address(row["actual"])
             if (type(row["seq"]) is not int or row["seq"] <= previous_seq or
                     type(row["commit_cycle"]) is not int or
                     row["commit_cycle"] < previous_cycle):
@@ -310,7 +310,7 @@ def audit_run(
                 ideal,
                 finite_v3,
             )
-            for row in stats["pcs"]:
+            for row in ([] if finite_v3 else stats["pcs"]):
                 if (
                     row["final_misses"]
                     != parsed.get(address(row["pc"]), (0,))[0]

@@ -885,11 +885,45 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
     // and the handler PC cannot reconstruct this prefix reliably.
     entry.recordRetiredBranch(info, taken, maxInstsNum);
 
+    if (hintDiscoveryActive && inst->isIndirectCtrl() && !inst->isReturn()) {
+        auto &count = hintDiscovery[entry.startPC];
+        ++count.first;
+        count.second += !entry.predTaken ||
+            entry.predBranchInfo.pc != branchAddr ||
+            entry.predBranchInfo.target != targetAddr;
+    }
+
+    uint64_t commit_event_ordinal = 0;
+    if (hint && hint->needsCommitProfileContext()) {
+        const int index = hint->localIndex(entry.startPC);
+        commit_event_ordinal = hint->recordCommittedControl(
+            threads[inst->threadNumber].hintCommittedHistory, inst->seqNum,
+            cpu->curCycle(), entry.startPC, branchAddr, targetAddr,
+            inst->isIndirectCtrl(), inst->isCall(), inst->isReturn(),
+            taken, index);
+    }
     if (hint && inst->isIndirectCtrl() && !inst->isReturn()) {
         const bool final_valid = entry.predTaken &&
             entry.predBranchInfo.pc == branchAddr;
+        // Sample the committed path before this branch contributes its actual
+        // target. The prediction snapshot and its eligibility remain untouched.
+        std::optional<HintSnapshot> committed_snapshot;
+        if (hint->needsCommitProfileContext())
+            committed_snapshot.emplace(
+                threads[inst->threadNumber].hintCommittedHistory);
         hint->commit(entry.hintQuery, inst->seqNum, branchAddr, targetAddr,
-            final_valid, entry.predBranchInfo.target, cpu->curCycle());
+            final_valid, entry.predBranchInfo.target, cpu->curCycle(),
+            committed_snapshot ? &*committed_snapshot : nullptr,
+            commit_event_ordinal);
+    }
+    if (hint && hint->needsCommitProfileContext()) {
+        // Maintain every retired control during restore/warmup/measure. Local
+        // histories use CAM/startPC coordinates, while path hashes use the
+        // actual instruction PC. This observer has no speculative quota.
+        const int index = hint->localIndex(entry.startPC);
+        threads[inst->threadNumber].hintCommittedHistory.update(branchAddr,
+            targetAddr, inst->isIndirectCtrl(), inst->isCall(),
+            inst->isReturn(), taken, index, index >= 0);
     }
 
     // ---------- Process misprediction and update statistics ----------
@@ -912,7 +946,7 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
     // the original S3 prediction.
     bool source_miss = mispred;
     if (entry.hintQuery && entry.hintQuery->overridden &&
-        entry.hintQuery->pc == branchAddr &&
+        entry.hintQuery->baselinePC == branchAddr &&
         inst->isIndirectCtrl() && !inst->isReturn()) {
         const auto &query = *entry.hintQuery;
         source_miss = !query.baselineValid || query.baselinePC != branchAddr ||

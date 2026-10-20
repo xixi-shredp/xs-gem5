@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <utility>
+#include <fstream>
+#include <iomanip>
 
 #include "arch/riscv/pcstate.hh"
 #include "arch/riscv/regs/misc.hh"
@@ -92,6 +94,7 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
       dbpBtbStats(this, p.numStages, p.fsq_size, maxInstsNum, p.numThreads)
 {
     hintConfig.mode = p.hintMode;
+    hintConfig.profileContext = p.hintProfileContext;
     hintConfig.ideal = p.idealHintIBP;
     hintConfig.candidatePath = p.hintCandidates;
     hintConfig.metadataPath = p.hintMetadata;
@@ -211,6 +214,19 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
             hint->tick(cpu->curCycle());
             hint->finish();
         }
+        std::ofstream discovery(simout.resolve("hint-discovery.json"));
+        discovery << "{\"schema\":\"hint-discovery/v1\","
+                     "\"key\":\"query_start_pc\",\"unavailable_window\":0,\"branches\":[";
+        bool first = true;
+        for (const auto &[pc, count] : hintDiscovery) {
+            if (!first) discovery << ',';
+            first = false;
+            discovery << "{\"pc\":\"0x" << std::hex << pc << std::dec
+                      << "\",\"executions\":" << count.first
+                      << ",\"target_misses\":" << count.second << '}';
+        }
+        discovery << "]}\n";
+        fatal_if(!discovery, "Cannot write Hint discovery output");
         this->dumpStats();
     });
 }
@@ -226,8 +242,11 @@ DecoupledBPUWithBTB::setCpu(CPU *_cpu)
     hint = std::make_unique<HintIndirect>(hintConfig, this);
     if (hint->isIdeal())
         threads[0].hintHistory.configure(hint->historyPCs(), true);
-    else
+    else {
         threads[0].hintFiniteHistory.configure(hint->historyPCs());
+        if (hint->needsCommitProfileContext())
+            threads[0].hintCommittedHistory.configure(hint->historyPCs());
+    }
 }
 
 void
@@ -243,6 +262,7 @@ DecoupledBPUWithBTB::resetStats()
     if (hint)
         hint->tick(cpu->curCycle());
     BPredUnit::resetStats();
+    hintDiscovery.clear();
     if (hint)
         hint->resetStats(cpu->curCycle());
 }
@@ -250,6 +270,7 @@ DecoupledBPUWithBTB::resetStats()
 void
 DecoupledBPUWithBTB::h2pSetMeasurementActive(bool active)
 {
+    hintDiscoveryActive = active;
     ittage->h2pSetMeasurementActive(active);
     if (hint) {
         hint->tick(cpu->curCycle());
@@ -262,7 +283,7 @@ DecoupledBPUWithBTB::h2pResolveAtExecute(FetchTargetId target_id, Addr pc,
     Addr actual_target, uint64_t sequence, bool taken, bool measure_active,
     ThreadID tid)
 {
-    if (!hint || !hint->isFiniteV3() || !hint->isReplay())
+    if (!hint || !hint->isFiniteV3())
         return;
     if (ftq.hasTarget(target_id, tid)) {
         hint->resolve(ftq.get(target_id, tid).hintQuery, pc, actual_target,
@@ -809,40 +830,32 @@ DecoupledBPUWithBTB::processNewPrediction(ThreadID tid)
     DPRINTF(DecoupleBP, "Creating new prediction for PC %#lx\n", s0PC);
 
     const auto predicted_branch = threads[tid].finalPred.getTakenEntry();
-    if (hint && hint->isFiniteV3() && hint->isReplay() && !ftq.empty(tid)) {
+    if (hint && hint->isFiniteV3() && !ftq.empty(tid)) {
         const auto &oldest = ftq.front(tid).hintSnapshot;
         fatal_if(!oldest || !oldest->finite,
                  "Finite Hint FTQ head lacks compact recovery metadata");
-        if (!threads[tid].hintFiniteHistory.canUpdateAfter(*oldest->finite,
+        fatal_if(!threads[tid].hintFiniteHistory.canUpdateAfter(*oldest->finite,
             predicted_branch.isIndirect, predicted_branch.isCall,
-            predicted_branch.isReturn, predicted_branch.valid)) {
-            hint->recordStall(HintIndirect::StallReason::HistoryWindow);
-            DPRINTF(DecoupleBP,
-                "Finite Hint global history protection window is full\n");
-            return false;
-        }
+            predicted_branch.isReturn, predicted_branch.valid),
+            "Finite Hint global ring guard violated its 64-entry FTQ proof");
     }
-    const bool finite_h2p = hint && hint->isFiniteV3() && hint->isReplay() &&
-        predicted_branch.valid && predicted_branch.isIndirect &&
-        !predicted_branch.isReturn &&
-        hint->localIndex(predicted_branch.pc) >= 0;
-    const auto hint_stall = finite_h2p ?
-        hint->reserveBlockReason(predicted_branch.pc) :
-        HintIndirect::StallReason::None;
-    if (hint_stall != HintIndirect::StallReason::None) {
-        hint->recordStall(hint_stall);
-        DPRINTF(DecoupleBP,
-            "Finite Hint metadata or selected LHR is full at PC %#lx\n",
-            predicted_branch.pc);
-        return false;
-    }
+    const auto query = threads[tid].finalPred.hintQuery;
+    const bool finite_h2p = hint && hint->isFiniteV3() && query &&
+        query->admitted && !query->canceled && predicted_branch.valid &&
+        predicted_branch.isIndirect && !predicted_branch.isReturn &&
+        hint->localIndex(query->blockStart) >= 0;
 
-    // 1. Create a new fetch target entry with prediction information
+    // Hint resource exhaustion only selects the existing predictor. It does
+    // not prevent creation of this normal fetch target.
     FetchTarget entry = createFetchTargetEntry(tid);
-    if (finite_h2p)
-        hint->reserve(entry.hintQuery, predicted_branch.pc,
-            threads[tid].hintFiniteHistory.localPhase(
-                hint->localIndex(predicted_branch.pc)));
+    if (finite_h2p) {
+        entry.hintLocalSelector = hint->localIndex(query->blockStart);
+        entry.hintLocalWrite = true;
+        entry.hintLocalBranchPC = predicted_branch.pc;
+        query->localWrite = true;
+        hint->reserve(query, predicted_branch.pc,
+            threads[tid].hintFiniteHistory.localPhase(entry.hintLocalSelector));
+    }
 
     if (pairtage && pairtage->isEnabled()) {
         threads[tid].finalTrainPacket = pairtage->buildTrainPacketFromPredForFirstBlock(threads[tid].finalPred);
@@ -1155,6 +1168,8 @@ DecoupledBPUWithBTB::handleSquash(ThreadID tid, unsigned target_id,
     // Set squashing state
     threads[tid].squashing = true;
     threads[tid].redirectPending = false;
+    if (hint)
+        hint->cancelPending();
 
     // Find the target being squashed
     if (!ftq.hasTarget(target_id, tid)) {
@@ -1207,14 +1222,19 @@ DecoupledBPUWithBTB::handleSquash(ThreadID tid, unsigned target_id,
         dumpFsq("Before control squash");
     }
 
-    if (hint && hint->isFiniteV3() && hint->isReplay()) {
+    if (hint && hint->isFiniteV3()) {
         const auto &branch = target.exeBranchInfo;
         const bool actual_h2p = squash_type == SQUASH_CTRL &&
             target.exeTaken && branch.pc == squash_pc.instAddr() &&
             branch.isIndirect && !branch.isReturn &&
-            hint->localIndex(branch.pc) >= 0;
+            target.hintLocalWrite && branch.pc == target.hintLocalBranchPC;
+        // Trap recovery replays the inclusive retired prefix. Preserve a
+        // retired Hint branch even when it is exactly lastRetiredPC; the
+        // handler/TC redirect PC is not this FTQ's recovery boundary.
+        const Addr hint_boundary = squash_type == SQUASH_TRAP ?
+            target.lastRetiredPC + 1 : squash_pc.instAddr();
         hint->redirect(threads[tid].hintFiniteHistory, target_id,
-            squash_pc.instAddr(), actual_h2p, branch.target, sequence,
+            hint_boundary, actual_h2p, branch.target, sequence,
             cpu->curCycle());
     }
 
@@ -1351,7 +1371,7 @@ DecoupledBPUWithBTB::commit(unsigned target_id, ThreadID tid)
         // Update predictor components
         updatePredictorComponents(target);
 
-        if (hint && hint->isFiniteV3() && hint->isReplay())
+        if (hint && hint->isFiniteV3())
             hint->commitTarget(ftq.frontId(tid));
         ftq.commitTarget(tid);
         dbpBtbStats.fsqEntryCommitted++;
@@ -1687,7 +1707,8 @@ DecoupledBPUWithBTB::updateHistoryForPrediction(FetchTarget &entry,
         else
             threads[tid].hintFiniteHistory.update(branch.pc,
                 pred.getTarget(predictWidth), branch.isIndirect, branch.isCall,
-                branch.isReturn, branch.valid);
+                branch.isReturn, branch.valid, entry.hintLocalSelector,
+                entry.hintLocalWrite && branch.pc == entry.hintLocalBranchPC);
     }
 
     // RAS updates its speculative stack, not folded history.
@@ -1792,13 +1813,9 @@ DecoupledBPUWithBTB::recoverRetiredHistoryForTrap(
     } else if (hint) {
         fatal_if(!target.hintSnapshot || !target.hintSnapshot->finite,
                  "Finite Hint trap squash lacks compact recovery metadata");
-        if (hint->isCollect()) {
-            fatal_if(!target.hintSnapshot->collectHistory,
-                     "Finite Hint collect trap lacks full history snapshot");
-            thread.hintFiniteHistory = *target.hintSnapshot->collectHistory;
-        } else {
-            thread.hintFiniteHistory.restore(*target.hintSnapshot->finite);
-        }
+        // Local heads have already been rewound from the bounded Hint
+        // journal. FTQ local snapshots are observers, never recovery storage.
+        thread.hintFiniteHistory.restoreGlobals(*target.hintSnapshot->finite);
     }
     historyManagers[tid].truncateFrom(target_id);
 
@@ -1826,6 +1843,9 @@ DecoupledBPUWithBTB::recoverRetiredHistoryForTrap(
         step.phistory = thread.s0PHistory;
         step.predBranchInfo = branch;
         step.predTaken = retired.taken;
+        step.hintLocalSelector = target.hintLocalSelector;
+        step.hintLocalWrite = target.hintLocalWrite;
+        step.hintLocalBranchPC = target.hintLocalBranchPC;
         // Reuse the production update path for all raw and folded histories,
         // including IMLI and RAS, instead of duplicating their hash semantics.
         updateHistoryForPrediction(step, pred, target_id);
@@ -1905,23 +1925,21 @@ DecoupledBPUWithBTB::recoverHistoryForSquash(
         fatal_if(!target.hintSnapshot || !target.hintSnapshot->finite,
                  "Finite Hint squash lacks compact recovery metadata");
         auto &state = threads[tid].hintFiniteHistory;
-        if (hint->isCollect()) {
-            fatal_if(!target.hintSnapshot->collectHistory,
-                     "Finite Hint collect squash lacks full history snapshot");
-            state = *target.hintSnapshot->collectHistory;
-        } else {
-            state.restore(*target.hintSnapshot->finite);
-        }
+        state.restoreGlobals(*target.hintSnapshot->finite);
         for (const auto &retired : target.retiredControls) {
             const auto &branch = retired.branch;
             if (branch.pc < squash_pc.instAddr())
                 state.update(branch.pc, branch.target, branch.isIndirect,
-                    branch.isCall, branch.isReturn, retired.taken);
+                    branch.isCall, branch.isReturn, retired.taken,
+                    target.hintLocalSelector, target.hintLocalWrite &&
+                    branch.pc == target.hintLocalBranchPC);
         }
         if (squash_type == SQUASH_CTRL) {
             const auto &branch = target.exeBranchInfo;
             state.update(branch.pc, branch.target, branch.isIndirect,
-                branch.isCall, branch.isReturn, target.exeTaken);
+                branch.isCall, branch.isReturn, target.exeTaken,
+                target.hintLocalSelector, target.hintLocalWrite &&
+                branch.pc == target.hintLocalBranchPC);
         }
     }
 

@@ -1368,45 +1368,36 @@ testFiniteV3Vectors(const std::string &path)
 {
     boost::property_tree::ptree vectors;
     boost::property_tree::read_json(path, vectors);
-    expect(vectors.get<unsigned>("version") == 5 &&
+    expect(vectors.get<unsigned>("version") == 7 &&
            vectors.get<std::string>("context_encoding") ==
-               "xs-gem5-fork-ith128-path128-lhr16-v1",
-           "fork vectors have frozen version and encoding");
-    for (const auto &node : vectors.get_child("fold14")) {
-        expect(hintFold14(vectorNumber(node.second.get<std::string>("pc"))) ==
-               vectorNumber(node.second.get<std::string>("result")),
-               "fold14 matches frozen Python vector");
-    }
+               "xs-gem5-spec-startpc-ith128-path128-lhr16-inflight8-v1",
+           "spec v7 vectors have frozen version and encoding");
     for (const auto &node : vectors.get_child("hash")) {
         const auto &row = node.second;
-        const auto wide = [&](const char *name) {
-            const auto &words = row.get_child(name);
-            std::array<uint64_t, 2> value{};
-            unsigned index = 0;
-            for (const auto &word : words) {
-                expect(index < 2, "128-bit vector has two words");
-                value[index++] = vectorNumber(word.second.get_value<std::string>());
-            }
-            expect(index == 2, "128-bit vector has two words");
-            return value;
+        auto component = [&](const char *name) {
+            std::string text = row.get<std::string>(name);
+            if (text.substr(0, 2) == "0x") text.erase(0, 2);
+            std::array<uint64_t, 2> words{};
+            words[0] = std::stoull(text.substr(text.size() > 16 ?
+                                              text.size() - 16 : 0), nullptr, 16);
+            if (text.size() > 16)
+                words[1] = std::stoull(text.substr(0, text.size() - 16), nullptr, 16);
+            return hintEncode128(words);
         };
-        const HintV3Contexts components = {
-            hintFold128(wide("ith_words")),
-            static_cast<uint32_t>(vectorNumber(row.get<std::string>("lhr_low16"))),
-            hintFold128(wide("call_words")), hintFold128(wide("ret_words"))};
+        HintV3Contexts components = {component("ith_low128"),
+            component("call_low128"), component("ret_low128"),
+            hintEncodeWord(vectorNumber(row.get<std::string>("lhr_low16")))};
         unsigned index = 0;
-        for (const auto &value : row.get_child("components")) {
-            expect(index < 4 && components[index++] == vectorNumber(
-                value.second.get_value<std::string>()),
-                "fork full context matches frozen Python vector");
-        }
-        expect(index == 4, "four fork components");
+        for (const auto &value : row.get_child("components"))
+            expect(index < 4 && components[index++] == value.second.get_value<uint32_t>(),
+                   "v7 independent component vector matches");
+        expect(index == 4, "four spec context components");
         const auto key = hintHashV3(vectorNumber(row.get<std::string>("pc")),
                                    components, row.get<unsigned>("mask"));
-        expect(key == vectorNumber(row.get<std::string>("key")) &&
+        expect(key == row.get<uint32_t>("key") &&
                (key & 2047) == row.get<unsigned>("set") &&
                (key >> 11) == row.get<unsigned>("tag"),
-               "fork key/set/tag match frozen Python vectors");
+               "spec key/set/tag match frozen Python oracle vectors");
     }
     verifyHintContextForkHistory();
 }
@@ -1416,17 +1407,17 @@ finiteV3Metadata(unsigned cam_count = 1, unsigned mask = 0)
 {
     const std::string digest(64, '0');
     std::ostringstream out;
-    out << "{\"format\":\"h2p-hint\",\"version\":5,"
-           "\"storage\":\"finite\",\"hash_version\":5,"
-           "\"context_encoding\":\"xs-gem5-fork-ith128-path128-lhr16-v1\","
-           "\"mask_order\":[\"ITH\",\"LHR\",\"Call\",\"Ret\"],"
+    out << "{\"format\":\"h2p-hint\",\"version\":7,"
+           "\"storage\":\"finite\",\"hash_version\":7,"
+           "\"context_encoding\":\"xs-gem5-spec-startpc-ith128-path128-lhr16-inflight8-v1\","
+           "\"mask_order\":[\"ITH\",\"Call\",\"Ret\",\"LHR\"],"
            "\"history\":{\"ith_entries\":128,\"ith_use_bits\":128,"
-           "\"lhr_entries\":16,\"lhr_bits\":32,\"lhr_use_bits\":16,"
+           "\"lhr_entries\":16,\"lhr_bits\":32,\"lhr_use_bits\":16,\"lhr_head_bits\":5,"
            "\"call_entries\":128,\"ret_entries\":128,"
            "\"path_use_bits\":128,\"target_shift\":1},"
            "\"layout\":{\"cam_entries\":16,\"context_entries\":4096,"
            "\"ways\":2,\"slot_entries\":32,\"conf_queue_depth\":32,"
-           "\"hint_meta_entries\":16,\"lhr_max_uncommitted\":4},"
+           "\"hint_meta_entries\":16,\"lhr_max_uncommitted\":8},"
            "\"cam\":[";
     for (unsigned i = 0; i < cam_count; ++i) {
         if (i)
@@ -1434,10 +1425,16 @@ finiteV3Metadata(unsigned cam_count = 1, unsigned mask = 0)
         out << "{\"pc\":\"0x" << std::hex << (0x1000 + i * 0x80)
             << "\",\"mask\":" << std::dec << mask << '}';
     }
-    out << "],\"slots\":[\"0x2000\"],"
-           "\"entries\":[{\"set\":0,\"way\":0,\"tag\":1,"
-           "\"slot\":0,\"conf\":3}],"
-           "\"source\":{\"workload_id\":\"hint-self-test\","
+    out << "],\"slots\":[\"0x2000\"],\"entries\":[";
+    for (unsigned i = 0; i < cam_count; ++i) {
+        if (i) out << ',';
+        const uint32_t key = hintHashV3(0x1000 + i * 0x80,
+                                       HintV3Contexts{}, mask);
+        out << "{\"set\":" << (key & 2047)
+            << ",\"way\":0,\"tag\":" << (key >> 11)
+            << ",\"slot\":0,\"conf\":3}";
+    }
+    out << "],\"source\":{\"workload_id\":\"hint-self-test\","
            "\"checkpoint_sha256\":\"" << digest
         << "\",\"profile_sha256\":\"" << digest
         << "\",\"builder_sha256\":\"" << digest << "\"}}";
@@ -1504,7 +1501,7 @@ testFiniteV3Predictor()
     history.restore(*first_snapshot->finite);
     history.update(0x1000, 0x2000, true, false, false, true);
     expect(history.low64(history.ith) == 0 &&
-           history.localLow8(0) == 0 &&
+           history.localLow16(0) == 0 &&
            hardware.confidenceAtEntry(queries[0]->entryId) == 3 &&
            hardware.pendingUpdates() == 1 &&
            hardware.queueCounts().reverted == 1 &&
@@ -1644,7 +1641,7 @@ testFiniteV3NonHintRedirect()
     expect(hardware.confidenceAtEntry(queries[0]->entryId) == 3 &&
            hardware.queueCounts().reverted == 3 &&
            hardware.canReserve(0x1000) &&
-           history.localLow8(0) == 0,
+           history.localLow16(0) == 0,
            "non-H2P redirect undoes applied younger scores in reverse order");
     hardware.finish();
 }
@@ -1816,6 +1813,350 @@ testFiniteV3ShadowAndOverflow()
     overflow.finish();
 }
 
+void
+testSpecV7Predictor()
+{
+    // All helpers below execute the production Hint implementation. Times
+    // are CPU cycles; the caller retains the existing BPU future-stage model.
+    auto makeSnapshot = [](const HintFiniteHistory &history) {
+        return std::make_shared<const HintSnapshot>(history);
+    };
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-timing"), nullptr);
+        HintFiniteHistory hist;
+        hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 1);
+        expect(q->admitted && q->s3Cycle == 3 && q->tagHit && q->conf == 3,
+               "exact startPC accepts S1, S3 is N+2");
+        expect(hw.complete(q, 0x1010, 0x3000, true, true, false, true) == 0x2000,
+               "S3 target covers actual indirect PC inside exact start window");
+        hw.reserve(q, 0x1010, hist.localPhase(0));
+        hw.bind(q, 1);
+        auto q2 = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 2);
+        auto q3 = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 3);
+        expect(!q2->admitted && !q3->admitted,
+               "nonreentrant path falls back during N+1 and N+2");
+        expect(!hw.complete(q2, 0x1010, 0x3000, true, true, false, true),
+               "busy path cannot override original predictor");
+        auto q4 = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 4);
+        expect(q4->admitted && q4->conf == 3, "next query admitted at N+3");
+        hw.complete(q4, 0x1010, 0x3000, true, true, false, true);
+        hw.reserve(q4, 0x1010, hist.localPhase(0)); hw.bind(q4, 2);
+        // The second prediction retains conf=3 even though both eventual
+        // updates are wrong. Its write must be snapshot 3-1, not current 2-1.
+        hw.resolve(q, 0x1010, 0x3000, 1, 4);
+        hw.resolve(q4, 0x1010, 0x3000, 2, 4);
+        hw.tick(6); // read priority reserved cycle 5
+        expect(hw.pendingUpdates() == 2 && hw.confidenceAtEntry(q->entryId) == 3,
+               "S2 Context read prevents FIFO write in cycle 5");
+        hw.query(makeSnapshot(hist), 0x1002, 0x1040, 6);
+        hw.tick(8);
+        expect(hw.pendingUpdates() == 0 && hw.confidenceAtEntry(q->entryId) == 2,
+               "CAM miss leaves write port free; snapshot updates allow stale overwrite");
+        auto in_pipe = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 8);
+        expect(in_pipe->admitted, "another S2 read may already be reserved at redirect");
+        hw.cancelPending();
+        hw.redirect(hist, 1, 0x1000, false, 0, 3, 8);
+        expect(hw.confidenceAtEntry(q->entryId) == 2 && hw.pendingRollbacks() == 2 &&
+               hw.inFlightHints() == 2,
+               "redirect retains applied journal slots without multiwrite SRAM undo");
+        auto recovering = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 9);
+        expect(!recovering->admitted && hw.queueCounts().rollbackFallbacks == 1,
+               "rollback disables only Hint prediction");
+        hw.tick(10);
+        expect(hw.pendingRollbacks() == 2 && hw.queueCounts().rollbackReadConflicts == 1,
+               "already reserved S2 read wins over rollback port");
+        hw.tick(11);
+        expect(hw.pendingRollbacks() == 1 && hw.confidenceAtEntry(q->entryId) == 2,
+               "youngest SRAM update undoes in one distinct port cycle");
+        hw.tick(12);
+        expect(hw.pendingRollbacks() == 0 && hw.confidenceAtEntry(q->entryId) == 3 &&
+               hw.inFlightHints() == 0 && hw.queueCounts().rollbackWrites == 2,
+               "older SRAM update undoes next cycle and releases journal");
+        auto miss = hw.query(makeSnapshot(hist), 0x0ff0, 0x1040, 12);
+        expect(!miss->hasCandidate, "CAM does not range-match a later branch/startPC");
+        auto canceled = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 13);
+        hw.cancelPending();
+        expect(!hw.complete(canceled, 0x1010, 0x3000, true, true, false, true),
+               "canceled query cannot publish S3 target");
+        hw.finish();
+    }
+    for (const unsigned mask : {0U, 8U}) {
+        HintIndirect hw(finiteV3Config("spec-v7-lhr-full-" +
+                            std::to_string(mask), 1, mask), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        // Prime all physical cells to ensure restoration preserves a full
+        // nonzero eight-target prediction window, not merely an empty ring.
+        for (unsigned i = 0; i < 16; ++i)
+            hist.update(0x1010, 0x2000 + 2 * ((i + 1) & 3),
+                        true, false, false, true, 0, true);
+        const auto saved = hist.snapshot();
+        const auto original_local = hist.localLow16(0);
+        const auto original_phase = hist.localPhase(0);
+        for (unsigned i = 0; i < 8; ++i) {
+            auto q = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 1 + i * 3);
+            expect(q->admitted, "first eight local writes admitted for every mask");
+            hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+            hw.reserve(q, 0x1010, hist.localPhase(0)); hw.bind(q, i + 1);
+            hist.update(0x1010, 0x2000 + i * 2, true, false, false, true, 0, true);
+        }
+        expect(hist.localPhase(0) == ((original_phase + 8) & 31),
+               "eight local writes advance the five-bit phase exactly eight cells");
+        const auto local = hist.localLow16(0);
+        auto ninth = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 25);
+        expect(!ninth->admitted && hw.inFlightHints() == 8 &&
+               hw.queueCounts().lhrStalls == 1 &&
+               hw.queueCounts().metaQueueStalls == 0,
+               "ninth occurrence falls back for both LHR-reading and non-LHR masks");
+        expect(!hw.complete(ninth, 0x1010, 0x3000, true, true, false, true),
+               "ninth occurrence retains the original predictor target");
+        hist.update(0x1010, 0x3332, true, false, false, true, 0, false);
+        expect(hist.localLow16(0) == local,
+               "ninth fallback pauses local write while ITH continues");
+        // A redirect at a skipped ninth occurrence must preserve all eight
+        // older writes; there is no ninth local write to rewind or replay.
+        hw.redirect(hist, 9, 0x1010, true, 0x3332, 9, 26);
+        expect(hist.localLow16(0) == local && hw.inFlightHints() == 8,
+               "redirect on skipped ninth instance preserves older LHR writes");
+        hw.redirect(hist, 1, 0x1000, false, 0, 1, 27);
+        hist.restoreGlobals(saved);
+        expect(hist.localLow16(0) == original_local &&
+               hist.localPhase(0) == original_phase && hw.inFlightHints() == 0,
+               "ordinary non-H2P redirect exactly restores eight-target history after eight writes");
+        hw.finish();
+    }
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-lhr-eighth-redirect"), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        for (unsigned i = 0; i < 8; ++i) {
+            auto q = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 1 + i * 3);
+            expect(q->admitted, "eighth-redirect fixture admits eight instances");
+            hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+            hw.reserve(q, 0x1010, hist.localPhase(0)); hw.bind(q, i + 1);
+            hist.update(0x1010, 0x2000 + 2 * i, true, false, false, true, 0, true);
+        }
+        // Rewind the eighth predicted target and replay the resolved target.
+        hw.redirect(hist, 8, 0x1010, true, 0x3332, 8, 25);
+        hist.update(0x1010, 0x3332, true, false, false, true, 0, true);
+        expect((hist.localLow16(0) & 3) == 1 && hw.inFlightHints() == 8,
+               "eighth-instance redirect replays the correct target without a ninth reservation");
+        hw.commitTarget(1);
+        auto resumed = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 28);
+        expect(resumed->admitted && hw.inFlightHints() == 7,
+               "committing one of eight instances restores Hint admission");
+        hw.finish();
+    }
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-meta-full", 16), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        for (unsigned i = 0; i < 16; ++i) {
+            const Addr start = 0x1000 + i * 0x80;
+            auto q = hw.query(makeSnapshot(hist), start, start + 0x40, 1 + i * 3);
+            expect(q->admitted, "16 different selector reservations fit metadata");
+            hw.complete(q, start + 0x10, 0x3000, true, true, false, true);
+            hw.reserve(q, start + 0x10, hist.localPhase(i)); hw.bind(q, i + 1);
+        }
+        auto full = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 49);
+        expect(!full->admitted && hw.inFlightHints() == 16 &&
+               hw.queueCounts().metaQueueStalls == 1,
+               "metadata full returns Hint fallback and retains normal prediction opportunity");
+        hw.finish();
+    }
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-two-lhr-meta-full", 2), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        for (unsigned i = 0; i < 16; ++i) {
+            const unsigned sel = i / 8;
+            const Addr start = 0x1000 + sel * 0x80;
+            auto q = hw.query(makeSnapshot(hist), start, start + 0x40, 1 + i * 3);
+            expect(q->admitted, "two selectors may each occupy eight metadata slots");
+            hw.complete(q, start + 0x10, 0x3000, true, true, false, true);
+            hw.reserve(q, start + 0x10, hist.localPhase(sel)); hw.bind(q, i + 1);
+            hist.update(start + 0x10, 0x2000 + 2 * i,
+                        true, false, false, true, sel, true);
+        }
+        auto full = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 49);
+        expect(!full->admitted && hw.inFlightHints() == 16 &&
+               hw.queueCounts().metaQueueStalls == 1 &&
+               hw.queueCounts().lhrStalls == 0,
+               "eight-plus-eight fills metadata and reports total capacity first");
+        hw.commitTarget(1);
+        auto freed = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 52);
+        expect(freed->admitted && hw.inFlightHints() == 15,
+               "commit frees both one per-PC slot and one global metadata slot");
+        hw.finish();
+    }
+    {
+        // Drive a bounded resolve burst directly into the production queue;
+        // this is a FIFO capacity test, not a legal per-cycle CPU trace.
+        HintIndirect hw(finiteV3Config("spec-v7-conf-full"), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto source = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 1);
+        hw.complete(source, 0x1010, 0x3000, true, true, false, true);
+        for (unsigned i = 1; i <= 33; ++i) {
+            auto q = std::make_shared<HintQuery>(*source);
+            q->resolved = false; q->ftqId = 0;
+            hw.reserve(q, 0x1010, hist.localPhase(0)); hw.bind(q, i);
+            hw.resolve(q, 0x1010, 0x3000, i, 1);
+            hw.commitTarget(i);
+        }
+        expect(hw.pendingUpdates() == 32 && hw.queueCounts().dropped == 1,
+               "32-entry confidence queue drops the 33rd update without front-end backpressure");
+        hw.tick(4);
+        expect(hw.pendingUpdates() == 31 && hw.confidenceAtEntry(source->entryId) == 2,
+               "single port skips reserved read and writes at most one entry per cycle");
+        hw.finish();
+    }
+
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-training-gates"), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        auto snap = makeSnapshot(hist);
+        auto warm = hw.query(snap, 0x1000, 0x1040, 1);
+        hw.complete(warm, 0x1010, 0x3000, true, true, false, true);
+        hw.reserve(warm, 0x1010, hist.localPhase(0)); hw.bind(warm, 1);
+        hw.resolve(warm, 0x1010, 0x3000, 1, 1, false);
+        hw.commitTarget(1); hw.tick(4);
+        expect(hw.pendingUpdates() == 0 && hw.confidenceAtEntry(warm->entryId) == 3,
+               "warmup resolve cannot train confidence");
+        hw.setMeasurementActive(true, 4);
+        for (unsigned i = 0; i < 3; ++i) {
+            const uint64_t cycle = 4 + i * 3;
+            auto q = hw.query(snap, 0x1000, 0x1040, cycle);
+            expect(q->conf == 3 - i, "SRAM confidence decreases across wrong predictions");
+            expect(bool(hw.complete(q, 0x1010, 0x3000, true, true, false, true)),
+                   "positive-confidence Hint is actually used");
+            hw.reserve(q, 0x1010, hist.localPhase(0)); hw.bind(q, i + 2);
+            hw.resolve(q, 0x1010, 0x3000, i + 2, cycle, true);
+            hw.commitTarget(i + 2); hw.tick(cycle + 3);
+        }
+        auto zero = hw.query(snap, 0x1000, 0x1040, 13);
+        expect(zero->tagHit && zero->conf == 0 &&
+               !hw.complete(zero, 0x1010, 0x3000, true, true, false, true),
+               "conf0 falls back to existing predictor");
+        hw.reserve(zero, 0x1010, hist.localPhase(0)); hw.bind(zero, 5);
+        hw.resolve(zero, 0x1010, 0x2000, 5, 13, true);
+        hw.commitTarget(5); hw.tick(16);
+        expect(hw.pendingUpdates() == 0 && hw.confidenceAtEntry(zero->entryId) == 0,
+               "unused conf0 shadow target does not train or recover confidence");
+        hw.finish();
+    }
+
+    {
+        // Explicit positive-confidence prediction snapshots can overwrite a
+        // different current SRAM value. Test both nonadjacent transitions.
+        HintIndirect hw(finiteV3Config("spec-v7-stale-transitions"), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto source = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 1);
+        hw.complete(source, 0x1010, 0x3000, true, true, false, true);
+        for (unsigned i = 1; i <= 2; ++i) {
+            auto q = std::make_shared<HintQuery>(*source);
+            q->conf = i; q->resolved = false; q->ftqId = 0;
+            hw.reserve(q, 0x1010, hist.localPhase(0)); hw.bind(q, i);
+            hw.resolve(q, 0x1010, i == 1 ? 0x3000 : 0x2000, i, 1, true);
+            hw.commitTarget(i);
+        }
+        hw.tick(4);
+        expect(hw.confidenceAtEntry(source->entryId) == 0 &&
+               hw.queueCounts().zeroTransitions == 1,
+               "stale snapshot 1-1 records actual SRAM 3-to-0 transition");
+        hw.tick(5);
+        expect(hw.confidenceAtEntry(source->entryId) == 3 &&
+               hw.queueCounts().recoveries == 1,
+               "correct snapshot 2+1 records actual SRAM 0-to-3 recovery");
+        hw.finish();
+    }
+
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-distinct-set-undo", 2), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        const auto initial = hist.snapshot();
+        hw.setMeasurementActive(true, 0);
+        std::array<std::shared_ptr<HintQuery>, 2> q;
+        for (unsigned i = 0; i < 2; ++i) {
+            const Addr start = 0x1000 + i * 0x80;
+            const uint64_t cycle = 1 + i * 3;
+            q[i] = hw.query(makeSnapshot(hist), start, start + 0x40, cycle);
+            expect(q[i]->tagHit && hw.complete(q[i], start + 0x10, 0x3000,
+                   true, true, false, true).has_value(), "different set Hint query accepted");
+            hw.reserve(q[i], start + 0x10, hist.localPhase(i)); hw.bind(q[i], i + 1);
+            hist.update(start + 0x10, 0x2000, true, false, false, true, i, true);
+        }
+        expect(q[0]->set != q[1]->set, "rollback scenario uses different SRAM sets");
+        hw.resolve(q[0], 0x1010, 0x3000, 1, 4, true);
+        hw.resolve(q[1], 0x1090, 0x3000, 2, 4, true);
+        hw.tick(8);
+        expect(hw.confidenceAtEntry(q[0]->entryId) == 2 &&
+               hw.confidenceAtEntry(q[1]->entryId) == 2,
+               "both different-set updates applied before redirect");
+        auto already_in_pipe = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 8);
+        expect(already_in_pipe->admitted, "redirect has an outstanding reserved S2 read");
+        hw.cancelPending();
+        hw.redirect(hist, 1, 0x1000, false, 0, 3, 8);
+        hist.restoreGlobals(initial);
+        expect(hw.pendingRollbacks() == 2 && hw.inFlightHints() == 2 &&
+               hist.localLow16(0) == 0 && hist.localLow16(1) == 0,
+               "journal rewinds local selectors immediately but retains two SRAM undo slots");
+        hw.commitTarget(100);
+        hw.redirect(hist, 1, 0x1000, false, 0, 4, 9);
+        hist.restoreGlobals(initial);
+        expect(hw.pendingRollbacks() == 2 && hw.inFlightHints() == 2,
+               "commit and repeated redirect cannot release or double-rewind pending undo");
+        auto fallback = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 9);
+        expect(!fallback->admitted, "pending rollback only suppresses Hint");
+        hw.tick(10);
+        expect(hw.pendingRollbacks() == 2 && hw.confidenceAtEntry(q[1]->entryId) == 2,
+               "reserved read delays all rollback writes");
+        hw.tick(11);
+        expect(hw.pendingRollbacks() == 1 &&
+               hw.confidenceAtEntry(q[1]->entryId) == 3 &&
+               hw.confidenceAtEntry(q[0]->entryId) == 2,
+               "only youngest set restored during first free write cycle");
+        hw.tick(12);
+        expect(hw.pendingRollbacks() == 0 && hw.inFlightHints() == 0 &&
+               hw.confidenceAtEntry(q[0]->entryId) == 3 &&
+               hw.queueCounts().rollbackWrites == 2,
+               "older set restored during following write cycle");
+        hw.finish();
+    }
+
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-retained-undo-redo"), nullptr);
+        HintFiniteHistory hist; hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(makeSnapshot(hist), 0x1000, 0x1040, 1);
+        hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+        hw.reserve(q, 0x1010, hist.localPhase(0)); hw.bind(q, 1);
+        hw.resolve(q, 0x1010, 0x3000, 1, 1, true);
+        hw.tick(4);
+        expect(hw.confidenceAtEntry(q->entryId) == 2, "initial wrong score was applied");
+        hw.redirect(hist, 1, 0x1010, true, 0x2000, 1, 4);
+        expect(hw.pendingRollbacks() == 1 && hw.pendingUpdates() == 0,
+               "retained redirect branch defers its replacement score until undo");
+        hw.commitTarget(1);
+        expect(hw.inFlightHints() == 1,
+               "committing retained branch cannot prematurely release its undo journal");
+        hw.tick(6);
+        expect(hw.pendingRollbacks() == 0 && hw.pendingUpdates() == 1 &&
+               hw.confidenceAtEntry(q->entryId) == 3 &&
+               hw.queueCounts().applied == 1,
+               "one cycle undo completes before replacement can consume the shared port");
+        hw.tick(7);
+        expect(hw.pendingUpdates() == 0 && hw.confidenceAtEntry(q->entryId) == 3 &&
+               hw.queueCounts().applied == 2 && hw.queueCounts().rollbackWrites == 1,
+               "replacement snapshot score writes in a later cycle and remains separate from undo accounting");
+        hw.finish();
+    }
+
+}
+
 } // anonymous namespace
 
 void
@@ -1840,12 +2181,7 @@ HintIndirectTest::startup()
         hardware.finish();
     } else if (contextFork) {
         testFiniteV3Vectors(vectors);
-        testFiniteV3CollectObserverHistory();
-        testFiniteV3Predictor();
-        testFiniteV3MaskAwareAdmission();
-        testFiniteV3NonHintRedirect();
-        testFiniteV3PhaseAndCapacity();
-        testFiniteV3ShadowAndOverflow();
+        testSpecV7Predictor();
     } else {
         testHistory();
         testIdealHistory();
