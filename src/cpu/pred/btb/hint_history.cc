@@ -56,6 +56,17 @@ hintFold14(Addr pc)
     return result;
 }
 
+Addr
+hintPathCoordinate(Addr instruction_pc, unsigned instruction_size)
+{
+    fatal_if(instruction_size != 2 && instruction_size != 4,
+             "Hint path coordinate requires a 16- or 32-bit control");
+    const unsigned offset = instruction_size - 2;
+    fatal_if(instruction_pc > MaxAddr - offset,
+             "Hint path coordinate address overflow");
+    return instruction_pc + offset;
+}
+
 uint32_t
 hintFold128(const std::array<uint64_t, 2> &value)
 {
@@ -105,9 +116,15 @@ HintFiniteHistory::configure(const std::vector<Addr> &selected)
              "Finite Hint supports at most %u CAM-indexed LHRs",
              unsigned(locals.size()));
     pcs = selected;
-    fatal_if(!std::is_sorted(pcs.begin(), pcs.end()) ||
-             std::adjacent_find(pcs.begin(), pcs.end()) != pcs.end(),
-             "Finite Hint CAM PCs must be strictly ascending");
+    // Index is the immutable physical CAM slot, including invalid holes.
+    // MaxAddr is odd and cannot name a halfword-aligned valid startPC.
+    for (size_t i = 0; i < pcs.size(); ++i) {
+        if (pcs[i] == MaxAddr)
+            continue;
+        fatal_if(pcs[i] & 1, "Finite Hint CAM startPC must be aligned");
+        for (size_t j = 0; j < i; ++j)
+            fatal_if(pcs[j] == pcs[i], "Duplicate finite Hint CAM startPC");
+    }
     ith = {};
     calls = {};
     returns = {};
@@ -117,8 +134,12 @@ HintFiniteHistory::configure(const std::vector<Addr> &selected)
 int
 HintFiniteHistory::localIndex(Addr pc) const
 {
-    const auto found = std::lower_bound(pcs.begin(), pcs.end(), pc);
-    return found == pcs.end() || *found != pc ? -1 : int(found - pcs.begin());
+    if (pc == MaxAddr)
+        return -1;
+    for (size_t i = 0; i < pcs.size(); ++i)
+        if (pcs[i] == pc)
+            return int(i);
+    return -1;
 }
 
 uint64_t
@@ -190,9 +211,10 @@ HintFiniteHistory::rewindLocalPhase(unsigned index, uint8_t phase)
     assert(index < locals.size() && phase < 32);
     auto &ring = locals[index];
     const unsigned distance = (ring.phase - phase) & 31;
-    fatal_if(distance > 8 || ring.writes < distance,
+    fatal_if(distance > 8,
              "Finite Hint local metadata rewind exceeds protected writes");
-    ring.writes -= distance;
+    // Observer only: the modeled recovery is the bounded five-bit phase.
+    ring.writes = ring.writes >= distance ? ring.writes - distance : 0;
     restoreLocalPhase(index, phase);
 }
 
@@ -221,9 +243,6 @@ HintFiniteHistory::restore(const Snapshot &saved)
     // Test/collect-only helper. Runtime recovery must use the finite metadata
     // queue rather than the observer's per-FTQ array of local heads.
     for (unsigned i = 0; i < locals.size(); ++i) {
-        fatal_if(locals[i].writes < saved.localWrites[i] ||
-                 locals[i].writes - saved.localWrites[i] > 8,
-                 "Finite Hint local ring exceeded eight younger writes");
         rewindLocalPhase(i, saved.localPhases[i]);
     }
     restoreGlobals(saved);
@@ -234,9 +253,8 @@ HintFiniteHistory::restoreGlobals(const Snapshot &saved)
 {
     const std::array<Ring *, 3> rings = {&ith, &calls, &returns};
     for (unsigned i = 0; i < rings.size(); ++i) {
-        fatal_if(rings[i]->writes < saved.writes[i] ||
-                 rings[i]->writes - saved.writes[i] > 64,
-                 "Finite Hint global ring exceeded 64 younger writes");
+        fatal_if(((rings[i]->head - saved.heads[i]) & 127) > 64,
+                 "Finite Hint global ring exceeded 64 younger head positions");
         rings[i]->head = saved.heads[i];
         rings[i]->writes = saved.writes[i];
     }
@@ -254,7 +272,6 @@ HintFiniteHistory::restoreGlobals(const Snapshot &saved)
     // has already happened through the sixteen-entry Hint metadata queue.
     for (unsigned i = 0; i < locals.size(); ++i) {
         fatal_if(localPhase(i) != saved.localPhases[i] ||
-                 locals[i].writes != saved.localWrites[i] ||
                  localLow16(i) != saved.localLow16[i],
                  "Finite Hint metadata-only local recovery mismatch");
     }
@@ -270,9 +287,7 @@ HintFiniteHistory::canUpdateAfter(const Snapshot &oldest, bool indirect,
     const std::array<bool, 3> writes = {
         indirect && !is_return, call, is_return};
     for (unsigned i = 0; i < rings.size(); ++i) {
-        fatal_if(rings[i]->writes < oldest.writes[i],
-                 "Finite Hint global ring write counter moved before FTQ head");
-        if (writes[i] && rings[i]->writes - oldest.writes[i] >= 64)
+        if (writes[i] && ((rings[i]->head - oldest.heads[i]) & 127) >= 64)
             return false;
     }
     return true;
@@ -297,16 +312,16 @@ HintFiniteHistory::pushPath(Ring &ring, Addr pc)
 }
 
 void
-HintFiniteHistory::update(Addr pc, Addr target, bool indirect, bool call,
+HintFiniteHistory::update(Addr path_pc, Addr target, bool indirect, bool call,
                           bool is_return, bool taken, int local_selector,
                           bool write_local)
 {
     if (!taken)
         return;
     if (call)
-        pushPath(calls, pc);
+        pushPath(calls, path_pc);
     if (is_return)
-        pushPath(returns, pc);
+        pushPath(returns, path_pc);
     if (!indirect || is_return)
         return;
     const uint8_t bits = (target >> 1) & 3;

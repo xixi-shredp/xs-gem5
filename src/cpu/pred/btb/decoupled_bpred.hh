@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <fstream>
 #include <map>
 #include <queue>
 #include <stack>
@@ -880,12 +881,23 @@ class DecoupledBPUWithBTB : public BPredUnit
     void commitBranch(const DynInstPtr &inst, bool miss);
 
     bool hintDiscoveryActive = false;
+    bool h2pDiscovery = false;
+    std::unique_ptr<std::ofstream> hintDiscoveryTrace;
+    std::map<std::string, uint64_t> hintDiscoveryInvalidWindows;
+    uint64_t hintDiscoveryDeltaMinusOne = 0;
+    uint64_t hintAbsentTargets = 0;
+    uint64_t hintAbsentFallthroughTargets = 0;
+    void writeHintDiscoveryRecord(uint64_t record);
+    void recordHintDiscovery(Addr pc, Addr query_start_pc, unsigned instruction_size);
+    void initCam58DiscoveryAudit();
     std::map<Addr, std::pair<uint64_t, uint64_t>> hintDiscovery;
     void h2pSetMeasurementActive(bool active);
 
     void h2pResolveAtExecute(FetchTargetId target_id, Addr pc,
                              Addr actual_target, uint64_t sequence,
-                             bool taken, bool measure_active, ThreadID tid);
+                             bool taken, bool measure_active, ThreadID tid,
+                             bool indirect = true, bool is_return = false,
+                             unsigned size = 2);
 
     void h2pNotifyCommit(uint64_t measured_units)
     {

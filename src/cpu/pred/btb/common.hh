@@ -132,6 +132,8 @@ struct BranchInfo
     // it's necessary to know whether the branch is resolved and skip
     // the BTB entry or not.
     bool resolved;
+    // CAM carries the last halfword coordinate, without instruction length.
+    bool pcIsCfiEnd = false;
     bool isCond;
     bool isIndirect;
     bool isDirect;
@@ -580,6 +582,11 @@ struct FullBTBPrediction
 
     // for indirect predictor, mapped with lowest bits of branches
     IndirectTargets indirectTargets;
+    // Independent window-keyed ITTAGE result for the fixed CAM candidate.
+    bool camIttageValid = false;
+    Addr camIttageTarget = 0;
+    bool hintCamCorrection = false;
+    bool hintCfiCorrected = false;
     Addr returnTarget; // for RAS
 
     std::unordered_map<Addr, TageInfoForMGSC> tageInfoForMgscs;
@@ -698,6 +705,17 @@ struct FullBTBPrediction
                 }
                 else if (this->getTarget(predictWidth) != other.getTarget(predictWidth)) {
                     return std::make_pair(false, OverrideReason::TARGET);
+                }
+                else if ((hintCfiCorrected || other.hintCfiCorrected) &&
+                    (this_taken_entry.isCond != other_taken_entry.isCond ||
+                     this_taken_entry.isIndirect != other_taken_entry.isIndirect ||
+                     this_taken_entry.isDirect != other_taken_entry.isDirect ||
+                     this_taken_entry.isCall != other_taken_entry.isCall ||
+                     this_taken_entry.isReturn != other_taken_entry.isReturn ||
+                     this_taken_entry.getEnd() != other_taken_entry.getEnd())) {
+                    // Type-only correction still needs the existing override
+                    // recovery; CONTROL_ADDR includes a changed CFI identity.
+                    return std::make_pair(false, OverrideReason::CONTROL_ADDR);
                 }
                 else {
                     return std::make_pair(true, btb_pred::OverrideReason::NO_OVERRIDE);

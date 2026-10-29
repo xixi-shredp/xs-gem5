@@ -420,7 +420,8 @@ class CPU : public BaseCPU
     bool instructionMeasurementActive() const
     { return instructionPhase == InstructionPhase::Measure; }
     void notifyHintBranchResolve(uint64_t ftq_id, Addr pc, Addr target,
-                                 uint64_t sequence, bool taken, ThreadID tid);
+                                 uint64_t sequence, bool taken, ThreadID tid,
+                                 bool indirect, bool is_return, unsigned size);
 
     void instDone(ThreadID tid, const DynInstPtr &inst);
 

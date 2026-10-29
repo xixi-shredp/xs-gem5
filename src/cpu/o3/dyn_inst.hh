@@ -756,6 +756,14 @@ class DynInst : public ExecContext, public RefCounted
     void setLastTraceInst(bool v) { lastTraceInstFlag = v; }
     bool isLastTraceInst() const { return lastTraceInstFlag; }
 
+    /** A missing CFI identification needs recovery even when its target is the
+     * architectural fallthrough. Returns use their existing decode/RAS path. */
+    bool missingIndirectPrediction()
+    {
+        return isIndirectCtrl() && isUncondCtrl() && !isReturn() &&
+               !isNonSpeculative() && !readPredTaken();
+    }
+
     /** Returns whether the instruction mispredicted. */
     bool
     mispredicted()
@@ -764,7 +772,7 @@ class DynInst : public ExecContext, public RefCounted
         staticInst->advancePC(*next_pc);
         DPRINTF(DecoupleBP, "check misprediction next pc=%s and pred pc=%s\n",
                 *next_pc, *predPC);
-        return *next_pc != *predPC;
+        return *next_pc != *predPC || missingIndirectPrediction();
     }
 
     //

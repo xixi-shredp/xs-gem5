@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "hash_version": 7,
+  "mask_order": [
+    "ITH",
+    "Call",
+    "Ret",
+    "LHR"
+  ],
+  "schema": "hint-spec-trace",
+  "kind": "discovery",
+  "record_bytes": 7,
+  "termination": "final",
+  "capacity_records": 6
+}

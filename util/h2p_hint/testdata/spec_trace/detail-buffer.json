@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "hash_version": 7,
+  "mask_order": [
+    "ITH",
+    "Call",
+    "Ret",
+    "LHR"
+  ],
+  "schema": "hint-spec-trace",
+  "kind": "detail",
+  "record_bytes": 22,
+  "termination": "final",
+  "capacity_records": 6,
+  "cam_sha256": "48e5dc754771266974591b011dc64056cc9d011690646c6efd1e90a93b084d25",
+  "layout": "buffer",
+  "buffer_bytes": 135
+}

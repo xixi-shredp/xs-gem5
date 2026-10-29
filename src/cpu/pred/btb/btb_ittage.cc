@@ -1,4 +1,5 @@
 #include "cpu/pred/btb/btb_ittage.hh"
+#include "cpu/pred/btb/hint_indirect.hh"
 
 #include <algorithm>
 #include <cmath>
@@ -243,6 +244,36 @@ BTBITTAGE::putPCHistory(Addr stream_start, const bitset &history, std::vector<Fu
         stage_pred.indirectTargets.clear();
         lookupHelper(stream_start, stage_pred.btbEntries,
                      stage_pred.indirectTargets, tid, asidHash);
+        // CAM classification is independent of BTB type recognition. Use the
+        // existing window startPC/history table access; a miss has no target.
+        stage_pred.camIttageValid = false;
+        if (stage_pred.hintCamCorrection && stage_pred.hintQuery) {
+            TageTableInfo main_info, alt_info;
+            for (int table = numPredictors - 1; table >= 0; --table) {
+                const auto &entry = lookupEntries[table];
+                if (!entry.valid || lookupTags[table] != entry.tag)
+                    continue;
+                if (!main_info.found)
+                    main_info = TageTableInfo(true, entry, table,
+                        lookupIndices[table], lookupTags[table]);
+                else {
+                    alt_info = TageTableInfo(true, entry, table,
+                        lookupIndices[table], lookupTags[table]);
+                    break;
+                }
+            }
+            const bool use_alt = main_info.found &&
+                main_info.entry.counter == 0 && alt_info.found;
+            const bool available = main_info.found;
+            const Addr target = use_alt ? alt_info.entry.target :
+                                         main_info.entry.target;
+            stage_pred.camIttageValid = available;
+            stage_pred.camIttageTarget = target;
+            const Addr cfi = stage_pred.hintQuery->candidatePC();
+            threadMeta[tid]->preds[cfi] = TagePrediction(cfi, main_info,
+                alt_info, use_alt, target);
+        }
+
     }
     DPRINTF(ITTAGE, "putPCHistory end\n");
     debugFlag = false;
@@ -368,6 +399,8 @@ BTBITTAGE::update(const FetchTarget &stream)
     for (auto &btb_entry : all_entries_to_update) {
         bool this_indirect_actual_taken = stream.exeTaken && stream.exeBranchInfo == btb_entry;
         auto pred_it = preds.find(btb_entry.pc);
+        if (pred_it == preds.end())
+            pred_it = preds.find(btb_entry.pc + btb_entry.size - 2);
         TagePrediction pred;
         if (pred_it != preds.end()) {
             pred = pred_it->second;
@@ -736,6 +769,8 @@ BTBITTAGE::commitBranch(const FetchTarget &stream, const DynInstPtr &inst)
     }
     auto pc = inst->getPC();
     auto npc = inst->getNPC();
+    const auto &actual_pc = inst->pcState().as<RiscvISA::PCState>();
+    const Addr cfi_pc = actual_pc.getFallThruPC() - 2;
     std::shared_ptr<TageMeta> meta;
     const int component_idx = getComponentIdx();
     if (component_idx >= 0 &&
@@ -749,6 +784,7 @@ BTBITTAGE::commitBranch(const FetchTarget &stream, const DynInstPtr &inst)
     const TagePrediction *prediction = nullptr;
     if (meta) {
         auto pred_it = meta->preds.find(pc);
+        if (pred_it == meta->preds.end()) pred_it = meta->preds.find(cfi_pc);
         if (pred_it != meta->preds.end()) {
             prediction = &pred_it->second;
             this_branch_hit = true;
@@ -761,7 +797,9 @@ BTBITTAGE::commitBranch(const FetchTarget &stream, const DynInstPtr &inst)
         // BTB fallback. Resolution updates exeBranchInfo, not this prediction.
         // ITTAGE provider metadata and its training target are irrelevant here.
         const auto final_target = H2PIndirectStats::selectFinalTarget(
-            pc, stream.predTaken, stream.predBranchInfo.pc,
+            pc, stream.predTaken,
+            stream.predBranchInfo.pcIsCfiEnd ?
+                (stream.predBranchInfo.pc == cfi_pc ? pc : MaxAddr) : stream.predBranchInfo.pc,
             stream.predBranchInfo.target);
         const bool h2p_miss = !final_target || *final_target != npc;
         h2pOutput.record(pc, npc, final_target);

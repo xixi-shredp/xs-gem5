@@ -1242,14 +1242,15 @@ class DecoupledBPUWithBTB(BranchPredictor):
     h2pStatInterval = Param.UInt64(
         0, "Measured instructions per H2P window; zero disables",
     )
-    hintMode = Param.String("off", "H2P Hint mode: off, collect, or replay")
+    hintMode = Param.String("off", "H2P Hint mode: off, discover, detail, collect alias, or replay")
     hintProfileContext = Param.String(
         "prediction", "Offline profile context: prediction or commit-pre")
     idealHintIBP = Param.Bool(
         False, "Remove Hint table capacity limits while retaining hash and timing",
     )
-    hintCandidates = Param.String("", "Ranked Hint candidate JSON file")
-    hintMetadata = Param.String("", "Frozen Hint metadata JSON file")
+    hintCandidates = Param.String("", "Frozen 144B SPEC CAM image or legacy candidate JSON")
+    hintMetadata = Param.String("", "Frozen 16784B SPEC metadata image or legacy metadata JSON")
+    hintMetaEntries = Param.Unsigned(16, "Hint metadata queue capacity: 16 or 32")
     hintCamEntries = Param.Unsigned(16, "H2P Hint CAM capacity")
     hintContextEntries = Param.Unsigned(4096, "Total Hint context SRAM entries")
     hintWays = Param.Unsigned(2, "Hint context SRAM associativity")

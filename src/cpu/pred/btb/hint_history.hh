@@ -26,6 +26,9 @@ struct FetchTarget;
 using HintV3Contexts = std::array<uint32_t, 4>;
 
 uint16_t hintFold14(Addr pc);
+// Path histories use the final halfword coordinate, while raw trace PCs use
+// the actual instruction start. Prediction already knows the BTB branch size.
+Addr hintPathCoordinate(Addr instruction_pc, unsigned instruction_size);
 uint32_t hintFold128(const std::array<uint64_t, 2> &value);
 uint32_t hintEncode128(const std::array<uint64_t, 2> &value);
 uint32_t hintEncodeWord(uint64_t value);
@@ -45,6 +48,7 @@ class HintFiniteHistory
         std::array<uint8_t, 128> cells{};
         // Seven-bit physical head, with 64 cells of recovery guard band.
         uint8_t head = 127;
+        // Simulation-only diagnostic; never used for admission or recovery.
         uint64_t writes = 0;
     };
     struct LocalRing
@@ -53,6 +57,7 @@ class HintFiniteHistory
         uint8_t head = 15;
         // Five-bit phase disambiguates a wrap of the sixteen-cell ring.
         uint8_t phase = 31;
+        // Simulation-only diagnostic; never used for admission or recovery.
         uint64_t writes = 0;
     };
     struct Snapshot
@@ -76,7 +81,9 @@ class HintFiniteHistory
     void restoreGlobals(const Snapshot &snapshot);
     bool canUpdateAfter(const Snapshot &oldest, bool indirect,
                         bool call, bool is_return, bool taken) const;
-    void update(Addr pc, Addr target, bool indirect, bool call,
+    // path_pc is C=P for a 16-bit instruction and C=P+2 for a 32-bit one.
+    // It is not the window startPC and does not change the raw trace source PC.
+    void update(Addr path_pc, Addr target, bool indirect, bool call,
                 bool is_return, bool taken, int local_selector = -1,
                 bool write_local = false);
     int localIndex(Addr pc) const;

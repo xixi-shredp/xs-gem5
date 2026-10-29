@@ -16,6 +16,7 @@
 
 #include "base/logging.hh"
 #include "base/output.hh"
+#include "cpu/pred/btb/common.hh"
 #include "cpu/pred/btb/hint_history.hh"
 #include "cpu/pred/btb/hint_indirect.hh"
 #include "cpu/pred/btb/history_manager.hh"
@@ -1454,7 +1455,7 @@ finiteV3Config(const std::string &prefix, unsigned cam_count = 1,
     return config;
 }
 
-void
+[[maybe_unused]] void
 testFiniteV3Predictor()
 {
     HintIndirect hardware(finiteV3Config("finite-v3-predictor"), nullptr);
@@ -1524,7 +1525,7 @@ testFiniteV3Predictor()
     hardware.finish();
 }
 
-void
+[[maybe_unused]] void
 testFiniteV3MaskAwareAdmission()
 {
     HintIndirect no_lhr(finiteV3Config("finite-v3-no-lhr"), nullptr);
@@ -1612,7 +1613,7 @@ testFiniteV3MaskAwareAdmission()
     reads_lhr.finish();
 }
 
-void
+[[maybe_unused]] void
 testFiniteV3NonHintRedirect()
 {
     HintIndirect hardware(finiteV3Config("finite-v3-nonhint-redirect"), nullptr);
@@ -1646,7 +1647,7 @@ testFiniteV3NonHintRedirect()
     hardware.finish();
 }
 
-void
+[[maybe_unused]] void
 testFiniteV3PhaseAndCapacity()
 {
     HintIndirect hardware(finiteV3Config("finite-v3-phase"), nullptr);
@@ -1737,7 +1738,7 @@ testFiniteV3PhaseAndCapacity()
     full.finish();
 }
 
-void
+[[maybe_unused]] void
 testFiniteV3ShadowAndOverflow()
 {
     HintIndirect hardware(finiteV3Config("finite-v3-shadow"), nullptr);
@@ -1814,6 +1815,237 @@ testFiniteV3ShadowAndOverflow()
 }
 
 void
+putSpecWord(std::string &image, size_t offset, uint64_t value, unsigned bytes)
+{
+    expect(offset + bytes <= image.size(), "raw fixture write bounds");
+    for (unsigned byte = 0; byte < bytes; ++byte)
+        image[offset + byte] = static_cast<char>(value >> (byte * 8));
+}
+
+std::string
+writeSpecImage(const std::string &name, bool cam_only, Addr target = 0x2000)
+{
+    std::string image(cam_only ? 144 : 16784, '\0');
+    image.replace(0, 8, cam_only ? "H2PHINTP" : "H2PHINTL");
+    // Deliberately sparse and unsorted physical ids: never compact to 0/1.
+    const std::array<std::pair<unsigned, Addr>, 4> rows = {{
+        {7, 0x1000}, {2, 0x1080}, {12, 0x1ff0},
+        {15, std::numeric_limits<Addr>::max() - 1}}};
+    for (const auto &[id, pc] : rows) {
+        putSpecWord(image, 16 + id * 8,
+                    ((pc >> 1) & ((uint64_t(1) << 47) - 1)) |
+                    (uint64_t(1) << 51), 8);
+        if (!cam_only) {
+            const auto key = hintHashV3(pc, HintV3Contexts{}, 0);
+            const auto word = (key >> 11) | (3U << 22) | (1U << 24);
+            putSpecWord(image, 0x90 + (key & 2047) * 2 * 4, word, 4);
+        }
+    }
+    if (!cam_only)
+        putSpecWord(image, 0x4090, target >> 1, 8); // Slot has no valid bit.
+    const auto path = simout.resolve(name);
+    std::ofstream output(path, std::ios::binary);
+    output.write(image.data(), image.size());
+    expect(bool(output), "write raw SPEC image fixture");
+    return path;
+}
+
+uint64_t
+specTraceBits(const std::string &data, size_t record, unsigned low, unsigned width)
+{
+    expect(width <= 64 && record * 22 + (low + width + 7) / 8 <= data.size(),
+           "raw Detail field read bounds");
+    uint64_t value = 0;
+    for (unsigned bit = 0; bit < width; ++bit) {
+        const unsigned position = low + bit;
+        const auto byte = static_cast<unsigned char>(data[record * 22 + position / 8]);
+        value |= uint64_t((byte >> (position % 8)) & 1) << bit;
+    }
+    return value;
+}
+
+[[maybe_unused]] void
+testSpecRawImagesAndDetail()
+{
+    expect(hintPathCoordinate(0x4000, 2) == 0x4000 &&
+           hintPathCoordinate(0x4000, 4) == 0x4002,
+           "PHR uses actual P for RVC and P+2 for a 32-bit control");
+    {
+        HintFiniteHistory rvc, full;
+        rvc.configure({0x1000}); full.configure({0x1000});
+        rvc.update(hintPathCoordinate(0x4000, 2), 0, false, true, false, true);
+        full.update(hintPathCoordinate(0x4000, 4), 0, false, true, false, true);
+        expect(rvc.low64(rvc.calls) == hintFold14(0x4000) &&
+               full.low64(full.calls) == hintFold14(0x4002) &&
+               rvc.low64(rvc.calls) != full.low64(full.calls),
+               "2-byte and 4-byte call histories match independent terminal-halfword coordinates");
+    }
+    {
+        HintIndirect::Config config;
+        config.mode = "replay";
+        config.confQueueDepth = 32;
+        config.outputPrefix = "spec-raw-sparse-slot-zero";
+        config.metadataPath = writeSpecImage("spec-raw-sparse-load.bin", false, 0);
+        HintIndirect hw(config, nullptr);
+        HintFiniteHistory hist;
+        hist.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        expect(hw.historyPCs().size() == 16 && hw.historyPCs()[7] == 0x1000 &&
+               hw.historyPCs()[2] == 0x1080 &&
+               hw.historyPCs()[0] == std::numeric_limits<Addr>::max(),
+               "raw loader preserves arbitrary sparse physical CAM slots");
+        for (unsigned i = 0; i < 2; ++i) {
+            const Addr start = 0x1000 + i * 0x80;
+            auto q = hw.query(std::make_shared<const HintSnapshot>(hist),
+                              start, start + 0x40, 1 + i * 3);
+            expect(q->camIndex == (i == 0 ? 7 : 2) && q->tagHit && q->slot == 0,
+                   "query retains sparse CAM id and Context Slot pointer");
+            const auto predicted = hw.complete(q, start + 0x10, 0x3000,
+                                                true, true, false, true);
+            expect(predicted.has_value() && *predicted == 0,
+                   "Slot target zero is valid without a Slot valid bit");
+            hw.reserve(q, start + 0x10, hist.localPhase(q->camIndex));
+            hw.bind(q, i + 1);
+            hist.update(start + 0x10, 0x2002 + i * 2, true, false, false,
+                        true, q->camIndex, true);
+            expect(hist.localLow16(q->camIndex) == i + 1,
+                   "LHR update uses physical CAM id rather than compact rank");
+            hw.commitTarget(i + 1);
+        }
+        hw.finish();
+    }
+    {
+        HintIndirect::Config config;
+        config.mode = "collect";
+        config.confQueueDepth = 32;
+        config.outputPrefix = "spec-raw-detail";
+        config.candidatePath = writeSpecImage("spec-raw-detail-cam.bin", true);
+        HintIndirect hw(config, nullptr);
+        HintFiniteHistory hist;
+        hist.configure(hw.historyPCs());
+        hist.update(0x1010, 0x2002, true, false, false, true, 7, true);
+        hist.update(0x3000, 0x2006, true, false, false, true);
+        hist.update(hintPathCoordinate(0x4000, 4), 0, false, true, false, true);
+        hist.update(hintPathCoordinate(0x5000, 2), 0, false, false, true, true);
+        auto snapshot = std::make_shared<const HintSnapshot>(hist);
+        const auto expected = snapshot->v3ContextsFor(7);
+        expect(expected[0] != expected[3] && expected[1] != expected[2],
+               "Detail fixture distinguishes ITH/LHR and Call/Ret components");
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(snapshot, 0x1000, 0x1040, 1);
+        expect(q->camIndex == 7, "Detail CAM load retains physical selector");
+        expect(!hw.complete(q, 0x1010, 0x9000, true, true, false, true),
+               "Detail collection cannot override baseline prediction");
+        // Mutate the live histories: the trace must retain the query snapshot.
+        hist.update(0x1010, 0x7776, true, true, false, true, 7, true);
+        hw.commit(q, 1, 0x1010, 0x6000, true, 0x9000, 3, nullptr, 0, 0x1000, 4);
+        // Missing query still identifies the CAM through explicit FTQ startPC.
+        hw.commit(nullptr, 2, 0x1012, 0x6002, true, 0x6002, 6,
+                  nullptr, 0, 0x1000, 4);
+        auto mismatch = hw.query(snapshot, 0x1000, 0x1040, 7);
+        expect(mismatch->admitted && mismatch->snapshot,
+               "PC mismatch fixture retains a complete admitted query snapshot");
+        hw.complete(mismatch, 0x1010, 0x9000, true, true, false, true);
+        hw.commit(mismatch, 3, 0x1014, 0x6004, true, 0x9000, 9,
+                  nullptr, 0, 0x1000, 4);
+        auto unidentified = hw.query(snapshot, 0x1000, 0x1040, 10);
+        expect(unidentified->admitted && unidentified->snapshot,
+               "unidentified branch fixture retains an admitted query snapshot");
+        hw.complete(unidentified, 0x1016, 0x9000, true, true, false, false);
+        hw.commit(unidentified, 4, 0x1016, 0x6006, true, 0x9000, 12,
+                  nullptr, 0, 0x1000, 4);
+        auto outside = hw.query(snapshot, 0x1000, 0x1020, 13);
+        expect(outside->admitted && outside->snapshot,
+               "outside-window fixture retains an admitted query snapshot");
+        hw.complete(outside, 0x1020, 0x9000, true, true, false, true);
+        hw.commit(outside, 5, 0x1020, 0x6008, true, 0x9000, 15,
+                  nullptr, 0, 0x1000, 4);
+        auto boundary = hw.query(snapshot, 0x1080, 0x10c0, 16);
+        hw.complete(boundary, 0x107e, 0x9000, true, true, false, true);
+        hw.commit(boundary, 6, 0x107e, 0x600a, true, 0x9000, 18,
+                  nullptr, 0, 0x1080, 4);
+        auto boundary_invalid = hw.query(snapshot, 0x1080, 0x10c0, 19);
+        hw.complete(boundary_invalid, 0x107e, 0x9000, true, true, false, false);
+        hw.commit(boundary_invalid, 7, 0x107e, 0x600c, true, 0x9000, 21,
+                  nullptr, 0, 0x1080, 4);
+        hw.commit(nullptr, 8, 0x1ffe, 0x600e, true, 0x9000, 24,
+                  nullptr, 0, 0x1ff0, 2); // RVC at the final page halfword.
+        // Four known-invalid windows must be skipped, not emitted as fake
+        // context-invalid records: RVC before Q, too-negative 32b DELTA,
+        // 32b crossing the clipped page end, and overflowing window arithmetic.
+        hw.commit(nullptr, 9, 0x107e, 0x6010, true, 0x9000, 27,
+                  nullptr, 0, 0x1080, 2);
+        hw.commit(nullptr, 10, 0x107c, 0x6012, true, 0x9000, 30,
+                  nullptr, 0, 0x1080, 4);
+        hw.commit(nullptr, 11, 0x1ffe, 0x6014, true, 0x9000, 33,
+                  nullptr, 0, 0x1ff0, 4);
+        hw.commit(nullptr, 12, std::numeric_limits<Addr>::max() - 1,
+                  0x6016, true, 0x9000, 36, nullptr, 0,
+                  std::numeric_limits<Addr>::max() - 1, 2);
+        hw.finish();
+        const auto raw = readOutput("spec-raw-detail/hint-detail.bin");
+        expect(raw.size() == 198, "eight valid-window Detail rows plus final; invalid windows skipped");
+        expect(specTraceBits(raw, 0, 0, 4) == 7 &&
+               specTraceBits(raw, 0, 4, 47) == (0x6000 >> 1) &&
+               specTraceBits(raw, 0, 163, 7) == 8 &&
+               specTraceBits(raw, 0, 170, 1) == 1 &&
+               specTraceBits(raw, 0, 171, 1) == 1,
+               "Detail pc_id/target/DELTA/baseline_miss/query_valid bit layout");
+        expect(specTraceBits(raw, 0, 51, 28) == expected[0] &&
+               specTraceBits(raw, 0, 79, 28) == expected[3] &&
+               specTraceBits(raw, 0, 107, 28) == expected[1] &&
+               specTraceBits(raw, 0, 135, 28) == expected[2],
+               "Detail ITH/LHR/Call/Ret order uses prediction pre-update folds");
+        expect(specTraceBits(raw, 1, 0, 4) == 7 &&
+               specTraceBits(raw, 1, 163, 7) == 9 &&
+               specTraceBits(raw, 1, 171, 1) == 0 &&
+               specTraceBits(raw, 1, 51, 56) == 0 &&
+               specTraceBits(raw, 1, 107, 56) == 0,
+               "missing query emits query_valid0 with zero contexts and explicit FTQ DELTA");
+        for (unsigned record = 2; record <= 3; ++record) {
+            expect(specTraceBits(raw, record, 0, 4) == 7 &&
+                   specTraceBits(raw, record, 4, 47) == ((0x6000 + record * 2) >> 1) &&
+                   specTraceBits(raw, record, 163, 7) == 8 + record &&
+                   specTraceBits(raw, record, 170, 1) == 1 &&
+                   specTraceBits(raw, record, 171, 1) == 0 &&
+                   specTraceBits(raw, record, 51, 56) == 0 &&
+                   specTraceBits(raw, record, 107, 56) == 0,
+                   "PC mismatch or unidentified branch preserves target/DELTA/miss but invalidates all contexts");
+        }
+        expect(specTraceBits(raw, 4, 0, 4) == 7 &&
+               specTraceBits(raw, 4, 4, 47) == (0x6008 >> 1) &&
+               specTraceBits(raw, 4, 163, 7) == 16 &&
+               specTraceBits(raw, 4, 170, 1) == 1 &&
+               specTraceBits(raw, 4, 171, 1) == 0 &&
+               specTraceBits(raw, 4, 51, 56) == 0 &&
+               specTraceBits(raw, 4, 107, 56) == 0,
+               "canonical-window branch outside its query snapshot window retains only context-invalid record");
+        for (unsigned record = 5; record <= 6; ++record) {
+            expect(specTraceBits(raw, record, 0, 4) == 2 &&
+                   specTraceBits(raw, record, 163, 7) == 127 &&
+                   specTraceBits(raw, record, 171, 1) == (record == 5 ? 1 : 0),
+                   "legal 32-bit boundary DELTA=-1 survives both valid and invalid prediction snapshots");
+        }
+        expect(specTraceBits(raw, 6, 51, 56) == 0 &&
+               specTraceBits(raw, 6, 107, 56) == 0 &&
+               specTraceBits(raw, 7, 0, 4) == 12 &&
+               specTraceBits(raw, 7, 163, 7) == 7,
+               "context-invalid minus-one has zero folds and RVC final-page halfword is retained");
+        expect(specTraceBits(raw, 8, 172, 1) == 1 &&
+               specTraceBits(raw, 8, 0, 64) == 0 &&
+               specTraceBits(raw, 8, 64, 64) == 0 &&
+               specTraceBits(raw, 8, 128, 44) == 0 &&
+               specTraceBits(raw, 8, 173, 3) == 0,
+               "final marker follows all rows and has zero payload/reserved bits");
+        boost::property_tree::ptree stats;
+        std::istringstream stats_input(readOutput("spec-raw-detail/hint-stats.json"));
+        boost::property_tree::read_json(stats_input, stats);
+        expect(stats.get<unsigned>("detail.invalid_window") == 4,
+               "invalid source-window samples have a separate explicit skip counter");
+    }
+}
+
+[[maybe_unused]] void
 testSpecV7Predictor()
 {
     // All helpers below execute the production Hint implementation. Times
@@ -2041,11 +2273,146 @@ testSpecV7Predictor()
                !hw.complete(zero, 0x1010, 0x3000, true, true, false, true),
                "conf0 falls back to existing predictor");
         hw.reserve(zero, 0x1010, hist.localPhase(0)); hw.bind(zero, 5);
-        hw.resolve(zero, 0x1010, 0x2000, 5, 13, true);
+        hw.resolve(zero, 0x1010, 0x3000, 5, 13, true);
         hw.commitTarget(5); hw.tick(16);
         expect(hw.pendingUpdates() == 0 && hw.confidenceAtEntry(zero->entryId) == 0,
-               "unused conf0 shadow target does not train or recover confidence");
+               "conf0 with correct baseline remains zero despite wrong shadow target");
+        auto recover = hw.query(snap, 0x1000, 0x1040, 16);
+        expect(recover->tagHit && recover->conf == 0 &&
+               !hw.complete(recover, 0x1010, 0x3000, true, true, false, true),
+               "conf0 recovery fixture retains baseline fallback");
+        hw.reserve(recover, 0x1010, hist.localPhase(0)); hw.bind(recover, 6);
+        // Both baseline=0x3000 and shadow=0x2000 are wrong: recovery depends
+        // exclusively on the baseline miss, not shadow target correctness.
+        hw.resolve(recover, 0x1010, 0x4000, 6, 16, true);
+        hw.commitTarget(6); hw.tick(19);
+        expect(hw.pendingUpdates() == 0 && hw.confidenceAtEntry(recover->entryId) == 1,
+               "conf0 baseline miss recovers to one even when shadow also misses");
+        for (unsigned i = 0; i < 3; ++i) {
+            const uint64_t cycle = 19 + i * 3;
+            auto correct = hw.query(snap, 0x1000, 0x1040, cycle);
+            expect(correct->conf == std::min(1U + i, 3U),
+                   "correct Hint reads the previous saturated confidence");
+            expect(hw.complete(correct, 0x1010, 0x3000, true, true, false, true) == 0x2000,
+                   "positive confidence uses the shadow target again");
+            hw.reserve(correct, 0x1010, hist.localPhase(0)); hw.bind(correct, i + 7);
+            hw.resolve(correct, 0x1010, 0x2000, i + 7, cycle, true);
+            hw.commitTarget(i + 7); hw.tick(cycle + 3);
+            expect(hw.confidenceAtEntry(correct->entryId) == std::min(2U + i, 3U),
+                   "correct positive-confidence predictions saturate at three");
+        }
         hw.finish();
+    }
+
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-overlapping-conf-zero"), nullptr);
+        HintFiniteHistory hist;
+        hist.configure(hw.historyPCs());
+        auto snap = makeSnapshot(hist);
+        hw.setMeasurementActive(true, 0);
+        for (unsigned i = 0; i < 3; ++i) {
+            const uint64_t cycle = 1 + i * 3;
+            auto q = hw.query(snap, 0x1000, 0x1040, cycle);
+            hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+            hw.reserve(q, 0x1010, hist.localPhase(0)); hw.bind(q, i + 1);
+            hw.resolve(q, 0x1010, 0x3000, i + 1, cycle, true);
+            hw.commitTarget(i + 1); hw.tick(cycle + 3);
+        }
+        auto a = hw.query(snap, 0x1000, 0x1040, 10);
+        expect(a->conf == 0 &&
+               !hw.complete(a, 0x1010, 0x3000, true, true, false, true),
+               "first overlapping query reads zero and uses baseline");
+        hw.reserve(a, 0x1010, hist.localPhase(0)); hw.bind(a, 4);
+        auto b = hw.query(snap, 0x1000, 0x1040, 13);
+        expect(b->conf == 0 &&
+               !hw.complete(b, 0x1010, 0x3000, true, true, false, true),
+               "second overlapping query also reads old zero before either resolve");
+        hw.reserve(b, 0x1010, hist.localPhase(0)); hw.bind(b, 5);
+        const auto applied = hw.queueCounts().applied;
+        const auto enqueued = hw.queueCounts().enqueued;
+        hw.resolve(a, 0x1010, 0x4000, 4, 15, true); // Baseline and Hint wrong.
+        hw.resolve(b, 0x1010, 0x3000, 5, 15, true); // Baseline correct.
+        hw.commitTarget(4); hw.commitTarget(5);
+        expect(hw.pendingUpdates() == 2 && hw.queueCounts().enqueued == enqueued + 2,
+               "both old-zero snapshots enqueue, including the correct-baseline zero write");
+        hw.tick(17);
+        expect(hw.confidenceAtEntry(a->entryId) == 1 && hw.pendingUpdates() == 1 &&
+               hw.queueCounts().applied == applied + 1,
+               "older baseline miss writes one through the single SRAM port");
+        hw.tick(18);
+        expect(hw.confidenceAtEntry(b->entryId) == 0 && hw.pendingUpdates() == 0 &&
+               hw.queueCounts().applied == applied + 2,
+               "younger baseline success writes its saved zero after the older recovery");
+        hw.finish();
+    }
+
+    {
+        HintIndirect hw(finiteV3Config("spec-v7-committed-accuracy"), nullptr);
+        HintFiniteHistory hist;
+        hist.configure(hw.historyPCs());
+        auto snap = makeSnapshot(hist);
+        hw.setMeasurementActive(true, 0);
+        // Train state through production resolve, but do not commit these
+        // setup branches into the independent committed-accuracy denominators.
+        for (unsigned i = 0; i < 3; ++i) {
+            const uint64_t cycle = 1 + i * 3;
+            auto q = hw.query(snap, 0x1000, 0x1040, cycle);
+            hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+            hw.reserve(q, 0x1010, hist.localPhase(0)); hw.bind(q, i + 1);
+            hw.resolve(q, 0x1010, 0x3000, i + 1, cycle, true);
+            hw.commitTarget(i + 1); hw.tick(cycle + 3);
+        }
+        auto zero_correct = hw.query(snap, 0x1000, 0x1040, 10);
+        expect(zero_correct->conf == 0 &&
+               !hw.complete(zero_correct, 0x1010, 0x3000, true, true, false, true),
+               "accuracy fixture uses real conf0 baseline fallback");
+        hw.commit(zero_correct, 1, 0x1010, 0x3000, true, 0x3000, 12,
+                  nullptr, 0, 0x1000, 4);
+        auto zero_wrong = hw.query(snap, 0x1000, 0x1040, 13);
+        expect(zero_wrong->conf == 0 &&
+               !hw.complete(zero_wrong, 0x1010, 0x3000, true, true, false, true),
+               "wrong conf0 shadow also leaves the baseline result selected");
+        hw.commit(zero_wrong, 2, 0x1010, 0x4000, true, 0x3000, 15,
+                  nullptr, 0, 0x1000, 4);
+        expect(hw.totals().overrides == 0 && hw.totals().overridesMisses == 0 &&
+               hw.totals().tagHits == 2 && hw.totals().tagHitMisses == 2 &&
+               hw.totals().finalMisses == 1,
+               "conf0 shadow errors count as tag-hit misses but never Hint-only overrides");
+        hw.reserve(zero_wrong, 0x1010, hist.localPhase(0)); hw.bind(zero_wrong, 4);
+        hw.resolve(zero_wrong, 0x1010, 0x4000, 4, 15, true);
+        hw.commitTarget(4); hw.tick(17);
+        auto used_wrong = hw.query(snap, 0x1000, 0x1040, 17);
+        expect(used_wrong->conf == 1 &&
+               hw.complete(used_wrong, 0x1010, 0x3000, true, true, false, true) == 0x2000,
+               "positive-confidence wrong Hint is genuinely selected");
+        hw.commit(used_wrong, 3, 0x1010, 0x4000, true, 0x2000, 19,
+                  nullptr, 0, 0x1000, 4);
+        auto used_correct = hw.query(snap, 0x1000, 0x1040, 20);
+        expect(hw.complete(used_correct, 0x1010, 0x3000, true, true, false, true) == 0x2000,
+               "positive-confidence correct Hint is genuinely selected");
+        hw.commit(used_correct, 4, 0x1010, 0x2000, true, 0x2000, 22,
+                  nullptr, 0, 0x1000, 4);
+        auto fallback = hw.query(snap, 0x5000, 0x5040, 23);
+        expect(!fallback->hasCandidate &&
+               !hw.complete(fallback, 0x5010, 0x3000, true, true, false, true),
+               "non-CAM fallback remains outside Hint-only accuracy");
+        hw.commit(fallback, 5, 0x5010, 0x4000, true, 0x3000, 25,
+                  nullptr, 0, 0x5000, 4);
+        expect(hw.totals().executions == 5 && hw.totals().baselineMisses == 4 &&
+               hw.totals().finalMisses == 3 && hw.totals().corrected == 1 &&
+               hw.totals().overrides == 2 && hw.totals().overridesMisses == 1 &&
+               hw.totals().tagHits == 4 && hw.totals().tagHitMisses == 3,
+               "committed denominators separate final all-branch, selected-Hint and shadow-tag accuracy");
+        hw.finish();
+        boost::property_tree::ptree stats;
+        std::istringstream input(readOutput("spec-v7-committed-accuracy/hint-stats.json"));
+        boost::property_tree::read_json(input, stats);
+        expect(stats.get<unsigned>("global.overrides") == 2 &&
+               stats.get<unsigned>("global.override_misses") == 1 &&
+               stats.get<unsigned>("global.tag_hits") == 4 &&
+               stats.get<unsigned>("global.tag_hit_misses") == 3 &&
+               stats.get<unsigned>("global.final_misses") == 3,
+               "public statistics expose committed Hint accuracy numerators and denominators");
     }
 
     {
@@ -2157,15 +2524,297 @@ testSpecV7Predictor()
 
 }
 
+// CAM58 acceptance tests execute the production helper in final gem5.opt.
+// Legacy finite JSON/rollback fixtures above remain source history, but are
+// deliberately not run: finite tables now accept only frozen CAM58 images and
+// confidence writes are not rolled back after they reach the SRAM.
+std::string
+writeCam58Fixture(const std::string &name, bool cam_only = false,
+                  unsigned confidence = 3, bool context_hit = true,
+                  Addr start = 0x1000, Addr cfi = 0x1010,
+                  bool call = true, unsigned rows = 1)
+{
+    std::string image(cam_only ? 144 : 16784, '\0');
+    image.replace(0, 8, cam_only ? "H2PCAM58" : "H2PLD058");
+    for (unsigned id = 0; id < rows; ++id) {
+        const Addr q = start + id * 0x80;
+        const Addr c = cfi + id * 0x80;
+        const unsigned position = (c - (q & ~Addr(31))) / 2;
+        putSpecWord(image, 16 + id * 8,
+            ((q >> 1) & ((uint64_t(1) << 47) - 1)) |
+            (uint64_t(1) << 51) | (uint64_t(position) << 52) |
+            (uint64_t(call) << 57), 8);
+        if (!cam_only && context_hit) {
+            const auto key = hintHashV3(q, HintV3Contexts{}, 0);
+            putSpecWord(image, 0x90 + (key & 2047) * 8,
+                (key >> 11) | (confidence << 22) | (1U << 24), 4);
+        }
+    }
+    if (!cam_only)
+        putSpecWord(image, 0x4090, 0x2000 >> 1, 8);
+    const auto path = simout.resolve(name);
+    std::ofstream output(path, std::ios::binary);
+    output.write(image.data(), image.size());
+    expect(bool(output), "write CAM58 production fixture");
+    return path;
+}
+
+void
+testCam58Predictor()
+{
+    auto configFor = [](const std::string &name, unsigned conf = 3,
+                        bool hit = true, Addr start = 0x1000,
+                        Addr cfi = 0x1010, unsigned rows = 1) {
+        HintIndirect::Config config;
+        config.mode = "replay";
+        config.confQueueDepth = 32;
+        config.outputPrefix = name;
+        config.metadataPath = writeCam58Fixture(name + ".bin", false,
+                                                conf, hit, start, cfi, true, rows);
+        return config;
+    };
+    auto snap = [](const HintFiniteHistory &history) {
+        return std::make_shared<const HintSnapshot>(history);
+    };
+    {
+        HintIndirect hw(configFor("cam58-identity", 3, true, 0x1012, 0x1020), nullptr);
+        HintFiniteHistory history; history.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(snap(history), 0x1012, 0x1040, 1);
+        expect(q->admitted && q->hasCandidate && q->candidatePC() == 0x1020 &&
+               q->cfiPosition == 16 && q->isCall && q->s3Cycle == 3,
+               "CAM58 native position uses aligned 32B base, not startPC delta");
+        expect(hw.complete(q, 0x1020, 0x3000, true, true, false, true) == 0x2000,
+               "fixed CFI wins with usable conf3 Hint target");
+        auto busy = hw.query(snap(history), 0x1012, 0x1040, 2);
+        expect(busy->hasCandidate && busy->candidatePC() == 0x1020 &&
+               busy->isCall && !busy->admitted && !busy->tagHit,
+               "busy query retains CAM classification without completed Context metadata");
+        expect(!hw.complete(busy, 0x1020, 0x3000, true, true, false, true) &&
+               !busy->eligible, "busy fallback cannot override or train");
+        auto wrong = hw.query(snap(history), 0x1012, 0x1040, 4);
+        expect(!hw.complete(wrong, 0x101e, 0x3000, true, true, false, true) &&
+               !wrong->eligible, "earlier final CFI suppresses Hint training and target");
+        auto canceled = hw.query(snap(history), 0x1012, 0x1040, 7);
+        hw.cancelPending();
+        expect(canceled->canceled &&
+               !hw.complete(canceled, 0x1020, 0x3000, true, true, false, true),
+               "redirect cancels outstanding query before S3 takeover");
+        hw.finish();
+    }
+    // C=P+2 for 32-bit instructions: resolve consumes real P and independent
+    // size, while complete/reserve consume the native terminal-halfword C.
+    for (unsigned kind = 0; kind < 7; ++kind) {
+        const unsigned initial = kind < 2 ? 0 : 3;
+        HintIndirect hw(configFor("cam58-training-" + std::to_string(kind), initial,
+                                 kind != 6), nullptr);
+        HintFiniteHistory history; history.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(snap(history), 0x1000, 0x1040, 1);
+        const bool baseline_correct = kind == 1;
+        const Addr actual = baseline_correct ? 0x3000 : 0x4000;
+        const auto predicted = hw.complete(q, 0x1010, 0x3000,
+                                            true, true, false, true);
+        expect(q->eligible && (initial == 0 || kind == 6 ? !predicted : bool(predicted)),
+               "conf0 keeps fixed-CFI training eligibility while disabling Hint target");
+        hw.reserve(q, 0x1010, history.localPhase(0), &history);
+        hw.bind(q, 1);
+        hw.resolve(q, 0x100e, actual, 1, 4, true,
+                   kind != 3, kind != 4, kind == 5, 4);
+        // tick(N) services cycles strictly before N; resolve4 writes at5.
+        hw.tick(6);
+        const unsigned expected = kind == 0 ? 1 : kind == 1 ? 0 :
+                                  kind == 2 ? 2 : 3;
+        if (kind != 6)
+            expect(hw.confidenceAtEntry(q->entryId) == expected,
+                   "conf training requires final CFI and actual taken nonreturn indirect");
+        expect(hw.queueCounts().enqueued == (kind <= 2 ? 1 : 0),
+               "not-taken/direct/return/Context-miss outcomes never enqueue conf training");
+        hw.commitTarget(1);
+        hw.finish();
+    }
+    {
+        HintIndirect hw(configFor("cam58-accepted-confidence-survives-redirect"), nullptr);
+        HintFiniteHistory history; history.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(snap(history), 0x1000, 0x1040, 1);
+        hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+        hw.reserve(q, 0x1010, history.localPhase(0), &history);
+        hw.bind(q, 1);
+        hw.resolve(q, 0x100e, 0x4000, 1, 4, true, true, true, false, 4);
+        expect(hw.pendingUpdates() == 1 && hw.queueCounts().enqueued == 1 &&
+               hw.queueCounts().applied == 0 &&
+               hw.confidenceAtEntry(q->entryId) == 3,
+               "resolve accepts FIFO request before its earliest SRAM write cycle");
+        // Redirect in the resolve cycle, before ready5, discards this query's
+        // FTQ metadata and calls undoFinite. The accepted request independently
+        // owns its set/way and final conf, so cancellation cannot retract it.
+        hw.redirect(history, 1, 0x100e, false, 0x5000, 2, 4);
+        expect(q->canceled && hw.inFlightHints() == 0 &&
+               hw.pendingUpdates() == 1 && hw.queueCounts().applied == 0 &&
+               hw.queueCounts().canceled == 0 &&
+               hw.confidenceAtEntry(q->entryId) == 3,
+               "redirect removes metadata but preserves accepted unapplied conf FIFO request");
+        hw.tick(5);
+        expect(hw.pendingUpdates() == 1 && hw.queueCounts().applied == 0,
+               "redirect does not advance accepted conf request before ready5");
+        hw.tick(6);
+        expect(hw.pendingUpdates() == 0 && hw.queueCounts().applied == 1 &&
+               hw.queueCounts().enqueued == 1 &&
+               hw.confidenceAtEntry(q->entryId) == 2 &&
+               hw.pendingRollbacks() == 0,
+               "accepted request writes conf exactly once after its metadata was squashed");
+        hw.tick(9);
+        expect(hw.queueCounts().applied == 1 &&
+               hw.confidenceAtEntry(q->entryId) == 2,
+               "squashed metadata cannot duplicate or reverse the accepted SRAM write");
+        hw.finish();
+    }
+    {
+        HintIndirect hw(configFor("cam58-accepted-confidence-keep-target-changes"), nullptr);
+        HintFiniteHistory history; history.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(snap(history), 0x1000, 0x1040, 1);
+        hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+        hw.reserve(q, 0x1010, history.localPhase(0), &history);
+        hw.bind(q, 1);
+        // The first actual target differs from Hint target0x2000, accepting
+        // final conf2. A retained redirect then reports target0x2000, which
+        // would compute conf3 if it incorrectly mutated that accepted request.
+        hw.resolve(q, 0x100e, 0x4000, 1, 4, true, true, true, false, 4);
+        expect(hw.pendingUpdates() == 1 && hw.queueCounts().enqueued == 1 &&
+               hw.queueCounts().applied == 0,
+               "keep-target-change starts with accepted unapplied final-conf2 request");
+        hw.redirect(history, 1, 0x1010, true, 0x2000, 2, 4);
+        expect(!q->canceled && q->resolved && hw.inFlightHints() == 1 &&
+               hw.pendingUpdates() == 1 && hw.queueCounts().enqueued == 1 &&
+               hw.queueCounts().applied == 0,
+               "retained redirect target change cannot duplicate accepted FIFO request");
+        hw.tick(6);
+        expect(hw.pendingUpdates() == 0 && hw.queueCounts().applied == 1 &&
+               hw.confidenceAtEntry(q->entryId) == 2,
+               "retained redirect preserves accepted final conf2 rather than recomputing conf3");
+        hw.tick(9);
+        expect(hw.pendingUpdates() == 0 && hw.queueCounts().enqueued == 1 &&
+               hw.queueCounts().applied == 1 &&
+               hw.confidenceAtEntry(q->entryId) == 2,
+               "changed retained target cannot enqueue a deferred duplicate score");
+        hw.commitTarget(1);
+        expect(hw.inFlightHints() == 0,
+               "retained resolved metadata releases normally after accepted request writes");
+        hw.finish();
+    }
+    {
+        HintIndirect hw(configFor("cam58-applied-confidence-persists"), nullptr);
+        HintFiniteHistory history; history.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(snap(history), 0x1000, 0x1040, 1);
+        hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+        hw.reserve(q, 0x1010, history.localPhase(0), &history);
+        hw.bind(q, 1);
+        hw.resolve(q, 0x100e, 0x4000, 1, 4, true, true, true, false, 4);
+        hw.tick(6);
+        expect(hw.confidenceAtEntry(q->entryId) == 2,
+               "resolve score reaches shared Context write port");
+        hw.redirect(history, 1, 0x100e, false, 0x5000, 2, 6);
+        hw.tick(9);
+        expect(hw.confidenceAtEntry(q->entryId) == 2 &&
+               hw.pendingRollbacks() == 0,
+               "redirect cancels metadata without undoing an already applied conf write");
+        hw.finish();
+    }
+    for (const unsigned capacity : {16U, 32U}) {
+        auto config = configFor("cam58-meta-" + std::to_string(capacity), 3,
+                                true, 0x1000, 0x1010, 16);
+        config.metaEntries = capacity;
+        HintIndirect hw(config, nullptr);
+        HintFiniteHistory history; history.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        for (unsigned i = 0; i < capacity; ++i) {
+            const unsigned id = i % 16;
+            const Addr start = 0x1000 + id * 0x80;
+            auto q = hw.query(snap(history), start, start + 0x40, 1 + i * 3);
+            expect(q->admitted && q->candidatePC() == start + 0x10,
+                   "finite metadata admits exactly its configured capacity");
+            hw.complete(q, start + 0x10, 0x3000, true, true, false, true);
+            hw.reserve(q, start + 0x10, history.localPhase(id), &history);
+            hw.bind(q, i + 1);
+        }
+        auto full = hw.query(snap(history), 0x1000, 0x1040, 1 + capacity * 3);
+        expect(hw.inFlightHints() == capacity && full->hasCandidate &&
+               full->isCall && full->candidatePC() == 0x1010 &&
+               !full->admitted && !full->tagHit,
+               "metadata16/32 full retains CAM identity without new local-history metadata");
+        hw.finish();
+    }
+    {
+        HintIndirect hw(configFor("cam58-lhr8"), nullptr);
+        HintFiniteHistory history; history.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        for (unsigned i = 0; i < 8; ++i) {
+            auto q = hw.query(snap(history), 0x1000, 0x1040, 1 + i * 3);
+            expect(q->admitted, "eight per-CAM LHR instances remain supported");
+            hw.complete(q, 0x1010, 0x3000, true, true, false, true);
+            hw.reserve(q, 0x1010, history.localPhase(0), &history);
+            hw.bind(q, i + 1);
+        }
+        auto ninth = hw.query(snap(history), 0x1000, 0x1040, 25);
+        expect(ninth->hasCandidate && ninth->candidatePC() == 0x1010 &&
+               !ninth->admitted && hw.inFlightHints() == 8,
+               "LHR8 guard preserves classification without unprotected LHR append");
+        hw.finish();
+    }
+    {
+        HintIndirect::Config config;
+        config.mode = "collect";
+        config.confQueueDepth = 32;
+        config.outputPrefix = "cam58-detail";
+        config.candidatePath = writeCam58Fixture("cam58-detail-cam.bin", true);
+        HintIndirect hw(config, nullptr);
+        HintFiniteHistory history; history.configure(hw.historyPCs());
+        hw.setMeasurementActive(true, 0);
+        auto q = hw.query(snap(history), 0x1000, 0x1040, 1);
+        expect(!hw.complete(q, 0x100e, 0x3000, true, true, false, true, 4),
+               "Detail uses baseline real-PC identity and never takes over target");
+        hw.commit(q, 1, 0x100e, 0x4000, true, 0x3000, 4,
+                  nullptr, 1, 0x1000, 4);
+        hw.commit(q, 2, 0x1014, 0x4000, true, 0x3000, 5,
+                  nullptr, 2, 0x1000, 2);
+        hw.finish();
+        const auto raw = readOutput("cam58-detail/hint-detail.bin");
+        expect(raw.size() == 44 && specTraceBits(raw, 0, 163, 7) == 7 &&
+               specTraceBits(raw, 0, 170, 1) == 1 &&
+               specTraceBits(raw, 0, 171, 1) == 1 &&
+               specTraceBits(raw, 1, 172, 1) == 1,
+               "Detail captures only fixed CFI with baseline miss and unchanged 22B trace layout");
+    }
+    {
+        FullBTBPrediction baseline, corrected;
+        BTBEntry before;
+        before.pc = 0x1010; before.size = 2; before.valid = true;
+        before.target = 0x2000; before.isCond = true;
+        baseline.btbEntries.push_back(before);
+        baseline.condTakens.emplace_back(before.pc, true);
+        corrected = baseline;
+        auto &after = corrected.btbEntries.front();
+        after.isCond = false; after.isIndirect = true; after.isCall = true;
+        corrected.hintCfiCorrected = true;
+        expect(!baseline.match(corrected, 64).first,
+               "same-PC same-target type correction triggers existing override recovery");
+        expect(after.getEnd() == 0x1012,
+               "CAM terminal-halfword call pushes C+2 for both instruction lengths");
+    }
+}
+
 } // anonymous namespace
 
 void
 HintIndirectTest::startup()
 {
     SimObject::startup();
-    if (!metadata.empty()) {
+    if (!metadata.empty() || !candidates.empty()) {
         HintIndirect::Config config;
-        config.mode = "replay";
+        config.mode = metadata.empty() ? "collect" : "replay";
         config.ideal = ideal;
         config.confQueueDepth = ideal ? 8 : 32;
         config.metadataPath = metadata;
@@ -2180,20 +2829,19 @@ HintIndirectTest::startup()
         }
         hardware.finish();
     } else if (contextFork) {
+        testHistory();
+        testIdealHistory();
+        testRetiredPrefix();
+        testFiniteV3CollectObserverHistory();
         testFiniteV3Vectors(vectors);
-        testSpecV7Predictor();
+        testCam58Predictor();
     } else {
         testHistory();
         testIdealHistory();
         testRetiredPrefix();
         testFiniteV3CollectObserverHistory();
         testFiniteV3Vectors(vectors);
-        testFiniteV3CollectObserverHistory();
-        testFiniteV3Predictor();
-        testFiniteV3MaskAwareAdmission();
-        testFiniteV3NonHintRedirect();
-        testFiniteV3PhaseAndCapacity();
-        testFiniteV3ShadowAndOverflow();
+        testCam58Predictor();
         testMaskQueries(true);
         const auto candidate_path = writeInput("hint-test-candidates.json",
             "{\"format\":\"h2p-hint-candidates\",\"version\":2,\"source\":{},"

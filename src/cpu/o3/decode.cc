@@ -882,8 +882,19 @@ Decode::decodeInsts(ThreadID tid)
                     pred.pc(), pred.npc(), t.pc(), t.npc());
                 inst->setPredTarg(t);
             }
-            if (*target != inst->readPredTarg()) {
+            // A direct call to its own fallthrough still changes Call/PHR
+            // history. Repair missing CFI identification even when the target
+            // address already matches; ordinary non-call direct jumps retain
+            // their existing target-only check.
+            const bool missing_call = inst->isUncondCtrl() && inst->isCall() &&
+                                      !inst->readPredTaken();
+            if (*target != inst->readPredTarg() || missing_call) {
                 ++stats.branchMispred;
+                if (missing_call) {
+                    DPRINTF(DecoupleBP,
+                            "CALL identification recovery [sn:%llu] pc=%#lx target=%#lx\n",
+                            inst->seqNum, inst->getPC(), target->instAddr());
+                }
 
                 RiscvISA::PCState cpTarget = target->clone()->as<RiscvISA::PCState>();
                 RiscvISA::PCState cpPredTarget = inst->readPredTarg().clone()->as<RiscvISA::PCState>();

@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "hash_version": 7,
+  "mask_order": [
+    "ITH",
+    "Call",
+    "Ret",
+    "LHR"
+  ],
+  "schema": "hint-spec-cam",
+  "entries": [
+    {
+      "id": 0,
+      "valid": true,
+      "mask": 0,
+      "start_pc": "0x1000",
+      "discovery_misses": 5
+    },
+    {
+      "id": 1,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 2,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 3,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 4,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 5,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 6,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 7,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 8,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 9,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 10,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 11,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 12,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 13,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 14,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    },
+    {
+      "id": 15,
+      "valid": false,
+      "mask": 0,
+      "start_pc": "0x0",
+      "discovery_misses": 0
+    }
+  ],
+  "image_sha256": "48e5dc754771266974591b011dc64056cc9d011690646c6efd1e90a93b084d25"
+}

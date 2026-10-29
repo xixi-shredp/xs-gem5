@@ -953,7 +953,11 @@ Fetch::lookupAndUpdateNextPC(const DynInstPtr &inst, PCStateBase &next_pc,
     bool run_out = false;
 
     // Taken when the current PC matches the predicted control PC.
-    predict_taken = stream.predTaken && (curr_pc == stream.predBranchInfo.pc);
+    const auto &decoded_pc = next_pc.as<RiscvISA::PCState>();
+    const Addr predicted_coordinate = stream.predBranchInfo.pcIsCfiEnd ?
+        curr_pc + (decoded_pc.getFallThruPC() - curr_pc) - 2 : curr_pc;
+    predict_taken = stream.predTaken &&
+        (predicted_coordinate == stream.predBranchInfo.pc);
     if (predict_taken) {
         auto &rpc = next_pc.as<GenericISA::PCStateWithNext>();
         rpc.pc(stream.predBranchInfo.target);

@@ -38,6 +38,9 @@ struct HintQuery
     uint64_t s3Cycle = 0;
     Addr pc = 0;
     unsigned mask = 0;
+    unsigned cfiPosition = 0;
+    bool isCall = false;
+    Addr candidatePC() const { return (blockStart & ~Addr(31)) + 2 * cfiPosition; }
     int camIndex = -1;
     uint32_t key = 0;
     unsigned set = 0;
@@ -75,6 +78,7 @@ class HintIndirect
         unsigned ways = 2;
         unsigned slotEntries = 32;
         unsigned confQueueDepth = 8;
+        unsigned metaEntries = 16;
         Tick clockPeriod = 1;
         // An output subdirectory allows the final-binary driver to instantiate
         // several independent production helpers in one test process.
@@ -92,6 +96,8 @@ class HintIndirect
         uint64_t tagHits = 0;
         uint64_t confEnabled = 0;
         uint64_t overrides = 0;
+        uint64_t overridesMisses = 0;
+        uint64_t tagHitMisses = 0;
     };
 
     struct QueueCounts
@@ -151,14 +157,16 @@ class HintIndirect
     // vector. The caller applies the optional result from stage index 2.
     std::optional<Addr> complete(const std::shared_ptr<HintQuery> &query,
         Addr selected_pc, Addr selected_target, bool taken, bool indirect,
-        bool is_return, bool btb_identified);
+        bool is_return, bool btb_identified, unsigned selected_size = 2);
 
     // The caller invokes this only for committed non-return indirect branches.
     // It must include non-candidate PCs so global final-miss counts are exact.
     void commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
         Addr pc, Addr actual, bool final_valid, Addr final_target,
         uint64_t cycle, const HintSnapshot *profile_snapshot = nullptr,
-        uint64_t commit_event_ordinal = 0);
+        uint64_t commit_event_ordinal = 0, Addr query_start_pc = MaxAddr,
+        unsigned instruction_size = 2, bool actual_call = false,
+        bool actual_return = false);
 
     // Diagnostic stream of all retired controls, including warmup. This never
     // changes prediction state or modeled timing.
@@ -171,16 +179,18 @@ class HintIndirect
     StallReason reserveBlockReason(Addr pc) const;
     void recordStall(StallReason reason);
     void reserve(const std::shared_ptr<HintQuery> &query, Addr pc,
-                 uint8_t local_phase);
+                 uint8_t local_phase, const HintFiniteHistory *history = nullptr);
     void bind(const std::shared_ptr<HintQuery> &query, uint64_t ftq_id,
               unsigned ftq_capacity = 64);
     void resolve(const std::shared_ptr<HintQuery> &query, Addr pc,
                  Addr actual, uint64_t sequence, uint64_t cycle,
                  std::optional<bool> measure_at_resolve = std::nullopt,
-                 bool actual_taken = true);
+                 bool actual_taken = true, bool actual_indirect = true,
+                 bool actual_return = false, unsigned instruction_size = 2);
     void resolveByFTQId(uint64_t ftq_id, Addr pc, Addr actual,
                         uint64_t sequence, uint64_t cycle,
-                        bool measure_at_resolve, bool actual_taken = true);
+                        bool measure_at_resolve, bool actual_taken = true, bool actual_indirect = true,
+                 bool actual_return = false, unsigned instruction_size = 2);
     void redirect(HintFiniteHistory &history, uint64_t ftq_id, Addr squash_pc,
                   bool actual_h2p, Addr actual, uint64_t sequence,
                   uint64_t cycle);
@@ -211,6 +221,9 @@ class HintIndirect
     {
         Addr pc = 0;
         unsigned mask = 0;
+        bool valid = true;
+        unsigned cfiPosition = 0;
+        bool isCall = false;
     };
     struct ContextEntry
     {
@@ -238,20 +251,18 @@ class HintIndirect
         uint64_t ordinal = 0;
         int localIndex = -1;
         uint8_t localPhase = 31;
+        std::array<uint8_t, 16> localPhases{};
         bool resolved = false;
         bool committed = false;
         bool scoreEligible = false;
         bool enqueued = false;
         bool applied = false;
         bool discarded = false;
-        bool undoPending = false;
-        uint64_t undoReadyCycle = 0;
         bool dropped = false;
         uint64_t sequence = 0;
         uint64_t resolveCycle = 0;
         uint64_t readyCycle = 0;
         Addr actual = 0;
-        unsigned oldConf = 0;
         unsigned newConf = 0;
     };
     struct QueryCounts
@@ -277,6 +288,10 @@ class HintIndirect
     void loadCandidates();
     void loadMetadata();
     void loadFiniteV3Metadata();
+    void loadRawCam(const std::vector<uint8_t> &image);
+    void writeDetail(const std::shared_ptr<HintQuery> &query,
+        Addr start_pc, Addr pc, Addr actual, bool baseline_miss,
+        unsigned instruction_size, uint64_t sequence, bool actual_call, bool actual_return);
     void openOutputs();
     void writeHeader();
     void writeProfile(const std::shared_ptr<HintQuery> &query,
@@ -328,6 +343,9 @@ class HintIndirect
     std::weak_ptr<HintQuery> busyQuery;
     std::unique_ptr<Statistics> stats;
     std::unique_ptr<Output> output;
+    uint64_t detailRecords = 0;
+    uint64_t detailInvalidQueries = 0;
+    uint64_t detailInvalidWindows = 0;
 };
 
 } // namespace branch_prediction::btb_pred

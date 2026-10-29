@@ -594,12 +594,21 @@ IEW::squashDueToBranch(const DynInstPtr& inst, ThreadID tid)
             "\n", tid, inst->seqNum, inst->pcState() );
 
     if (!toCommit->squash[tid] || inst->seqNum < toCommit->squashedSeqNum[tid]) {
+        if (inst->missingIndirectPrediction()) {
+            DPRINTF(DecoupleBP,
+                    "CFI identification recovery [sn:%llu] pc=%#lx target=%#lx\n",
+                    inst->seqNum, inst->getPC(),
+                    inst->pcState().as<RiscvISA::PCState>().npc());
+        }
         toFetch->iewInfo[tid].redirectPending = true;
         toCommit->squash[tid] = true;
         toCommit->squashedSeqNum[tid] = inst->seqNum;
         toCommit->squashedTargetId[tid] = inst->getFtqId();
         toCommit->squashedLoopIter[tid] = inst->getLoopIteration();
-        toCommit->branchTaken[tid] = inst->pcState().branching();
+        // An unconditional indirect to its own fallthrough is still taken.
+        // Its missing CFI identification must replay the actual ITH update.
+        toCommit->branchTaken[tid] = inst->pcState().branching() ||
+                                     inst->isUncondCtrl();
 
         set(toCommit->pc[tid], inst->pcState());
         inst->staticInst->advancePC(*toCommit->pc[tid]);
@@ -1598,7 +1607,8 @@ IEW::SquashCheckAfterExe(DynInstPtr inst)
         const bool taken = resolved_pc.branching() || inst->isUncondCtrl();
         cpu->notifyHintBranchResolve(entry.ftqId, entry.pc,
                                      resolved_pc.npc(), inst->seqNum,
-                                     taken, tid);
+                                     taken, tid, inst->isIndirectCtrl(),
+                                     inst->isReturn(), resolved_pc.getFallThruPC() - entry.pc);
         resolved_cfis.push_back(entry);
     }
 

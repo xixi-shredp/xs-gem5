@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <sstream>
+#include <fstream>
+#include <memory>
 #include <tuple>
 
 #include "base/output.hh"
@@ -19,6 +21,45 @@ namespace btb_pred
 
 namespace
 {
+
+// Host-only identity evidence, joined to raw records by explicit byte index.
+// This observer never participates in prediction, recovery or modeled timing.
+struct Cam58DiscoveryAudit
+{
+    std::ofstream out;
+    uint64_t records = 0;
+    Cam58DiscoveryAudit() : out(simout.resolve("hint-discovery.bin.audit.jsonl"))
+    {
+        out << "{\"kind\":\"header\",\"version\":1,\"producer\":\"gem5-retired-cfi\","
+               "\"cam_identity\":\"checked_pc_width_classification\",\"record_bytes\":7}\n";
+    }
+    ~Cam58DiscoveryAudit()
+    {
+        out << "{\"kind\":\"footer\",\"complete\":true,\"records\":" << records
+            << ",\"overflow\":false,\"p_error\":0}\n";
+    }
+    void row(const char *kind, Addr start, Addr pc, unsigned size,
+             bool call, bool ret, bool indirect, uint64_t ordinal, Addr target)
+    {
+        out << "{\"kind\":\"" << kind << "\",\"index\":" << records
+            << ",\"start_pc\":\"0x" << std::hex << start
+            << "\",\"pc\":\"0x" << pc << "\",\"target\":\"0x" << target
+            << std::dec << "\",\"is_rvc\":" << (size == 2 ? "true" : "false")
+            << ",\"is_call\":" << (call ? "true" : "false")
+            << ",\"is_return\":" << (ret ? "true" : "false")
+            << ",\"is_indirect\":" << (indirect ? "true" : "false")
+            << ",\"retired_ordinal\":" << ordinal
+            << ",\"baseline_miss\":true,\"query_valid\":false}\n";
+        if (std::string(kind) == "record") ++records;
+        fatal_if(!out, "Cannot write CAM58 Discovery identity evidence");
+    }
+};
+
+Cam58DiscoveryAudit &cam58DiscoveryAudit()
+{
+    static Cam58DiscoveryAudit audit;
+    return audit;
+}
 
 constexpr int NumS1SourceBuckets = 3;
 constexpr int NumOverrideReasonBuckets = 4;
@@ -54,6 +95,12 @@ overrideReasonBucket(OverrideReason reason)
 }
 
 } // namespace
+
+void
+DecoupledBPUWithBTB::initCam58DiscoveryAudit()
+{
+    cam58DiscoveryAudit();
+}
 
 void
 DecoupledBPUWithBTB::initDB()
@@ -880,17 +927,58 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
     BranchInfo info(branchAddr, targetAddr, inst->staticInst, fallThruPC-branchAddr);
     bool taken = rv_pc.branching() || inst->isUncondCtrl();
 
+    // The current RISC-V fusionMap contains only ALU/load pairs. Every
+    // committed control therefore occupies one architectural retirement unit,
+    // whose phase is sampled before finishInstructionCommit advances it.
+    // Reject a future fused-control extension until its actual branch PC and
+    // first/second architectural ordinal are explicitly modeled here.
+    fatal_if((h2pDiscovery || (hint && hint->isCollect())) &&
+             inst->isFusion() && inst->isControl(),
+             "Hint SPEC profiling cannot assign an architectural ordinal to fused control");
+
     // Keep the bounded actual retired control prefix. A trap may
     // arrive after a non-control instruction in this block; prediction data
     // and the handler PC cannot reconstruct this prefix reliably.
     entry.recordRetiredBranch(info, taken, maxInstsNum);
 
+    const bool predicted_identity_matches = entry.predBranchInfo.pcIsCfiEnd ?
+        entry.predBranchInfo.pc == branchAddr + info.size - 2 :
+        entry.predBranchInfo.pc == branchAddr;
+    if (h2pDiscovery && hintDiscoveryActive) {
+        auto &audit = cam58DiscoveryAudit();
+        const bool baseline_miss = taken ?
+            (!entry.predTaken || !predicted_identity_matches ||
+             entry.predBranchInfo.target != targetAddr) :
+            (entry.predTaken && predicted_identity_matches);
+        const __int128 cfi = __int128(branchAddr) + info.size - 2;
+        const __int128 end = std::min((__int128(entry.startPC) + 64) & ~__int128(31),
+            ((__int128(entry.startPC) >> 12) + 1) << 12);
+        if (baseline_miss && (info.size == 2 || info.size == 4) &&
+            entry.startPC <= MaxAddr - 64 && cfi >= entry.startPC && cfi < end)
+            audit.row("window_miss", entry.startPC, branchAddr, info.size,
+                inst->isCall(), inst->isReturn(), inst->isIndirectCtrl(),
+                inst->seqNum, targetAddr);
+    }
+
     if (hintDiscoveryActive && inst->isIndirectCtrl() && !inst->isReturn()) {
         auto &count = hintDiscovery[entry.startPC];
         ++count.first;
-        count.second += !entry.predTaken ||
-            entry.predBranchInfo.pc != branchAddr ||
+        const bool baseline_miss = !entry.predTaken ||
+            !predicted_identity_matches ||
             entry.predBranchInfo.target != targetAddr;
+        count.second += baseline_miss;
+        const bool absent_target = !entry.predTaken ||
+            !predicted_identity_matches;
+        hintAbsentTargets += absent_target;
+        hintAbsentFallthroughTargets += absent_target && targetAddr == fallThruPC;
+        if (h2pDiscovery && baseline_miss) {
+            const auto before = hintDiscoveryTrace->tellp();
+            recordHintDiscovery(branchAddr, entry.startPC, info.size);
+            if (hintDiscoveryTrace->tellp() != before)
+                cam58DiscoveryAudit().row("record", entry.startPC, branchAddr,
+                    info.size, inst->isCall(), inst->isReturn(), true,
+                    inst->seqNum, targetAddr);
+        }
     }
 
     uint64_t commit_event_ordinal = 0;
@@ -903,8 +991,7 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
             taken, index);
     }
     if (hint && inst->isIndirectCtrl() && !inst->isReturn()) {
-        const bool final_valid = entry.predTaken &&
-            entry.predBranchInfo.pc == branchAddr;
+        const bool final_valid = entry.predTaken && predicted_identity_matches;
         // Sample the committed path before this branch contributes its actual
         // target. The prediction snapshot and its eligibility remain untouched.
         std::optional<HintSnapshot> committed_snapshot;
@@ -914,14 +1001,17 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
         hint->commit(entry.hintQuery, inst->seqNum, branchAddr, targetAddr,
             final_valid, entry.predBranchInfo.target, cpu->curCycle(),
             committed_snapshot ? &*committed_snapshot : nullptr,
-            commit_event_ordinal);
+            commit_event_ordinal, entry.startPC, info.size, inst->isCall(), inst->isReturn());
     }
     if (hint && hint->needsCommitProfileContext()) {
         // Maintain every retired control during restore/warmup/measure. Local
-        // histories use CAM/startPC coordinates, while path hashes use the
-        // actual instruction PC. This observer has no speculative quota.
+        // histories use CAM/startPC coordinates, while Call/Ret path hashes
+        // use the final-halfword coordinate. Raw diagnostics still use the
+        // real instruction start PC. This observer has no speculative quota.
         const int index = hint->localIndex(entry.startPC);
-        threads[inst->threadNumber].hintCommittedHistory.update(branchAddr,
+        threads[inst->threadNumber].hintCommittedHistory.update(
+            inst->isCall() || inst->isReturn() ?
+                hintPathCoordinate(branchAddr, info.size) : branchAddr,
             targetAddr, inst->isIndirectCtrl(), inst->isCall(),
             inst->isReturn(), taken, index, index >= 0);
     }
@@ -946,10 +1036,10 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
     // the original S3 prediction.
     bool source_miss = mispred;
     if (entry.hintQuery && entry.hintQuery->overridden &&
-        entry.hintQuery->baselinePC == branchAddr &&
+        entry.hintQuery->baselinePC == hintPathCoordinate(branchAddr, info.size) &&
         inst->isIndirectCtrl() && !inst->isReturn()) {
         const auto &query = *entry.hintQuery;
-        source_miss = !query.baselineValid || query.baselinePC != branchAddr ||
+        source_miss = !query.baselineValid || query.baselinePC != hintPathCoordinate(branchAddr, info.size) ||
                       query.baselineTarget != targetAddr;
     }
     if (source_miss) {
@@ -1121,7 +1211,7 @@ DecoupledBPUWithBTB::processMisprediction(
             // Check if this branch was in the predicted BTB entries
             bool predBranchInBTB = false;
             for (auto &e: entry.predBTBEntries) {
-                if (e.pc == branchAddr) {
+                if (e.pc == (e.pcIsCfiEnd ? hintPathCoordinate(branchAddr, info.size) : branchAddr)) {
                     predBranchInBTB = true;
                     break;
                 }
@@ -1129,7 +1219,8 @@ DecoupledBPUWithBTB::processMisprediction(
 
             if (!predBranchInBTB) {
                 mispredType = NO_PRED; // Branch wasn't predicted at all
-            } else if (entry.predTaken && entry.predBranchInfo.pc == branchAddr) {
+            } else if (entry.predTaken && entry.predBranchInfo.pc ==
+                       (entry.predBranchInfo.pcIsCfiEnd ? hintPathCoordinate(branchAddr, info.size) : branchAddr)) {
                 mispredType = TARGET_WRONG; // Branch predicted taken but wrong target
             } else {
                 // Branch predicted not taken or different branch predicted taken

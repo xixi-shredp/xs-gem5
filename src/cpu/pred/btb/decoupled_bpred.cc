@@ -4,6 +4,7 @@
 #include <array>
 #include <utility>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 
 #include "arch/riscv/pcstate.hh"
@@ -56,6 +57,33 @@ advancePairPhase(PairPhase &phase)
     phase = flippedPairPhase(phase);
 }
 
+// Read-only observer for directed CPU recovery checks. No architectural or
+// predictor state is changed, and no public runtime control is introduced.
+void
+traceHintITH(const char *event, uint64_t ftq_id, const BranchInfo &branch,
+             bool taken, Addr target, const HintFiniteHistory &state)
+{
+    if (!DTRACE(DecoupleBPHist))
+        return;
+    const auto low = state.low128(state.ith);
+    const auto call_low = state.low128(state.calls);
+    DPRINTF(DecoupleBPHist,
+            "HINT_ITH event=%s ftq=%llu branchpc=%#llx size=%u taken=%u "
+            "indirect=%u ret=%u target=%#llx head=%u writes=%llu "
+            "low0=%#llx low1=%#llx call_head=%u call_writes=%llu "
+            "call_low0=%#llx call_low1=%#llx\n",
+            event, static_cast<unsigned long long>(ftq_id),
+            static_cast<unsigned long long>(branch.pc), unsigned(branch.size),
+            unsigned(taken), unsigned(branch.isIndirect), unsigned(branch.isReturn),
+            static_cast<unsigned long long>(target), unsigned(state.ith.head),
+            static_cast<unsigned long long>(state.ith.writes),
+            static_cast<unsigned long long>(low[0]),
+            static_cast<unsigned long long>(low[1]), unsigned(state.calls.head),
+            static_cast<unsigned long long>(state.calls.writes),
+            static_cast<unsigned long long>(call_low[0]),
+            static_cast<unsigned long long>(call_low[1]));
+}
+
 } // namespace
 void
 DecoupledBPUWithBTB::consumeFetchTarget(unsigned fetched_inst_num, ThreadID tid)
@@ -93,7 +121,12 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
       resolveBlockThreshold(p.resolveBlockThreshold),
       dbpBtbStats(this, p.numStages, p.fsq_size, maxInstsNum, p.numThreads)
 {
-    hintConfig.mode = p.hintMode;
+    fatal_if(p.hintMode != "off" && p.hintMode != "discover" &&
+             p.hintMode != "detail" && p.hintMode != "collect" &&
+             p.hintMode != "replay", "Invalid Hint mode %s", p.hintMode);
+    h2pDiscovery = p.hintMode == "discover";
+    hintConfig.mode = h2pDiscovery ? "off" :
+        (p.hintMode == "detail" ? "collect" : p.hintMode);
     hintConfig.profileContext = p.hintProfileContext;
     hintConfig.ideal = p.idealHintIBP;
     hintConfig.candidatePath = p.hintCandidates;
@@ -103,6 +136,13 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
     hintConfig.ways = p.hintWays;
     hintConfig.slotEntries = p.hintSlotEntries;
     hintConfig.confQueueDepth = p.hintConfQueueDepth;
+    hintConfig.metaEntries = p.hintMetaEntries;
+    fatal_if(h2pDiscovery && (p.idealHintIBP || !p.hintCandidates.empty() ||
+             !p.hintMetadata.empty() || !p.h2pStat),
+             "Discovery requires h2pStat and Hint Off without input tables");
+    fatal_if(p.hintMode == "detail" && (p.idealHintIBP ||
+             p.hintProfileContext != "prediction" || !p.h2pStat),
+             "SPEC Detail requires finite prediction snapshots and h2pStat");
     fatal_if(p.idealHintIBP && p.hintMode == "off",
              "idealHintIBP requires Hint collect or replay mode");
     fatal_if(p.hintMode != "off" &&
@@ -209,7 +249,23 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
     commitFsqEntryFetchedInstsVector.resize(maxInstsNum+1, 0);
     lastPhaseFsqEntryNumFetchedInstDist.resize(maxInstsNum+1, 0);
 
+    if (h2pDiscovery) {
+        const auto path = simout.resolve("hint-discovery.bin");
+        fatal_if(std::filesystem::exists(path),
+                 "Hint Discovery trace already exists; use a fresh output directory");
+        hintDiscoveryTrace = std::make_unique<std::ofstream>(
+            path, std::ios::binary | std::ios::out);
+        fatal_if(!*hintDiscoveryTrace, "Cannot open Hint Discovery trace");
+        initCam58DiscoveryAudit();
+    }
     registerExitCallback([this]() {
+        if (hintDiscoveryTrace) {
+            // SPEC Discovery final is bit 54; all payload/reserved bits are zero.
+            writeHintDiscoveryRecord(uint64_t(1) << 54);
+            hintDiscoveryTrace->flush();
+            fatal_if(!*hintDiscoveryTrace, "Cannot finish Hint Discovery trace");
+            hintDiscoveryTrace->close();
+        }
         if (hint) {
             hint->tick(cpu->curCycle());
             hint->finish();
@@ -225,10 +281,81 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
                       << "\",\"executions\":" << count.first
                       << ",\"target_misses\":" << count.second << '}';
         }
-        discovery << "]}\n";
+        discovery << "],\"invalid_window_reasons\":{";
+        first = true;
+        for (const auto &[reason, count] : hintDiscoveryInvalidWindows) {
+            if (!first) discovery << ',';
+            first = false;
+            discovery << '"' << reason << "\":" << count;
+        }
+        discovery << "},\"delta_minus_one_records\":" << hintDiscoveryDeltaMinusOne
+                  << ",\"absent_targets\":" << hintAbsentTargets
+                  << ",\"absent_fallthrough_targets\":" << hintAbsentFallthroughTargets
+                  << "}\n";
         fatal_if(!discovery, "Cannot write Hint discovery output");
         this->dumpStats();
     });
+}
+
+void
+DecoupledBPUWithBTB::writeHintDiscoveryRecord(uint64_t record)
+{
+    fatal_if(!hintDiscoveryTrace || record >> 55,
+             "Invalid Hint Discovery stream or record");
+    std::array<char, 7> bytes{};
+    for (unsigned i = 0; i < bytes.size(); ++i)
+        bytes[i] = static_cast<char>((record >> (i * 8)) & 0xff);
+    hintDiscoveryTrace->write(bytes.data(), bytes.size());
+    fatal_if(!*hintDiscoveryTrace, "Cannot write Hint Discovery record");
+}
+
+void
+DecoupledBPUWithBTB::recordHintDiscovery(Addr pc, Addr query_start_pc,
+                                      unsigned instruction_size)
+{
+    const auto canonical = [](Addr address) {
+        const uint64_t high = address >> 48;
+        return high == ((address & (uint64_t(1) << 47)) ? 0xffff : 0);
+    };
+    const auto invalid = [&](const std::string &reason) {
+        ++hintDiscoveryInvalidWindows[reason];
+    };
+    if (instruction_size != 2 && instruction_size != 4) {
+        invalid("instruction_size");
+        return;
+    }
+    if (!canonical(pc) || !canonical(query_start_pc)) {
+        invalid("noncanonical_address");
+        return;
+    }
+    if ((pc | query_start_pc) & 1) {
+        invalid("unaligned_address");
+        return;
+    }
+    const __int128 cfi_end = __int128(pc) + instruction_size - 2;
+    const __int128 fallthrough = ((__int128(query_start_pc) + 64) >> 5) << 5;
+    const __int128 page_end = ((__int128(query_start_pc) >> 12) + 1) << 12;
+    const __int128 effective_end = std::min(fallthrough, page_end);
+    if (query_start_pc > MaxAddr - 64 || cfi_end > MaxAddr) {
+        invalid("address_overflow");
+        return;
+    }
+    if (cfi_end < query_start_pc || cfi_end >= effective_end) {
+        invalid("cfi_end_outside_original_window");
+        return;
+    }
+    const bool negative = pc < query_start_pc;
+    const uint64_t halfwords = negative ? (query_start_pc - pc) / 2 :
+                                          (pc - query_start_pc) / 2;
+    fatal_if(halfwords > (negative ? 64 : 63),
+             "Hint Discovery DELTA exceeds signed seven-bit range");
+    const int64_t delta = negative ? -static_cast<int64_t>(halfwords) :
+                                     static_cast<int64_t>(halfwords);
+    if (delta == -1)
+        ++hintDiscoveryDeltaMinusOne;
+    const uint64_t record = ((pc >> 1) & HintAddressWordMask) |
+        ((static_cast<uint64_t>(delta) & 0x7f) << 47);
+    writeHintDiscoveryRecord(record);
 }
 
 void
@@ -263,6 +390,10 @@ DecoupledBPUWithBTB::resetStats()
         hint->tick(cpu->curCycle());
     BPredUnit::resetStats();
     hintDiscovery.clear();
+    hintDiscoveryInvalidWindows.clear();
+    hintDiscoveryDeltaMinusOne = 0;
+    hintAbsentTargets = 0;
+    hintAbsentFallthroughTargets = 0;
     if (hint)
         hint->resetStats(cpu->curCycle());
 }
@@ -281,16 +412,18 @@ DecoupledBPUWithBTB::h2pSetMeasurementActive(bool active)
 void
 DecoupledBPUWithBTB::h2pResolveAtExecute(FetchTargetId target_id, Addr pc,
     Addr actual_target, uint64_t sequence, bool taken, bool measure_active,
-    ThreadID tid)
+    ThreadID tid, bool indirect, bool is_return, unsigned size)
 {
     if (!hint || !hint->isFiniteV3())
         return;
     if (ftq.hasTarget(target_id, tid)) {
         hint->resolve(ftq.get(target_id, tid).hintQuery, pc, actual_target,
-                      sequence, cpu->curCycle(), measure_active, taken);
+                      sequence, cpu->curCycle(), measure_active, taken,
+                      indirect, is_return, size);
     } else {
         hint->resolveByFTQId(target_id, pc, actual_target, sequence,
-                             cpu->curCycle(), measure_active, taken);
+                             cpu->curCycle(), measure_active, taken,
+                             indirect, is_return, size);
     }
 }
 
@@ -600,20 +733,27 @@ DecoupledBPUWithBTB::requestNewPrediction(ThreadID tid)
         else
             hint_snapshot = std::make_shared<const HintSnapshot>(
                 thread.hintFiniteHistory, hint->isCollect());
-        const Addr end = (thread.s0PC + predictWidth) &
-            ~mask(floorLog2(predictWidth) - 1);
+        const __int128 fallthrough = ((__int128(thread.s0PC) + predictWidth) >>
+            (floorLog2(predictWidth) - 1)) << (floorLog2(predictWidth) - 1);
+        const __int128 page_end = ((__int128(thread.s0PC) >> 12) + 1) << 12;
+        const Addr end = thread.s0PC <= MaxAddr - predictWidth ?
+            static_cast<Addr>(std::min(fallthrough, page_end)) : 0;
         hint_query = hint->query(hint_snapshot, thread.s0PC, end,
                                  cpu->curCycle());
+    }
+    // Expose only the CAM identity to independent component lookups. Detail
+    // profiling deliberately leaves baseline recognition and RAS untouched.
+    for (auto &prediction : predsOfEachStage) {
+        prediction.hintQuery = hint_query;
+        prediction.hintSnapshot = hint_snapshot;
+        prediction.hintCamCorrection = hint && hint->isReplay() &&
+            hint_query && hint_query->hasCandidate && !hint_query->canceled;
     }
     for (int i = 0; i < numComponents; i++) {
         components[i]->putPCHistory(thread.s0PC, thread.s0History, predsOfEachStage);  //s0History not used
     }
 
     if (hint) {
-        // The original last stage remains the fast-training broadcast. Hint
-        // supplies only the fetch target; it does not train an indirect hint
-        // target into the legacy S1 predictor tables.
-        thread.hintBaselineS3 = predsOfEachStage.back();
         FullBTBPrediction *baseline = &predsOfEachStage.front();
         for (int stage = numStages - 1; stage >= 0; --stage) {
             if (!predsOfEachStage[stage].btbEntries.empty()) {
@@ -621,24 +761,89 @@ DecoupledBPUWithBTB::requestNewPrediction(ThreadID tid)
                 break;
             }
         }
+        if (hint->isReplay() && hint_query && hint_query->hasCandidate &&
+            !hint_query->canceled) {
+            const Addr cfi = hint_query->candidatePC();
+            // Preserve the real instruction PC/length if the BTB knows them.
+            // Otherwise CAM's native identity is C, with end C+2 for either
+            // instruction length. Fetch resolves that identity after decode.
+            BTBEntry candidate;
+            candidate.pc = cfi;
+            candidate.size = 2;
+            candidate.pcIsCfiEnd = true;
+            Addr baseline_target = hint_query->blockEnd;
+            for (const auto &entry : baseline->btbEntries) {
+                if (entry.valid &&
+                    hintPathCoordinate(entry.pc, entry.size) == cfi) {
+                    candidate = entry;
+                    baseline_target = entry.target;
+                    break;
+                }
+            }
+            const auto &s3 = predsOfEachStage[HintS3Stage];
+            if (s3.camIttageValid)
+                baseline_target = s3.camIttageTarget;
+            candidate.valid = true;
+            candidate.isCond = false;
+            candidate.isDirect = false;
+            candidate.isIndirect = true;
+            candidate.isReturn = false;
+            candidate.isCall = hint_query->isCall;
+            candidate.alwaysTaken = true;
+            candidate.target = baseline_target;
+            for (unsigned stage = HintS3Stage; stage < numStages; ++stage) {
+                auto &prediction = predsOfEachStage[stage];
+                const auto selected = prediction.getTakenEntry();
+                if (selected.valid &&
+                    hintPathCoordinate(selected.pc, selected.size) < cfi)
+                    continue;
+                auto &entries = prediction.btbEntries;
+                entries.erase(std::remove_if(entries.begin(), entries.end(),
+                    [cfi](const auto &entry) {
+                        return hintPathCoordinate(entry.pc, entry.size) == cfi;
+                    }), entries.end());
+                entries.push_back(candidate);
+                std::sort(entries.begin(), entries.end(),
+                    [](const auto &lhs, const auto &rhs) {
+                        return hintPathCoordinate(lhs.pc, lhs.size) <
+                               hintPathCoordinate(rhs.pc, rhs.size);
+                    });
+                // Remove every stale same-position indirect target, including
+                // return/direct aliases. Only this candidate's baseline wins.
+                auto &targets = prediction.indirectTargets;
+                targets.erase(std::remove_if(targets.begin(), targets.end(),
+                    [&candidate, cfi](const auto &item) {
+                        return item.first == candidate.pc || item.first == cfi;
+                    }), targets.end());
+                targets.emplace_back(candidate.pc, baseline_target);
+                prediction.hintCfiCorrected = true;
+            }
+            baseline = &predsOfEachStage.back();
+        }
+        // Fast training uses the corrected identity and baseline target, never
+        // a Hint target. Ordinary FTQ training consumes the final identity.
+        thread.hintBaselineS3 = predsOfEachStage.back();
         const auto selected = baseline->getTakenEntry();
         const auto s3_selected =
             predsOfEachStage[HintS3Stage].getTakenEntry();
-        const bool identified = s3_selected.valid &&
-            s3_selected.pc == selected.pc && s3_selected.isIndirect &&
-            !s3_selected.isReturn;
+        const bool identified = s3_selected.valid && selected.valid &&
+            hintPathCoordinate(s3_selected.pc, s3_selected.size) ==
+                hintPathCoordinate(selected.pc, selected.size) &&
+            s3_selected.isIndirect && !s3_selected.isReturn;
+        const Addr selected_pc = hint->isReplay() && selected.valid ?
+            hintPathCoordinate(selected.pc, selected.size) : selected.pc;
         const auto override_target = hint->complete(hint_query,
-            selected.pc, baseline->getTarget(predictWidth), selected.valid,
-            selected.isIndirect, selected.isReturn, identified);
-        for (unsigned stage = 0; stage < numStages; ++stage) {
+            selected_pc, baseline->getTarget(predictWidth), selected.valid,
+            selected.isIndirect, selected.isReturn, identified,
+            hint->isReplay() ? 2 : selected.size);
+        for (unsigned stage = HintS3Stage; stage < numStages; ++stage) {
             auto &prediction = predsOfEachStage[stage];
-            prediction.hintQuery = hint_query;
-            prediction.hintSnapshot = hint_snapshot;
-            if (!override_target || stage < HintS3Stage)
+            if (!override_target)
                 continue;
             const auto entry = prediction.getTakenEntry();
             if (!entry.valid || !entry.isIndirect || entry.isReturn ||
-                entry.pc != selected.pc)
+                hintPathCoordinate(entry.pc, entry.size) !=
+                    hintPathCoordinate(selected.pc, selected.size))
                 continue;
             auto it = std::find_if(prediction.indirectTargets.begin(),
                 prediction.indirectTargets.end(),
@@ -843,18 +1048,22 @@ DecoupledBPUWithBTB::processNewPrediction(ThreadID tid)
     const bool finite_h2p = hint && hint->isFiniteV3() && query &&
         query->admitted && !query->canceled && predicted_branch.valid &&
         predicted_branch.isIndirect && !predicted_branch.isReturn &&
+        hintPathCoordinate(predicted_branch.pc, predicted_branch.size) ==
+            query->candidatePC() &&
         hint->localIndex(query->blockStart) >= 0;
 
-    // Hint resource exhaustion only selects the existing predictor. It does
-    // not prevent creation of this normal fetch target.
+    // Resource exhaustion preserves CAM classification but allocates no local
+    // history metadata. The frontend still creates this normal fetch target.
     FetchTarget entry = createFetchTargetEntry(tid);
     if (finite_h2p) {
         entry.hintLocalSelector = hint->localIndex(query->blockStart);
         entry.hintLocalWrite = true;
-        entry.hintLocalBranchPC = predicted_branch.pc;
+        entry.hintLocalBranchPC = hintPathCoordinate(predicted_branch.pc,
+                                                     predicted_branch.size);
         query->localWrite = true;
-        hint->reserve(query, predicted_branch.pc,
-            threads[tid].hintFiniteHistory.localPhase(entry.hintLocalSelector));
+        auto &state = threads[tid].hintFiniteHistory;
+        hint->reserve(query, entry.hintLocalBranchPC,
+            state.localPhase(entry.hintLocalSelector), &state);
     }
 
     if (pairtage && pairtage->isEnabled()) {
@@ -1227,12 +1436,24 @@ DecoupledBPUWithBTB::handleSquash(ThreadID tid, unsigned target_id,
         const bool actual_h2p = squash_type == SQUASH_CTRL &&
             target.exeTaken && branch.pc == squash_pc.instAddr() &&
             branch.isIndirect && !branch.isReturn &&
-            target.hintLocalWrite && branch.pc == target.hintLocalBranchPC;
+            target.hintLocalWrite && hintPathCoordinate(branch.pc, branch.size) ==
+                target.hintLocalBranchPC;
         // Trap recovery replays the inclusive retired prefix. Preserve a
         // retired Hint branch even when it is exactly lastRetiredPC; the
         // handler/TC redirect PC is not this FTQ's recovery boundary.
-        const Addr hint_boundary = squash_type == SQUASH_TRAP ?
-            target.lastRetiredPC + 1 : squash_pc.instAddr();
+        Addr hint_boundary = squash_type == SQUASH_CTRL ?
+            hintPathCoordinate(squash_pc.instAddr(), control_inst_size) :
+            squash_pc.instAddr();
+        if (squash_type == SQUASH_TRAP) {
+            hint_boundary = target.lastRetiredPC + 1;
+            for (const auto &retired : target.retiredControls) {
+                if (retired.branch.pc == target.lastRetiredPC) {
+                    hint_boundary = hintPathCoordinate(retired.branch.pc,
+                        retired.branch.size) + 1;
+                    break;
+                }
+            }
+        }
         hint->redirect(threads[tid].hintFiniteHistory, target_id,
             hint_boundary, actual_h2p, branch.target, sequence,
             cpu->curCycle());
@@ -1704,11 +1925,22 @@ DecoupledBPUWithBTB::updateHistoryForPrediction(FetchTarget &entry,
             threads[tid].hintHistory.update(branch.pc,
                 pred.getTarget(predictWidth), branch.isIndirect, branch.isCall,
                 branch.isReturn, branch.valid);
-        else
-            threads[tid].hintFiniteHistory.update(branch.pc,
+        else {
+            auto &state = threads[tid].hintFiniteHistory;
+            const uint64_t id = history_id ? history_id : ftq.backId(tid) + 1;
+            traceHintITH("prediction_before", id, branch, branch.valid,
+                         pred.getTarget(predictWidth), state);
+            threads[tid].hintFiniteHistory.update(
+                branch.valid && (branch.isCall || branch.isReturn) ?
+                    hintPathCoordinate(branch.pc, branch.size) : branch.pc,
                 pred.getTarget(predictWidth), branch.isIndirect, branch.isCall,
                 branch.isReturn, branch.valid, entry.hintLocalSelector,
-                entry.hintLocalWrite && branch.pc == entry.hintLocalBranchPC);
+                entry.hintLocalWrite &&
+                    hintPathCoordinate(branch.pc, branch.size) ==
+                        entry.hintLocalBranchPC);
+            traceHintITH("prediction_after", id, branch, branch.valid,
+                         pred.getTarget(predictWidth), state);
+        }
     }
 
     // RAS updates its speculative stack, not folded history.
@@ -1815,7 +2047,13 @@ DecoupledBPUWithBTB::recoverRetiredHistoryForTrap(
                  "Finite Hint trap squash lacks compact recovery metadata");
         // Local heads have already been rewound from the bounded Hint
         // journal. FTQ local snapshots are observers, never recovery storage.
+        traceHintITH("trap_before", target_id, target.exeBranchInfo,
+                     target.exeTaken, target.exeBranchInfo.target,
+                     thread.hintFiniteHistory);
         thread.hintFiniteHistory.restoreGlobals(*target.hintSnapshot->finite);
+        traceHintITH("trap_restored", target_id, target.exeBranchInfo,
+                     target.exeTaken, target.exeBranchInfo.target,
+                     thread.hintFiniteHistory);
     }
     historyManagers[tid].truncateFrom(target_id);
 
@@ -1850,6 +2088,10 @@ DecoupledBPUWithBTB::recoverRetiredHistoryForTrap(
         // including IMLI and RAS, instead of duplicating their hash semantics.
         updateHistoryForPrediction(step, pred, target_id);
     }
+    if (hint && !hint->isIdeal())
+        traceHintITH("trap_after", target_id, target.exeBranchInfo,
+                     target.exeTaken, target.exeBranchInfo.target,
+                     thread.hintFiniteHistory);
     advancePairPhase(thread.s0PairPhase);
     target.retiredPrefixRecovered = true;
 
@@ -1925,22 +2167,34 @@ DecoupledBPUWithBTB::recoverHistoryForSquash(
         fatal_if(!target.hintSnapshot || !target.hintSnapshot->finite,
                  "Finite Hint squash lacks compact recovery metadata");
         auto &state = threads[tid].hintFiniteHistory;
+        traceHintITH("redirect_before", target_id, target.exeBranchInfo,
+                     target.exeTaken, target.exeBranchInfo.target, state);
         state.restoreGlobals(*target.hintSnapshot->finite);
+        traceHintITH("redirect_restored", target_id, target.exeBranchInfo,
+                     target.exeTaken, target.exeBranchInfo.target, state);
         for (const auto &retired : target.retiredControls) {
             const auto &branch = retired.branch;
             if (branch.pc < squash_pc.instAddr())
-                state.update(branch.pc, branch.target, branch.isIndirect,
+                state.update(branch.isCall || branch.isReturn ?
+                    hintPathCoordinate(branch.pc, branch.size) : branch.pc,
+                    branch.target, branch.isIndirect,
                     branch.isCall, branch.isReturn, retired.taken,
                     target.hintLocalSelector, target.hintLocalWrite &&
-                    branch.pc == target.hintLocalBranchPC);
+                    hintPathCoordinate(branch.pc, branch.size) ==
+                        target.hintLocalBranchPC);
         }
         if (squash_type == SQUASH_CTRL) {
             const auto &branch = target.exeBranchInfo;
-            state.update(branch.pc, branch.target, branch.isIndirect,
+            state.update(branch.isCall || branch.isReturn ?
+                hintPathCoordinate(branch.pc, branch.size) : branch.pc,
+                branch.target, branch.isIndirect,
                 branch.isCall, branch.isReturn, target.exeTaken,
                 target.hintLocalSelector, target.hintLocalWrite &&
-                branch.pc == target.hintLocalBranchPC);
+                hintPathCoordinate(branch.pc, branch.size) ==
+                    target.hintLocalBranchPC);
         }
+        traceHintITH("redirect_after", target_id, target.exeBranchInfo,
+                     target.exeTaken, target.exeBranchInfo.target, state);
     }
 
     // RAS recovers its speculative stack, not folded history.

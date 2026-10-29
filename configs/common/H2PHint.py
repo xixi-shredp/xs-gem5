@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 GEOMETRY = {
+    "meta_entries": ("hintMetaEntries", 16),
     "cam_entries": ("hintCamEntries", 16),
     "context_entries": ("hintContextEntries", 4096),
     "ways": ("hintWays", 2),
@@ -14,7 +15,7 @@ GEOMETRY = {
 
 def add_h2p_hint_options(parser):
     parser.add_argument(
-        "--h2p-hint-mode", choices=("off", "collect", "replay"), default="off"
+        "--h2p-hint-mode", choices=("off", "discover", "detail", "collect", "replay"), default="off"
     )
     parser.add_argument(
         "--h2p-hint-profile-context", choices=("prediction", "commit-pre"),
@@ -29,12 +30,12 @@ def add_h2p_hint_options(parser):
     parser.add_argument(
         "--h2p-hint-candidates",
         default="",
-        help="Ranked candidate JSON: finite v3 or unlimited v3",
+        help="Frozen 144B SPEC CAM image, or legacy candidate JSON",
     )
     parser.add_argument(
         "--h2p-hint-metadata",
         default="",
-        help="Frozen table JSON: finite v3 or unlimited v3",
+        help="Frozen 16784B SPEC metadata image, or legacy table JSON",
     )
     for name, (_, default) in GEOMETRY.items():
         parser.add_argument(
@@ -43,7 +44,11 @@ def add_h2p_hint_options(parser):
 
 
 def validate_h2p_hint_config(args):
+    if getattr(args, "h2p_hint_meta_entries", 16) not in (16, 32):
+        return "Hint metadata queue supports 16 or 32 entries"
     mode = getattr(args, "h2p_hint_mode", "off")
+    if mode not in ("off", "discover", "detail", "collect", "replay"):
+        return "Invalid H2P Hint mode"
     if getattr(args, "h2p_hint_profile_context", "prediction") not in ("prediction", "commit-pre"):
         return "Hint profile context must be prediction or commit-pre"
     ideal = getattr(args, "ideal_hint_ibp", False)
@@ -63,10 +68,19 @@ def validate_h2p_hint_config(args):
         return "H2P Hint requires --bp-type=DecoupledBPUWithBTB"
     if getattr(args, "ideal_2_taken", False):
         return "H2P Hint does not support --ideal-2-taken"
-    if mode == "collect" and not candidates:
-        return "Hint collect requires --h2p-hint-candidates"
-    if mode == "collect" and metadata:
-        return "Hint collect does not accept replay metadata"
+    if mode in ("discover", "detail"):
+        if ideal or getattr(args, "h2p_hint_profile_context", "prediction") != "prediction":
+            return "SPEC profiling requires finite prediction snapshots"
+        if not getattr(args, "h2p_stat", False):
+            return "SPEC profiling requires --h2p-stat for exact measured phase control"
+    if mode == "discover":
+        if candidates or metadata:
+            return "Discovery keeps Hint Off and does not accept input tables"
+        return None
+    if mode in ("detail", "collect") and not candidates:
+        return "Hint Detail/collect requires --h2p-hint-candidates"
+    if mode in ("detail", "collect") and metadata:
+        return "Hint Detail/collect does not accept replay metadata"
     if mode == "replay" and not metadata:
         return "Hint replay requires --h2p-hint-metadata"
     for name, path in (("candidates", candidates), ("metadata", metadata)):
