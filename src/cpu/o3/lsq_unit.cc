@@ -2197,7 +2197,7 @@ LSQUnit::triggerStorePFTrain(int sq_idx)
     PacketPtr pkt = Packet::createPFtrain(req);
 
     // send packet
-    bool success = dcachePort->sendTimingReq(pkt);
+    bool success = lsq->sendCoreTimingReq(pkt);
     assert(success); // must be true
 
     return true;
@@ -3235,7 +3235,7 @@ LSQUnit::trySendPacket(bool isLoad, PacketPtr data_pkt, bool &bank_conflict, boo
             bank_conflict = true;
             ret = false;
         }
-        if (!bank_conflict && !dcachePort->sendTimingReq(data_pkt)) {
+        if (!bank_conflict && !lsq->sendCoreTimingReq(data_pkt)) {
             ret = false;
             mshr_used = data_pkt->mshrArbFailed();
             mshr_alias_fail = data_pkt->mshrAliasFailed();

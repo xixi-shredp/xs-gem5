@@ -125,6 +125,19 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
              p.hintMode != "detail" && p.hintMode != "collect" &&
              p.hintMode != "replay", "Invalid Hint mode %s", p.hintMode);
     h2pDiscovery = p.hintMode == "discover";
+    hintBundleCapable = p.hintBundleEnable;
+    if (p.hintBundleAudit) {
+        bundleEvents.open(simout.resolve("bundle-committed-cfi.jsonl"));
+        bundleAudit.open(simout.resolve("bundle-controller-audit.jsonl"));
+        bundleTraceAudit.open(simout.resolve("bundle-trace-audit.jsonl"));
+        fatal_if(!bundleEvents || !bundleAudit || !bundleTraceAudit,
+                 "Cannot open Bundle observer output");
+    }
+    hintConfig.bundle = hintBundleCapable;
+    fatal_if(hintBundleCapable && (p.hintMode != "off" || p.idealHintIBP ||
+        !p.hintCandidates.empty() || !p.hintMetadata.empty() || numThreads != 1 ||
+        numPredictingThreads != 1 || idealTwoTaken || pairtage->isEnabled()),
+        "Bundle uses guest CSR control on one finite prediction stream");
     hintConfig.mode = h2pDiscovery ? "off" :
         (p.hintMode == "detail" ? "collect" : p.hintMode);
     hintConfig.profileContext = p.hintProfileContext;
@@ -259,6 +272,28 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
         initCam58DiscoveryAudit();
     }
     registerExitCallback([this]() {
+        // Observe the finite controller before exit processing. These plain
+        // counters live from controller construction to destruction and are
+        // not reset by gem5 statistics resets or performance phase changes.
+        const auto counters = hintBundle ? hintBundle->counters() :
+            HintBundleController::Counters{};
+        std::ofstream controllerStats(
+            simout.resolve("bundle-controller-stats.json"));
+        controllerStats
+            << "{\"schema\":\"hint-bundle-controller-counters/v1\","
+               "\"controller_present\":" << (hintBundle ? "true" : "false")
+            << ",\"scope\":\"controller-lifetime cumulative since construction; "
+               "not reset by m5.stats.reset or performance phase changes\","
+               "\"measure_only\":false,\"tick\":" << curTick()
+            << ",\"core_cycle\":" << cpu->curCycle()
+            << ",\"switches\":" << counters.switches
+            << ",\"aborted\":" << counters.aborted
+            << ",\"unavailable\":" << counters.unavailable
+            << ",\"routeMisses\":" << counters.routeMisses
+            << ",\"ordinaryLost\":" << counters.ordinaryLost
+            << ",\"boundaryLost\":" << counters.boundaryLost << "}\n";
+        controllerStats.flush();
+        fatal_if(!controllerStats, "Cannot finish Bundle controller counters");
         if (hintDiscoveryTrace) {
             // SPEC Discovery final is bit 54; all payload/reserved bits are zero.
             writeHintDiscoveryRecord(uint64_t(1) << 54);
@@ -269,6 +304,15 @@ DecoupledBPUWithBTB::DecoupledBPUWithBTB(const DecoupledBPUWithBTBParams &p)
         if (hint) {
             hint->tick(cpu->curCycle());
             hint->finish();
+        }
+        // gem5 exits without destroying all SimObjects. Explicitly finish
+        // observer streams so the last committed event is not truncated.
+        for (auto *stream : {&bundleEvents, &bundleAudit, &bundleTraceAudit}) {
+            if (stream->is_open()) {
+                stream->flush();
+                fatal_if(!*stream, "Cannot finish Bundle observer output");
+                stream->close();
+            }
         }
         std::ofstream discovery(simout.resolve("hint-discovery.json"));
         discovery << "{\"schema\":\"hint-discovery/v1\","
@@ -362,7 +406,7 @@ void
 DecoupledBPUWithBTB::setCpu(CPU *_cpu)
 {
     cpu = _cpu;
-    if (hintConfig.mode == "off")
+    if (hintConfig.mode == "off" && !hintBundleCapable)
         return;
     fatal_if(hint, "Hint predictor cannot be attached to a CPU twice");
     hintConfig.clockPeriod = cpu->clockPeriod();
@@ -374,6 +418,106 @@ DecoupledBPUWithBTB::setCpu(CPU *_cpu)
         if (hint->needsCommitProfileContext())
             threads[0].hintCommittedHistory.configure(hint->historyPCs());
     }
+    if (hintBundleCapable) {
+        HintBundleController::Hooks hooks;
+        hooks.quiescent = [this] { return bundleTableQuiescent(); };
+        hooks.clearLocal = [this] {
+            hint->clearRuntimeTable();
+            threads[0].hintFiniteHistory.clearAndRebindLocals(hint->historyPCs());
+        };
+        hooks.beginInstall = [this](unsigned kind) {
+            return hint->beginBundleInstall(kind);
+        };
+        hooks.installRow = [this](unsigned row, uint64_t word) {
+            return hint->installBundleRow(row, word);
+        };
+        hooks.finishInstall = [this](unsigned kind) {
+            if (!hint->finishBundleInstall(kind))
+                return false;
+            threads[0].hintFiniteHistory.clearAndRebindLocals(hint->historyPCs());
+            return true;
+        };
+        hooks.loadImage = [this](const std::vector<uint8_t> &image, unsigned kind) {
+            if (!hint->bundleLoadImage(image, kind))
+                return false;
+            threads[0].hintFiniteHistory.clearAndRebindLocals(hint->historyPCs());
+            return true;
+        };
+        hooks.admission = [this](bool value) {
+            hint->setRuntimeAdmission(value);
+            const auto id = hintBundle->activeMetadata();
+            hint->setBundleMetadata(value && id ? int(*id) : -1);
+        };
+        hooks.profileStage = [this](unsigned kind, bool running) {
+            hint->setBundleStage(kind, running);
+        };
+        hooks.audit = [this](const std::string &event, uint64_t seq,
+                            Addr pc, Addr target, int oldId, int newId) {
+            if (!bundleAudit.is_open())
+                return;
+            bundleAudit << "{\"event\":\"" << event << "\",\"seq\":" << seq
+                << ",\"cycle\":" << cpu->curCycle()
+                << ",\"pc\":\"0x" << std::hex << pc
+                << "\",\"target\":\"0x" << target << std::dec
+                << "\",\"old_id\":" << oldId << ",\"new_id\":" << newId << "}\n";
+            fatal_if(!bundleAudit, "Cannot write Bundle audit");
+        };
+        hooks.traceAudit = [this](const HintBundleController::TraceAudit &row) {
+            if (!bundleTraceAudit.is_open())
+                return;
+            const auto id = [](int value) {
+                return value < 0 ? std::string("null") : std::to_string(value);
+            };
+            bundleTraceAudit << "{\"event\":\"" << row.event
+                << "\",\"record_index\":" << row.recordIndex
+                << ",\"reservation_index\":" << row.reservationIndex
+                << ",\"cycle\":" << row.cycle
+                << ",\"response_cycle\":" << (row.event == "write" ? std::to_string(row.responseCycle) : "null")
+                << ",\"retire_cycle\":" << (row.event == "write" ? std::to_string(row.retireCycle) : "null")
+                << ",\"seq\":" << row.sequence
+                << ",\"pc\":\"0x" << std::hex << row.sourcePC
+                << "\",\"target\":\"0x" << row.target << std::dec
+                << "\",\"metadata_id\":" << id(row.logicalMetadata)
+                << ",\"snapshot_metadata_id\":" << id(row.snapshotMetadata)
+                << ",\"pc_id\":" << row.pcId
+                << ",\"is_boundary\":" << (row.boundary ? "true" : "false")
+                << ",\"query_valid\":" << (row.queryValid ? "true" : "false") << "}\n";
+            fatal_if(!bundleTraceAudit, "Cannot write Bundle Trace audit");
+        };
+        hintBundle = std::make_unique<HintBundleController>(std::move(hooks));
+        hint->setBundleDetailAuditSink([this](uint8_t id, Addr target,
+            const std::array<uint32_t, 4> &contexts, bool miss, bool valid,
+            int metadata, uint64_t seq, Addr pc) {
+            hintBundle->recordDetail(id, target, contexts, miss, valid, metadata, seq, pc);
+        });
+    }
+}
+
+bool
+DecoupledBPUWithBTB::bundleTableQuiescent() const
+{
+    if (!hint || !hint->bundleQuiescent(cpu->curCycle()))
+        return false;
+    // Only old local/table references block switching. Global-only baseline
+    // snapshots remain recoverable across a change of the local-history epoch.
+    const auto referenced = [this](const auto &prediction) {
+        return hint->tableReferenced(prediction.hintQuery);
+    };
+    const auto &thread = threads[0];
+    if ((thread.validprediction || thread.blockPredictionPending) &&
+        referenced(thread.finalPred))
+        return false;
+    for (const auto &prediction : thread.predsOfEachStage)
+        if (prediction.hintQuery && !prediction.hintQuery->completed &&
+            !prediction.hintQuery->canceled && referenced(prediction))
+            return false;
+    if (thread.squashing || thread.redirectPending)
+        return false;
+    if (!ftq.empty(0))
+        for (auto id = ftq.frontId(0); id <= ftq.backId(0); ++id)
+            if (hint->tableReferenced(ftq.get(id, 0).hintQuery))
+                return false;
+    return true;
 }
 
 void

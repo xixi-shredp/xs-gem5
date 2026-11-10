@@ -131,6 +131,15 @@ HintFiniteHistory::configure(const std::vector<Addr> &selected)
     locals = {};
 }
 
+void
+HintFiniteHistory::clearAndRebindLocals(const std::vector<Addr> &selected)
+{
+    fatal_if(selected.size() > 16, "Hint local mapping exceeds sixteen CAM rows");
+    pcs = selected;
+    locals = {};
+    ++localEpoch;
+}
+
 int
 HintFiniteHistory::localIndex(Addr pc) const
 {
@@ -222,6 +231,7 @@ HintFiniteHistory::Snapshot
 HintFiniteHistory::snapshot() const
 {
     Snapshot result;
+    result.localEpoch = localEpoch;
     const std::array<const Ring *, 3> rings = {&ith, &calls, &returns};
     for (unsigned i = 0; i < rings.size(); ++i) {
         result.heads[i] = rings[i]->head;
@@ -270,7 +280,7 @@ HintFiniteHistory::restoreGlobals(const Snapshot &saved)
                  "Finite Hint compact global-ring recovery mismatch");
     // These snapshot fields are observers only: functional local recovery
     // has already happened through the sixteen-entry Hint metadata queue.
-    for (unsigned i = 0; i < locals.size(); ++i) {
+    for (unsigned i = 0; saved.localEpoch == localEpoch && i < locals.size(); ++i) {
         fatal_if(localPhase(i) != saved.localPhases[i] ||
                  localLow16(i) != saved.localLow16[i],
                  "Finite Hint metadata-only local recovery mismatch");

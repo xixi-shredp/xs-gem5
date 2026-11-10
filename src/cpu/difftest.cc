@@ -121,6 +121,7 @@ NemuProxy::NemuProxy(int coreid, const char *ref_so, bool enable_sdcard_diff, bo
 
     csrcpy = (void (*)(void *, bool))dlsym(handle, "difftest_csrcpy");
     assert(csrcpy);
+    hint_csr = (void (*)(uint32_t, uint64_t))dlsym(handle, "difftest_hint_csr");
 
     uarchstatus_cpy =
         (void (*)(void *, bool))dlsym(handle, "difftest_uarchstatus_cpy");
@@ -225,6 +226,7 @@ SpikeProxy::SpikeProxy(int coreid, const char *ref_so, bool enable_sdcard_diff)
 
     csrcpy = (void (*)(void *, bool))dlsym(handle, "difftest_csrcpy");
     assert(csrcpy);
+    hint_csr = (void (*)(uint32_t, uint64_t))dlsym(handle, "difftest_hint_csr");
 
     uarchstatus_cpy =
         (void (*)(void *, bool))dlsym(handle, "difftest_uarchstatus_sync");

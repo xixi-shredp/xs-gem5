@@ -281,6 +281,9 @@ enum MiscRegIndex
     MISCREG_HSTATEEN2,
     MISCREG_HSTATEEN3,
 
+    MISCREG_IBPHINTSTATUS,
+    MISCREG_IBPHINTPADDR,
+    MISCREG_IBPHINTLADDR,
     NUM_MISCREGS,
     MISCREG_FFLAGS_EXE = NUM_MISCREGS,
     NUM_MISC_AND_HELPER_REGS
@@ -288,6 +291,9 @@ enum MiscRegIndex
 
 enum CSRIndex
 {
+    CSR_IBPHINTSTATUS = 0x5c0,
+    CSR_IBPHINTPADDR = 0x5c1,
+    CSR_IBPHINTLADDR = 0x5c2,
     CSR_FFLAGS = 0x001,
     CSR_FRM = 0x002,
     CSR_FCSR = 0x003,
@@ -528,6 +534,9 @@ struct CSRMetadata
 };
 
 const std::map<int, CSRMetadata> CSRData = {
+    {CSR_IBPHINTSTATUS, {"ibphintstatus", MISCREG_IBPHINTSTATUS}},
+    {CSR_IBPHINTPADDR, {"ibphintpaddr", MISCREG_IBPHINTPADDR}},
+    {CSR_IBPHINTLADDR, {"ibphintladdr", MISCREG_IBPHINTLADDR}},
     {CSR_FFLAGS, {"fflags", MISCREG_FFLAGS}},
     {CSR_FRM, {"frm", MISCREG_FRM}},
     {CSR_FCSR, {"fcsr", MISCREG_FFLAGS}}, // Actually FRM << 5 | FFLAGS

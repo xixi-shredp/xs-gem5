@@ -42,43 +42,67 @@ from m5.proxy import *
 
 from m5.objects.BaseCPU import BaseCPU
 from m5.objects.FuncScheduler import *
-#from m5.objects.O3Checker import O3Checker
+
+# from m5.objects.O3Checker import O3Checker
 from m5.objects.BranchPredictor import *
 from m5.objects.ValuePredictor import *
 from m5.SimObject import *
 
+
 class SMTFetchPolicy(ScopedEnum):
-    vals = [ 'RoundRobin', 'Branch', 'IQCount', 'LSQCount' ]
+    vals = ["RoundRobin", "Branch", "IQCount", "LSQCount"]
+
 
 class SMTQueuePolicy(ScopedEnum):
-    vals = [ 'Dynamic', 'Partitioned', 'Threshold', 'DynamicBorrowing' ]
+    vals = ["Dynamic", "Partitioned", "Threshold", "DynamicBorrowing"]
+
 
 class SMTLSQMode(ScopedEnum):
-    vals = [ 'Independent', 'Shared' ]
+    vals = ["Independent", "Shared"]
+
 
 class CommitPolicy(ScopedEnum):
-    vals = [ 'RoundRobin', 'OldestReady' ]
+    vals = ["RoundRobin", "OldestReady"]
+
 
 class ROBWalkPolicy(ScopedEnum):
-    vals = [ 'Rollback', 'Replay', 'ConstCycle', 'NaiveCpt', 'ConfidentCpt' ]
+    vals = ["Rollback", "Replay", "ConstCycle", "NaiveCpt", "ConfidentCpt"]
+
 
 class ROBCompressPolicy(ScopedEnum):
-    vals = [ 'none', 'kmhv2', 'MohBoE' ,'kmhv3' ]
+    vals = ["none", "kmhv2", "MohBoE", "kmhv3"]
+
 
 class PerfRecord(ScopedEnum):
     vals = [
         # position tick
-        'AtFetch', 'AtDecode', 'AtRename', 'AtDispQue', 'AtIssueQue', 'AtIssueArb', 'AtIssueReadReg',
-        'AtFU', 'AtBypassVal', 'AtWriteVal', 'AtCommit',
-        'Result', 'DisAsm', 'PC'
+        "AtFetch",
+        "AtDecode",
+        "AtRename",
+        "AtDispQue",
+        "AtIssueQue",
+        "AtIssueArb",
+        "AtIssueReadReg",
+        "AtFU",
+        "AtBypassVal",
+        "AtWriteVal",
+        "AtCommit",
+        "Result",
+        "DisAsm",
+        "PC",
     ]
 
+
 class BaseO3CPU(BaseCPU):
-    type = 'BaseO3CPU'
-    cxx_class = 'gem5::o3::CPU'
-    cxx_header = 'cpu/o3/dyn_inst.hh'
+    type = "BaseO3CPU"
+    cxx_class = "gem5::o3::CPU"
+    cxx_header = "cpu/o3/dyn_inst.hh"
+    hint_dma_port = RequestPort("Independent physical uncached Hint DMA master")
     cxx_exports = [
         PyBindMethod("addHintDownStream"),
+        PyBindMethod("readHintBundleCsr"),
+        PyBindMethod("hintBundleTraceWritten"),
+        PyBindMethod("readHintBundleTrace"),
     ]
 
     def __init__(self, **kwargs):
@@ -101,7 +125,7 @@ class BaseO3CPU(BaseCPU):
 
     @classmethod
     def memory_mode(cls):
-        return 'timing'
+        return "timing"
 
     @classmethod
     def require_caches(cls):
@@ -112,258 +136,325 @@ class BaseO3CPU(BaseCPU):
         return True
 
     activity = Param.Unsigned(0, "Initial count")
-    measureInstCount = Param.Counter(0,
-        "Independent post-warmup retired instruction limit; zero uses maxinsts")
-    dumpWarmupStats = Param.Bool(False,
-        "Dump warmup statistics before reset; audited runner separates the dump")
+    measureInstCount = Param.Counter(
+        0, "Independent post-warmup retired instruction limit; zero uses maxinsts"
+    )
+    dumpWarmupStats = Param.Bool(
+        False, "Dump warmup statistics before reset; audited runner separates the dump"
+    )
 
-    cacheStorePorts = Param.Unsigned(200, "Cache Ports. "
-          "Constrains stores only.")
-    cacheLoadPorts = Param.Unsigned(200, "Cache Ports. "
-          "Constrains loads only.")
+    cacheStorePorts = Param.Unsigned(200, "Cache Ports. " "Constrains stores only.")
+    cacheLoadPorts = Param.Unsigned(200, "Cache Ports. " "Constrains loads only.")
 
     decodeToFetchDelay = Param.Cycles(1, "Decode to fetch delay")
-    renameToFetchDelay = Param.Cycles(1 ,"Rename to fetch delay")
-    iewToFetchDelay = Param.Cycles(1, "Issue/Execute/Writeback to fetch "
-                                   "delay")
+    renameToFetchDelay = Param.Cycles(1, "Rename to fetch delay")
+    iewToFetchDelay = Param.Cycles(1, "Issue/Execute/Writeback to fetch " "delay")
     commitToFetchDelay = Param.Cycles(3, "Commit to fetch delay")
     fetchWidth = Param.Unsigned(16, "Fetch width")
     fetchBufferSize = Param.Unsigned(66, "Fetch buffer size in bytes")
-    enableTwoFetch = Param.Bool(False,
-        "Enable two consecutive FTQ targets from one fetch buffer")
-    twoFetchMaxBytes = Param.Unsigned(64,
-        "Maximum fetch-buffer window covered by two-fetch")
-    fetchQueueSize = Param.Unsigned(48, "Fetch queue size in micro-ops "
-                                    "per-thread")
+    enableTwoFetch = Param.Bool(
+        False, "Enable two consecutive FTQ targets from one fetch buffer"
+    )
+    twoFetchMaxBytes = Param.Unsigned(
+        64, "Maximum fetch-buffer window covered by two-fetch"
+    )
+    fetchQueueSize = Param.Unsigned(48, "Fetch queue size in micro-ops " "per-thread")
 
     renameToDecodeDelay = Param.Cycles(1, "Rename to decode delay")
-    iewToDecodeDelay = Param.Cycles(1, "Issue/Execute/Writeback to decode "
-                                    "delay")
+    iewToDecodeDelay = Param.Cycles(1, "Issue/Execute/Writeback to decode " "delay")
     commitToDecodeDelay = Param.Cycles(1, "Commit to decode delay")
     fetchToDecodeDelay = Param.Cycles(3, "Fetch to decode delay")
     decodeWidth = Param.Unsigned(6, "Decode width")
 
-    iewToRenameDelay = Param.Cycles(1, "Issue/Execute/Writeback to rename "
-                                    "delay")
+    iewToRenameDelay = Param.Cycles(1, "Issue/Execute/Writeback to rename " "delay")
     commitToRenameDelay = Param.Cycles(1, "Commit to rename delay")
     decodeToRenameDelay = Param.Cycles(1, "Decode to rename delay")
     renameWidth = Param.Unsigned(6, "Rename width")
 
-    commitToIEWDelay = Param.Cycles(1, "Commit to "
-               "Issue/Execute/Writeback delay")
-    renameToIEWDelay = Param.Cycles(1, "Rename to "
-               "Issue/Execute/Writeback delay")
+    commitToIEWDelay = Param.Cycles(1, "Commit to " "Issue/Execute/Writeback delay")
+    renameToIEWDelay = Param.Cycles(1, "Rename to " "Issue/Execute/Writeback delay")
 
     enableDispatchStage = Param.Bool(False, "Enable the dispatch stage")
-    numDQEntries = VectorParam.Unsigned([32, 16, 16], "Number of entries in the dispQue, (Int, Float/Vector, Mem)")
+    numDQEntries = VectorParam.Unsigned(
+        [32, 16, 16], "Number of entries in the dispQue, (Int, Float/Vector, Mem)"
+    )
     dispWidth = VectorParam.Unsigned([8, 6, 6], "Each DispQue dispatch width")
 
     wbWidth = Param.Unsigned(20, "Writeback width")
 
-    iewToCommitDelay = Param.Cycles(1, "Issue/Execute/Writeback to commit "
-               "delay")
+    iewToCommitDelay = Param.Cycles(1, "Issue/Execute/Writeback to commit " "delay")
     renameToROBDelay = Param.Cycles(1, "Rename to reorder buffer delay")
     commitWidth = Param.Unsigned(8, "Commit width")
 
     squashWidth = Param.Unsigned(8, "Squash width with rollback/redo rob walk")
     ConstSquashCycle = Param.Unsigned(1, "Squash width with redo rob walk")
-    robWalkPolicy = Param.ROBWalkPolicy('Replay', "Squash with a specific policy")
-    numMaxRatSnapshot = Param.Unsigned(4,
-        "Number of rename-map (RAT) checkpoints for NaiveCpt recovery")
-    ratSnapshotDistance = Param.Unsigned(32,
-        "Minimum instructions between successive RAT checkpoints")
-    robWalkByDestRegs = Param.Bool(True,
+    robWalkPolicy = Param.ROBWalkPolicy("Replay", "Squash with a specific policy")
+    numMaxRatSnapshot = Param.Unsigned(
+        4, "Number of rename-map (RAT) checkpoints for NaiveCpt recovery"
+    )
+    ratSnapshotDistance = Param.Unsigned(
+        32, "Minimum instructions between successive RAT checkpoints"
+    )
+    robWalkByDestRegs = Param.Bool(
+        True,
         "Size the recovery walk by destination-register reclaim, "
-        "not by instruction count")
+        "not by instruction count",
+    )
 
     trapLatency = Param.Cycles(13, "Trap latency")
     fetchTrapLatency = Param.Cycles(1, "Fetch trap latency")
 
-    backComSize = Param.Unsigned(10,
-            "Time buffer size for backwards communication")
-    forwardComSize = Param.Unsigned(10,
-            "Time buffer size for forward communication")
+    backComSize = Param.Unsigned(10, "Time buffer size for backwards communication")
+    forwardComSize = Param.Unsigned(10, "Time buffer size for forward communication")
 
     LQEntries = Param.Unsigned(72, "Number of load queue entries")
     SQEntries = Param.Unsigned(56, "Number of physical store queue entries")
-    StoreQueueMultiple = Param.Unsigned(1,
-        "Virtual-to-physical store queue capacity multiplier (power of two)")
-    phySQFullCheckAtReplay = Param.Bool(True,
-        "Wait for physical store queue space before starting a full-SQ replay")
+    StoreQueueMultiple = Param.Unsigned(
+        1, "Virtual-to-physical store queue capacity multiplier (power of two)"
+    )
+    phySQFullCheckAtReplay = Param.Bool(
+        True, "Wait for physical store queue space before starting a full-SQ replay"
+    )
 
     LdPipeStages = Param.Unsigned(4, "Number of stages in the load pipeline")
     StPipeStages = Param.Unsigned(5, "Number of stages in the store pipeline")
 
     RARQEntries = Param.Unsigned(72, "Number of RAR queue entries")
     RAWQEntries = Param.Unsigned(32, "Number of RAW queue entries")
-    RARDequeuePerCycle = Param.Unsigned(4, "Maximum number of instructions to dequeue from RAR queue per cycle")
-    RAWDequeuePerCycle = Param.Unsigned(4, "Maximum number of instructions to dequeue from RAW queue per cycle")
+    RARDequeuePerCycle = Param.Unsigned(
+        4, "Maximum number of instructions to dequeue from RAR queue per cycle"
+    )
+    RAWDequeuePerCycle = Param.Unsigned(
+        4, "Maximum number of instructions to dequeue from RAW queue per cycle"
+    )
     LoadCompletionWidth = Param.Unsigned(8, "Number of loads to complete per cycle")
     StoreCompletionWidth = Param.Unsigned(4, "Number of stores to complete per cycle")
 
     SbufferEntries = Param.Unsigned(16, "Number of store buffer entries")
     SbufferEvictThreshold = Param.Unsigned(7, "store buffer eviction threshold")
-    storeBufferInactiveThreshold = Param.Unsigned(800, "store buffer writeback timeout threshold")
+    storeBufferInactiveThreshold = Param.Unsigned(
+        800, "store buffer writeback timeout threshold"
+    )
 
-    StoreWbStage = Param.Unsigned(4, "Which PipeLine Stage store instruction writeback, 4 means S4")
+    StoreWbStage = Param.Unsigned(
+        4, "Which PipeLine Stage store instruction writeback, 4 means S4"
+    )
 
-    LSQDepCheckShift = Param.Unsigned(0,
-            "Number of places to shift addr before check")
-    LSQCheckLoads = Param.Bool(True,
-        "Should dependency violations be checked for "
-        "loads & stores or just stores")
-    store_set_clear_period = Param.Unsigned(250000,
-            "Number of load/store insts before the dep predictor "
-            "should be invalidated")
+    LSQDepCheckShift = Param.Unsigned(0, "Number of places to shift addr before check")
+    LSQCheckLoads = Param.Bool(
+        True,
+        "Should dependency violations be checked for " "loads & stores or just stores",
+    )
+    store_set_clear_period = Param.Unsigned(
+        250000,
+        "Number of load/store insts before the dep predictor " "should be invalidated",
+    )
     LFSTSize = Param.Unsigned(32, "Last fetched store table size")
-    store_set_clear_thres = Param.Unsigned(1048576,"")
-    LFSTEntrySize = Param.Unsigned(4,"The number of store table inst in every entry of LFST can contain")
+    store_set_clear_thres = Param.Unsigned(1048576, "")
+    LFSTEntrySize = Param.Unsigned(
+        4, "The number of store table inst in every entry of LFST can contain"
+    )
     SSITSize = Param.Unsigned(1024, "Store set ID table size")
     enable_storeSet_train = Param.Bool(True, "Training store set predictor")
 
     BankConflictCheck = Param.Bool(True, "open Bank conflict check")
-    sbufferBankWriteAccurately = Param.Bool(False, "Sbuffer write to memory with bank conflict check")
+    sbufferBankWriteAccurately = Param.Bool(
+        False, "Sbuffer write to memory with bank conflict check"
+    )
     DcacheBankBytes = Param.Unsigned(
-        2,
-        "Dcache bank interleave granularity in bytes for LSQ bank conflict model")
+        2, "Dcache bank interleave granularity in bytes for LSQ bank conflict model"
+    )
     DcacheSetBits = Param.Unsigned(8, "Dcache set bits for LSQ bank conflict model")
-    DcacheSetDivNum = Param.Unsigned(1, "Dcache set div num for LSQ bank conflict model (power of two)")
-    EnableLdMissReplay = Param.Bool(True, "Replay Cache missed load instrution from ReplayQueue if True")
-    EnablePipeNukeCheck = Param.Bool(True, "Replay load if Raw violation is detected in loadPipe if True")
-    EnableReplayBasedMDP = Param.Bool(True,
+    DcacheSetDivNum = Param.Unsigned(
+        1, "Dcache set div num for LSQ bank conflict model (power of two)"
+    )
+    EnableLdMissReplay = Param.Bool(
+        True, "Replay Cache missed load instrution from ReplayQueue if True"
+    )
+    EnablePipeNukeCheck = Param.Bool(
+        True, "Replay load if Raw violation is detected in loadPipe if True"
+    )
+    EnableReplayBasedMDP = Param.Bool(
+        True,
         "Use replay-based mem dependency prediction (loads don't stall in IQ, "
-        "but may replay in load pipe)")
-    EnableMDPStrictWait = Param.Bool(False,
-        "Enable StoreSet strict-wait in mem dep prediction (checkInstStrict)")
+        "but may replay in load pipe)",
+    )
+    EnableMDPStrictWait = Param.Bool(
+        False, "Enable StoreSet strict-wait in mem dep prediction (checkInstStrict)"
+    )
 
-    numPhysIntRegs = Param.Unsigned(224,
-            "Number of physical integer registers")
-    numPhysFloatRegs = Param.Unsigned(192, "Number of physical floating point "
-                                      "registers")
-    numPhysVecRegs = Param.Unsigned(192, "Number of physical vector "
-                                      "registers")
-    numPhysVecPredRegs = Param.Unsigned(32, "Number of physical predicate "
-                                      "registers")
+    numPhysIntRegs = Param.Unsigned(224, "Number of physical integer registers")
+    numPhysFloatRegs = Param.Unsigned(
+        192, "Number of physical floating point " "registers"
+    )
+    numPhysVecRegs = Param.Unsigned(192, "Number of physical vector " "registers")
+    numPhysVecPredRegs = Param.Unsigned(32, "Number of physical predicate " "registers")
 
     # most ISAs don't use condition-code regs, so default is 0
     numPhysCCRegs = Param.Unsigned(0, "Number of physical cc registers")
-    numPhysRMiscRegs = Param.Unsigned(40, "Number of physical renameable misc registers")
+    numPhysRMiscRegs = Param.Unsigned(
+        40, "Number of physical renameable misc registers"
+    )
 
     # rob config
     numRobs = Param.Unsigned(1, "Number of Reorder Buffers")
-    RobCompressPolicy = Param.ROBCompressPolicy('kmhv2', "Reorder Buffer Compression Policy")
+    RobCompressPolicy = Param.ROBCompressPolicy(
+        "kmhv2", "Reorder Buffer Compression Policy"
+    )
     numROBEntries = Param.Unsigned(160, "Number of reorder buffer entries")
     CROB_instPerGroup = Param.Unsigned(6, "Max number of inst per group")
     phyregReleaseWidth = Param.Unsigned(6, "Physical register dealloc width")
 
     smtNumFetchingThreads = Param.Unsigned(1, "SMT Number of Fetching Threads")
     smtNumFetchTargetThreads = Param.Unsigned(
-        1, "Maximum number of distinct SMT threads starting an FTQ fetch "
-           "per cycle")
-    smtFetchPolicy = Param.SMTFetchPolicy('RoundRobin', "SMT Fetch policy")
-    smtLSQMode = Param.SMTLSQMode('Independent',
-                                  "SMT LSQ mode: per-thread independent or shared quota")
-    smtLSQPolicy    = Param.SMTQueuePolicy('Partitioned',
-                                           "SMT shared LSQ allocation policy")
+        1, "Maximum number of distinct SMT threads starting an FTQ fetch " "per cycle"
+    )
+    smtFetchPolicy = Param.SMTFetchPolicy("RoundRobin", "SMT Fetch policy")
+    smtLSQMode = Param.SMTLSQMode(
+        "Independent", "SMT LSQ mode: per-thread independent or shared quota"
+    )
+    smtLSQPolicy = Param.SMTQueuePolicy(
+        "Partitioned", "SMT shared LSQ allocation policy"
+    )
     smtLSQThreshold = Param.Int(100, "SMT LSQ Threshold Sharing Parameter")
-    smtIQPolicy    = Param.SMTQueuePolicy('Partitioned',
-                                          "SMT IQ Sharing Policy")
+    smtIQPolicy = Param.SMTQueuePolicy("Partitioned", "SMT IQ Sharing Policy")
     smtIQThreshold = Param.Int(100, "SMT IQ Threshold Sharing Parameter")
-    smtROBPolicy   = Param.SMTQueuePolicy('Partitioned',
-                                          "SMT ROB Sharing Policy")
+    smtROBPolicy = Param.SMTQueuePolicy("Partitioned", "SMT ROB Sharing Policy")
     smtROBThreshold = Param.Int(100, "SMT ROB Threshold Sharing Parameter")
-    smtCommitPolicy = Param.CommitPolicy('RoundRobin', "SMT Commit Policy")
+    smtCommitPolicy = Param.CommitPolicy("RoundRobin", "SMT Commit Policy")
     smtBorrowThrottleCycles = Param.Unsigned(
-        8, "Cycles to keep a backend-stalled SMT thread throttled at fetch")
+        8, "Cycles to keep a backend-stalled SMT thread throttled at fetch"
+    )
     smtBorrowLdstqHighWater = Param.Unsigned(
-        0, "Explicit SMT borrowing LSQ high-water threshold; 0 uses percentage")
+        0, "Explicit SMT borrowing LSQ high-water threshold; 0 uses percentage"
+    )
     smtBorrowLdstqHighWaterPercent = Param.Percent(
-        75, "SMT borrowing LSQ high-water threshold as a percentage of LQ+SQ")
+        75, "SMT borrowing LSQ high-water threshold as a percentage of LQ+SQ"
+    )
     smtBorrowDonorHoldCycles = Param.Unsigned(
-        8, "Cycles to keep an SMT thread marked as a ROB borrowing donor")
+        8, "Cycles to keep an SMT thread marked as a ROB borrowing donor"
+    )
     smtBorrowDonorReserveEntries = Param.Unsigned(
-        8, "Minimum ROB entries reserved for a borrowing donor to resume")
-    smtPregPolicy = Param.SMTQueuePolicy('Dynamic',
-                                         "SMT Preg (physical register) Sharing Policy")
-    smtPregFixedBase = Param.Unsigned(0,
-        "Fixed per-thread base quota for DynamicBorrowing (0 = numPhysRegs/activeThreads)")
+        8, "Minimum ROB entries reserved for a borrowing donor to resume"
+    )
+    smtPregPolicy = Param.SMTQueuePolicy(
+        "Dynamic", "SMT Preg (physical register) Sharing Policy"
+    )
+    smtPregFixedBase = Param.Unsigned(
+        0,
+        "Fixed per-thread base quota for DynamicBorrowing (0 = numPhysRegs/activeThreads)",
+    )
     smtPregDonorReservePercent = Param.Unsigned(
-        43, "Percentage (0-100) of per-thread fair share reserved for a "
-            "donor thread.  donorQuota = numPhysRegs/activeThreads * pct/100")
-    smtPregBackendBackpressureDonor = Param.Bool(True,
+        43,
+        "Percentage (0-100) of per-thread fair share reserved for a "
+        "donor thread.  donorQuota = numPhysRegs/activeThreads * pct/100",
+    )
+    smtPregBackendBackpressureDonor = Param.Bool(
+        True,
         "Also treat a thread as a Preg borrowing donor when it is stalled "
         "on ROB/dispatch-queue-bandwidth backpressure (a resource other "
         "than Preg itself); when false, only actual Preg demand this "
-        "cycle drives donor status")
+        "cycle drives donor status",
+    )
     smtPregBackendBackpressureDonorHoldCycles = Param.Unsigned(
-        8, "Cycles to keep a backend-backpressure-triggered Preg donor "
-           "marking held after the triggering condition clears")
+        8,
+        "Cycles to keep a backend-backpressure-triggered Preg donor "
+        "marking held after the triggering condition clears",
+    )
     smtBorrowBaseReserveEntries = Param.Unsigned(
-        80, "Minimum ROB entries reserved for a borrowing base to resume")
+        80, "Minimum ROB entries reserved for a borrowing base to resume"
+    )
 
-    branchPred = Param.BranchPredictor(DecoupledBPUWithBTB(),
-                                       "Branch Predictor")
-    resolveQueueSize = Param.Unsigned(16, "Number of entries in the branch resolution queue")
+    branchPred = Param.BranchPredictor(DecoupledBPUWithBTB(), "Branch Predictor")
+    resolveQueueSize = Param.Unsigned(
+        16, "Number of entries in the branch resolution queue"
+    )
     needsTSO = Param.Bool(False, "Enable TSO Memory model")
 
     scheduler = Param.Scheduler("")
 
     arch_db = Param.ArchDBer(Parent.any, "Arch DB")
 
-    store_prefetch_train = Param.Bool(True, "Training store prefetcher with store addresses")
+    store_prefetch_train = Param.Bool(
+        True, "Training store prefetcher with store addresses"
+    )
 
     # value predictor
     valuePred = Param.ValuePredictor(NULL, "valuepred unit")
-    enableSelectiveVPFlush = Param.Bool(False,
-        "Enable selective rollback for value prediction misprediction")
+    enableSelectiveVPFlush = Param.Bool(
+        False, "Enable selective rollback for value prediction misprediction"
+    )
 
     enable_loadFusion = Param.Bool(False, "Enable load fusion")
 
     enableMoveElimination = Param.Bool(True, "Enable register move elimination")
-    enableConstantFolding = Param.Bool(False, "Enable Constant Folding (add-immediate elimination)")
+    enableConstantFolding = Param.Bool(
+        False, "Enable Constant Folding (add-immediate elimination)"
+    )
     enableMovImmElimination = Param.Bool(False, "Enable MOVI elimination")
 
     # Trace mode parameters for trace-driven simulation
     enableTraceMode = Param.Bool(False, "Enable trace-driven simulation mode")
     traceFile = Param.String("", "Path to trace file for trace-driven simulation")
     traceFormat = Param.String("champsim", "Trace format (champsim, cbp2025)")
-    enableDecoupledBPInTrace = Param.Bool(False, "Enable decoupled branch predictor in trace mode")
-    traceCheckpointInterval = Param.Unsigned(64, "Checkpoint interval for trace rollback (0 disables)")
-    traceBPValidation = Param.Bool(True, "Enable branch predictor validation against trace")
+    enableDecoupledBPInTrace = Param.Bool(
+        False, "Enable decoupled branch predictor in trace mode"
+    )
+    traceCheckpointInterval = Param.Unsigned(
+        64, "Checkpoint interval for trace rollback (0 disables)"
+    )
+    traceBPValidation = Param.Bool(
+        True, "Enable branch predictor validation against trace"
+    )
 
     # Address mapping configuration for trace mode
-    traceAddrMapMode = Param.String("linear", "Address mapping mode for trace (hash|linear)")
-    traceAddrBase = Param.Addr(0x80000000, "Base address for trace address mapping (within physical memory)")
+    traceAddrMapMode = Param.String(
+        "linear", "Address mapping mode for trace (hash|linear)"
+    )
+    traceAddrBase = Param.Addr(
+        0x80000000, "Base address for trace address mapping (within physical memory)"
+    )
     traceAddrSize = Param.Addr(0x40000000, "Size of trace address mapping region (1GB)")
     traceAddrPageAlign = Param.Bool(True, "Align trace addresses to page boundaries")
 
     # Trace timing PTW/TLB cost modeling (opt-in; default off)
-    traceTimingPTW = Param.Bool(False,
-        "In trace mode, use timing TLB/PTW with a synthetic static page table")
-    tracePTReservedBytes = Param.UInt64(64 * 1024 * 1024,
-        "Bytes reserved above trace-mapped region for synthetic page tables")
-    tracePTLeafPageSize = Param.UInt64(4 * 1024,
-        "Synthetic mapping page size for trace timing PTW (4KiB or 2MiB)")
+    traceTimingPTW = Param.Bool(
+        False, "In trace mode, use timing TLB/PTW with a synthetic static page table"
+    )
+    tracePTReservedBytes = Param.UInt64(
+        64 * 1024 * 1024,
+        "Bytes reserved above trace-mapped region for synthetic page tables",
+    )
+    tracePTLeafPageSize = Param.UInt64(
+        4 * 1024, "Synthetic mapping page size for trace timing PTW (4KiB or 2MiB)"
+    )
 
     # Trace-driven branch predictor training and control-flow modeling
-    traceTrainBranches = Param.Bool(True,
-        "Enable BP training and use real branch opcodes under trace mode")
+    traceTrainBranches = Param.Bool(
+        True, "Enable BP training and use real branch opcodes under trace mode"
+    )
 
     # On a branch misprediction (predicted vs. trace ground truth), stall
     # the fetch stage for this many cycles to emulate redirect/recovery cost.
-    traceMispredictPenalty = Param.Cycles(8,
-        "Cycles to stall fetch on mispredict in trace mode")
+    traceMispredictPenalty = Param.Cycles(
+        8, "Cycles to stall fetch on mispredict in trace mode"
+    )
 
     # Enable explicit wrong-path fetch/ decode/ cancel injection in decoupled frontend
-    traceEnableWrongPath = Param.Bool(True,
-        "Enable wrong-path injection on BP mispredict for decoupled frontend")
+    traceEnableWrongPath = Param.Bool(
+        True, "Enable wrong-path injection on BP mispredict for decoupled frontend"
+    )
 
     # Wrong-path injection mode: use trace instructions vs. always NOPs
     # False (default): inject NOPs and keep reader position unchanged
     # True: advance reader and use trace PCs during injection; restore reader at squash
-    traceWrongPathUseTraceInst = Param.Bool(False,
-        "Use trace instructions for wrong-path injection (advance + checkpoint/restore); currently unimplemented")
+    traceWrongPathUseTraceInst = Param.Bool(
+        False,
+        "Use trace instructions for wrong-path injection (advance + checkpoint/restore); currently unimplemented",
+    )
 
     # Trace mode control (exec bypass reserved for future use)
-    traceExecBypass = Param.Bool(False,
-        "Bypass real execute for non-mem/non-ctrl ops in trace mode; only consume timing (experimental)")
+    traceExecBypass = Param.Bool(
+        False,
+        "Bypass real execute for non-mem/non-ctrl ops in trace mode; only consume timing (experimental)",
+    )

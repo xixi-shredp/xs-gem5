@@ -57,6 +57,7 @@ llvm-pgo/
 *.profdata
 *.profraw
 *nemu*
+!util/h2p_hint/bundle_nemu_ref.py
 ready-to-run/
 *.out
 .cursorrules

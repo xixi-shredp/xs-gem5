@@ -21,7 +21,10 @@ from common import ObjectList
 from common import PrefetcherConfig
 from common.H2PStat import add_h2p_stat_option, validate_h2p_stat_config
 from common.H2PHint import (
-    add_h2p_hint_options, h2p_hint_params, validate_h2p_hint_config,
+    add_h2p_hint_options,
+    h2p_hint_params,
+    validate_h2p_hint_config,
+    hint_nc_ranges,
 )
 from common.Caches import *
 from common import Options
@@ -31,6 +34,7 @@ from m5.objects import PerfRecord
 
 class XiangshanCore(RiscvO3CPU):
     scheduler = KunminghuScheduler()
+
 
 class XiangshanECore(XiangshanCore):
     fetchWidth = 8
@@ -48,6 +52,7 @@ class XiangshanECore(XiangshanCore):
     numPhysRMiscRegs = 40
     scheduler = ECoreScheduler()
 
+
 class XiangshanECore2Read(XiangshanCore):
     fetchWidth = 8
     decodeWidth = 4
@@ -64,7 +69,8 @@ class XiangshanECore2Read(XiangshanCore):
     numPhysRMiscRegs = 40
     scheduler = ECore2ReadScheduler()
 
-addToPath('../')
+
+addToPath("../")
 
 _warned_deprecated_entrypoint = False
 
@@ -95,18 +101,18 @@ def _warn_if_deprecated_xiangshan_entrypoint():
 
 
 def _trace_timing_ptw_settings(args: argparse.Namespace):
-    enabled = bool(getattr(args, 'trace_timing_ptw', False))
+    enabled = bool(getattr(args, "trace_timing_ptw", False))
     if not enabled:
         return False, 0, 0
 
-    reserved_bytes = int(getattr(args, 'trace_ptw_reserved_bytes', 64 * 1024 * 1024))
+    reserved_bytes = int(getattr(args, "trace_ptw_reserved_bytes", 64 * 1024 * 1024))
     if reserved_bytes <= 0:
         fatal(f"--trace-ptw-reserved-bytes must be > 0 (got {reserved_bytes})")
 
-    page_size = getattr(args, 'trace_ptw_page_size', '4k')
-    if page_size == '4k':
+    page_size = getattr(args, "trace_ptw_page_size", "4k")
+    if page_size == "4k":
         leaf_page_size = 4 * 1024
-    elif page_size == '2m':
+    elif page_size == "2m":
         leaf_page_size = 2 * 1024 * 1024
     else:
         fatal(f"Unsupported --trace-ptw-page-size: {page_size}")
@@ -114,7 +120,9 @@ def _trace_timing_ptw_settings(args: argparse.Namespace):
     return True, reserved_bytes, leaf_page_size
 
 
-def _apply_trace_timing_ptw_cpu_params(args: argparse.Namespace, cpus, *, shrink_window: bool = True):
+def _apply_trace_timing_ptw_cpu_params(
+    args: argparse.Namespace, cpus, *, shrink_window: bool = True
+):
     enabled, reserved_bytes, leaf_page_size = _trace_timing_ptw_settings(args)
     if not enabled:
         return
@@ -180,8 +188,7 @@ def generate_xiangshan_dtb(system, *, cmdline: str, outdir: str = None) -> str:
         node.append(
             FdtPropertyWords(
                 "reg",
-                state.addrCells(mem_range.start) +
-                state.sizeCells(mem_range.size())
+                state.addrCells(mem_range.start) + state.sizeCells(mem_range.size()),
             )
         )
         root.append(node)
@@ -288,12 +295,15 @@ def generate_xiangshan_dtb(system, *, cmdline: str, outdir: str = None) -> str:
     return dtb_path
 
 
-def configure_xiangshan_linux_workload(system, args: argparse.Namespace,
-                                       default_cmdline: str = "console=ttyS0 earlycon=sbi loglevel=7") -> None:
+def configure_xiangshan_linux_workload(
+    system,
+    args: argparse.Namespace,
+    default_cmdline: str = "console=ttyS0 earlycon=sbi loglevel=7",
+) -> None:
     cmdline = resolve_linux_cmdline(args, default_cmdline)
     if hasattr(system.workload, "command_line"):
         system.workload.command_line = cmdline
-    system.workload.dtb_addr = 0x87e00000
+    system.workload.dtb_addr = 0x87E00000
 
     if getattr(args, "dtb_filename", None):
         dtb_path = args.dtb_filename
@@ -317,20 +327,24 @@ def resolve_xiangshan_ref_so(args: argparse.Namespace):
         ref_so = os.environ["GCBH_REF_SO"]
         print("Obtained ref_so from GCBH_REF_SO: ", ref_so)
     elif "NEMU_HOME" in os.environ:
-        ref_so = os.path.join(os.environ["NEMU_HOME"], "build/riscv64-nemu-interpreter-so")
+        ref_so = os.path.join(
+            os.environ["NEMU_HOME"], "build/riscv64-nemu-interpreter-so"
+        )
         print("Obtained ref_so from NEMU_HOME: ", ref_so)
     else:
-        fatal("No valid ref_so file specified for the functional model to "
-              "compare against. Please 1) either specify a valid ref_so file using "
-              "the --difftest-ref-so option;\n"
-              "2) or specify GCBV_REF_SO/GCBV_MULTI_CORE_REF_SO/GCBH_REF_SO that points to the ref_so file;\n"
-              "3) or specify NEMU_HOME that contains build/riscv64-nemu-interpreter-so")
+        fatal(
+            "No valid ref_so file specified for the functional model to "
+            "compare against. Please 1) either specify a valid ref_so file using "
+            "the --difftest-ref-so option;\n"
+            "2) or specify GCBV_REF_SO/GCBV_MULTI_CORE_REF_SO/GCBH_REF_SO that points to the ref_so file;\n"
+            "3) or specify NEMU_HOME that contains build/riscv64-nemu-interpreter-so"
+        )
     return ref_so
 
 
 def get_xiangshan_cpu_class(args: argparse.Namespace):
     if args.xiangshan_ecore:
-        args.cpu_clock = '2.4GHz'
+        args.cpu_clock = "2.4GHz"
         return XiangshanECore
     return XiangshanCore
 
@@ -350,9 +364,14 @@ def config_xiangshan_inputs(args: argparse.Namespace, sys):
         elif args.num_cpus > 1 or args.smt:
             if "GCB_MULTI_CORE_RESTORER" in os.environ:
                 gcpt_restorer = os.environ["GCB_MULTI_CORE_RESTORER"]
-                print("Obtained gcpt_restorer from GCB_MULTI_CORE_RESTORER: ", gcpt_restorer)
+                print(
+                    "Obtained gcpt_restorer from GCB_MULTI_CORE_RESTORER: ",
+                    gcpt_restorer,
+                )
             else:
-                fatal("Plz set $GCB_MULTI_CORE_RESTORER when model Xiangshan with multi-context difftest")
+                fatal(
+                    "Plz set $GCB_MULTI_CORE_RESTORER when model Xiangshan with multi-context difftest"
+                )
         elif args.restore_rvv_cpt:
             if "GCBV_RESTORER" in os.environ:
                 gcpt_restorer = os.environ["GCBV_RESTORER"]
@@ -373,30 +392,38 @@ def config_xiangshan_inputs(args: argparse.Namespace, sys):
         gcpt_restorer = args.gcpt_restorer
 
     if args.num_cpus > 1 or args.smt:
-        print("Simulating a multi-context system, demanding a larger GCPT restorer size (2M).")
+        print(
+            "Simulating a multi-context system, demanding a larger GCPT restorer size (2M)."
+        )
         sys.gcpt_restorer_size_limit = 2**21
     elif args.restore_rvv_cpt:
-        print("Simulating single core with RVV, demanding GCPT restorer size of 0x1000.")
+        print(
+            "Simulating single core with RVV, demanding GCPT restorer size of 0x1000."
+        )
         sys.gcpt_restorer_size_limit = 0x1000
     elif args.restore_rvh_cpt:
-        print("Simulating single core with RVH, demanding GCPT restorer size of 0x1000.")
+        print(
+            "Simulating single core with RVH, demanding GCPT restorer size of 0x1000."
+        )
         sys.gcpt_restorer_size_limit = 0x1000
     else:
-        print("Simulating single core without RVV, demanding GCPT restorer size of 0x700.")
+        print(
+            "Simulating single core without RVV, demanding GCPT restorer size of 0x700."
+        )
         sys.gcpt_restorer_size_limit = 0x700
 
     # configure gcpt input
     if args.generic_rv_cpt is not None:
-        assert(buildEnv['TARGET_ISA'] == "riscv")
+        assert buildEnv["TARGET_ISA"] == "riscv"
         sys.restore_from_gcpt = True
         sys.gcpt_file = args.generic_rv_cpt
 
-        sys.workload.bootloader = ''
+        sys.workload.bootloader = ""
         sys.workload.xiangshan_cpt = True
 
         if args.raw_cpt:
             assert not args.gcpt_restorer  # raw_cpt and gcpt_restorer are exclusive
-            print('Using raw bbl', args.generic_rv_cpt)
+            print("Using raw bbl", args.generic_rv_cpt)
             sys.map_to_raw_cpt = True
             sys.workload.raw_bootloader = True
         else:
@@ -405,16 +432,22 @@ def config_xiangshan_inputs(args: argparse.Namespace, sys):
     if args.enable_h_gcpt:
         sys.enable_h_gcpt = True
     # configure DRAMSim input
-    if args.mem_type == 'DRAMsim3' and args.dramsim3_ini is None:
+    if args.mem_type == "DRAMsim3" and args.dramsim3_ini is None:
         # use relative path to find the dramsim3 ini file, from configs/common/ to root
         root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        args.dramsim3_ini = os.path.join(root_dir, 'ext/dramsim3/xiangshan_configs/xiangshan_DDR4_8Gb_x8_3200_2ch.ini')
+        args.dramsim3_ini = os.path.join(
+            root_dir,
+            "ext/dramsim3/xiangshan_configs/xiangshan_DDR4_8Gb_x8_3200_2ch.ini",
+        )
 
-    if args.mem_type == 'Ramulator2' and args.ramulator2_ini is None:
+    if args.mem_type == "Ramulator2" and args.ramulator2_ini is None:
         # use relative path to find the ramulator ini file, from configs/common/ to root
         root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        args.ramulator2_ini = os.path.join(root_dir, 'ext/ramulator2/xs_ramulator_config.yaml')
+        args.ramulator2_ini = os.path.join(
+            root_dir, "ext/ramulator2/xs_ramulator_config.yaml"
+        )
     return gcpt_restorer, ref_so
+
 
 def config_difftest(cpu_list, args, sys):
     if not args.enable_difftest:
@@ -432,6 +465,7 @@ def config_difftest(cpu_list, args, sys):
             cpu_list[0].enable_difftest = True
             cpu_list[0].difftest_ref_so = args.difftest_ref_so
 
+
 def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
     np = args.num_cpus
     h2p_config_error = validate_h2p_stat_config(args)
@@ -445,23 +479,25 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
     test_sys.cache_line_size = args.cacheline_size
 
     # Create a top-level voltage domain
-    test_sys.voltage_domain = VoltageDomain(voltage = args.sys_voltage)
+    test_sys.voltage_domain = VoltageDomain(voltage=args.sys_voltage)
 
     # Create a source clock for the system and set the clock period
-    test_sys.clk_domain = SrcClockDomain(clock =  args.sys_clock,
-            voltage_domain = test_sys.voltage_domain)
+    test_sys.clk_domain = SrcClockDomain(
+        clock=args.sys_clock, voltage_domain=test_sys.voltage_domain
+    )
 
     # Create a CPU voltage domain
     test_sys.cpu_voltage_domain = VoltageDomain()
 
     # Create a source clock for the CPUs and set the clock period
-    test_sys.cpu_clk_domain = SrcClockDomain(clock = args.cpu_clock,
-                                             voltage_domain =
-                                             test_sys.cpu_voltage_domain)
+    test_sys.cpu_clk_domain = SrcClockDomain(
+        clock=args.cpu_clock, voltage_domain=test_sys.cpu_voltage_domain
+    )
 
     # For now, assign all the CPUs to the same clock domain
-    test_sys.cpu = [TestCPUClass(clk_domain=test_sys.cpu_clk_domain, cpu_id=i)
-                    for i in range(np)]
+    test_sys.cpu = [
+        TestCPUClass(clk_domain=test_sys.cpu_clk_domain, cpu_id=i) for i in range(np)
+    ]
     # Configure MMU for trace-aware FS mode
     if args.smt:
         test_sys.multi_thread = True
@@ -470,21 +506,25 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
         if args.smt:
             cpu.numThreads = 2
         cpu.mmu.pma_checker = PMAChecker(
-            uncacheable=[AddrRange(0, size=0x80000000)])
+            uncacheable=[AddrRange(0, size=0x80000000)]
+            + [AddrRange(base, size=size) for base, size in hint_nc_ranges(args)]
+        )
         cpu.mmu.functional = args.functional_tlb
 
-        if hasattr(args, 'enable_trace_mode') and args.enable_trace_mode:
-            timing_ptw = bool(getattr(args, 'trace_timing_ptw', False))
+        if hasattr(args, "enable_trace_mode") and args.enable_trace_mode:
+            timing_ptw = bool(getattr(args, "trace_timing_ptw", False))
             cpu.mmu.functional = not timing_ptw
             mode_str = "timing" if timing_ptw else "functional"
-            print(f"Trace mode: CPU {cpu.cpu_id} configured with {mode_str} translation")
+            print(
+                f"Trace mode: CPU {cpu.cpu_id} configured with {mode_str} translation"
+            )
 
     # configure BP
     for i in range(np):
         if args.kmh_align:
             test_sys.cpu[i].enable_storeSet_train = False
 
-        if args.bp_type != 'DecoupledBPUWithBTB':
+        if args.bp_type != "DecoupledBPUWithBTB":
             fatal(
                 "Only --bp-type=DecoupledBPUWithBTB is supported for Xiangshan in this repo "
                 f"(got --bp-type={args.bp_type})."
@@ -499,27 +539,27 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
 
         test_sys.cpu[i].branchPred = DecoupledBPUWithBTB(
             bpDBSwitches=bp_db_switches,
-            idealTwoTaken=getattr(args, 'ideal_2_taken', False),
-            h2pStat=getattr(args, 'h2p_stat', False),
-            h2pStatInterval=getattr(args, 'h2p_stat_interval', 0),
+            idealTwoTaken=getattr(args, "ideal_2_taken", False),
+            h2pStat=getattr(args, "h2p_stat", False),
+            h2pStatInterval=getattr(args, "h2p_stat_interval", 0),
             ittage=BTBITTAGE(
-                h2pStat=getattr(args, 'h2p_stat', False),
-                h2pStatInterval=getattr(args, 'h2p_stat_interval', 0),
+                h2pStat=getattr(args, "h2p_stat", False),
+                h2pStatInterval=getattr(args, "h2p_stat_interval", 0),
             ),
             **h2p_hint_params(args),
         )
         test_sys.cpu[i].branchPred.isDumpMisspredPC = True
 
     # configure memory related
-    if args.mem_type == 'DRAMsim3':
+    if args.mem_type == "DRAMsim3":
         assert args.dramsim3_ini is not None
 
     for cpu in test_sys.cpu:
         cpu.store_prefetch_train = not args.kmh_align
 
     # Configure trace mode if enabled
-    if hasattr(args, 'enable_trace_mode') and args.enable_trace_mode:
-        if not getattr(args, 'trace_file', None):
+    if hasattr(args, "enable_trace_mode") and args.enable_trace_mode:
+        if not getattr(args, "trace_file", None):
             fatal("--trace-file is required when --enable-trace-mode is set")
         print(f"Configuring CPUs for trace mode...")
         for cpu in test_sys.cpu:
@@ -541,31 +581,43 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
 
             # Trace mispredict modeling controls
             cpu.traceMispredictPenalty = args.trace_mispredict_penalty
-            cpu.traceEnableWrongPath = (not args.trace_disable_wrongpath)
-            if hasattr(args, 'trace_wrongpath_use_traceinst') and args.trace_wrongpath_use_traceinst:
+            cpu.traceEnableWrongPath = not args.trace_disable_wrongpath
+            if (
+                hasattr(args, "trace_wrongpath_use_traceinst")
+                and args.trace_wrongpath_use_traceinst
+            ):
                 cpu.traceWrongPathUseTraceInst = True
 
             # Note: Difftest configured at system level, not CPU level
 
             # Configure trace-specific parameters
-            if hasattr(args, 'trace_enable_decoupled_bp') and args.trace_enable_decoupled_bp:
+            if (
+                hasattr(args, "trace_enable_decoupled_bp")
+                and args.trace_enable_decoupled_bp
+            ):
                 cpu.enableDecoupledBPInTrace = True
             else:
                 cpu.enableDecoupledBPInTrace = False
 
-            cpu.traceCheckpointInterval = (args.trace_checkpoint_interval
-                                           if hasattr(args, 'trace_checkpoint_interval')
-                                           else 64)
-            cpu.traceBPValidation = not (hasattr(args, 'trace_disable_bp_validation')
-                                         and args.trace_disable_bp_validation)
+            cpu.traceCheckpointInterval = (
+                args.trace_checkpoint_interval
+                if hasattr(args, "trace_checkpoint_interval")
+                else 64
+            )
+            cpu.traceBPValidation = not (
+                hasattr(args, "trace_disable_bp_validation")
+                and args.trace_disable_bp_validation
+            )
 
         _apply_trace_timing_ptw_cpu_params(args, test_sys.cpu, shrink_window=False)
 
         print(f"  Trace file: {args.trace_file}")
         print(f"  Trace format: {args.trace_format}")
         print(f"  Max instructions: {args.maxinsts}")
-        print(f"  Decoupled BP: {hasattr(args, 'trace_enable_decoupled_bp') and args.trace_enable_decoupled_bp}")
-        if bool(getattr(args, 'trace_timing_ptw', False)):
+        print(
+            f"  Decoupled BP: {hasattr(args, 'trace_enable_decoupled_bp') and args.trace_enable_decoupled_bp}"
+        )
+        if bool(getattr(args, "trace_timing_ptw", False)):
             print(
                 "  Timing PTW: enabled "
                 f"(ptw_page_size={getattr(args, 'trace_ptw_page_size', '4k')}, "
@@ -575,13 +627,15 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
     # ruby will overwrite the store_prefetch_train
     if ruby:
         test_sys._dma_ports = []
-        bootmem = getattr(test_sys, '_bootmem', None)
-        Ruby.create_system(args, True, test_sys, test_sys.iobus,
-                           test_sys._dma_ports, bootmem)
+        bootmem = getattr(test_sys, "_bootmem", None)
+        Ruby.create_system(
+            args, True, test_sys, test_sys.iobus, test_sys._dma_ports, bootmem
+        )
 
         # Create a seperate clock domain for Ruby
-        test_sys.ruby.clk_domain = SrcClockDomain(clock = args.ruby_clock,
-                                        voltage_domain = test_sys.voltage_domain)
+        test_sys.ruby.clk_domain = SrcClockDomain(
+            clock=args.ruby_clock, voltage_domain=test_sys.voltage_domain
+        )
 
         # Connect the ruby io port to the PIO bus,
         # assuming that there is just one such port.
@@ -600,7 +654,7 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
             cpu.store_prefetch_train = False
 
         # Align trace address mapping window to physical memory size (Ruby path)
-        if hasattr(args, 'enable_trace_mode') and args.enable_trace_mode:
+        if hasattr(args, "enable_trace_mode") and args.enable_trace_mode:
             aligned_base = None
             aligned_total = None
             try:
@@ -619,8 +673,8 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
             _apply_trace_timing_ptw_cpu_params(args, test_sys.cpu)
             if aligned_base is not None:
                 final_size = int(test_sys.cpu[0].traceAddrSize)
-                reserved_bytes = int(getattr(args, 'trace_ptw_reserved_bytes', 0))
-                if bool(getattr(args, 'trace_timing_ptw', False)):
+                reserved_bytes = int(getattr(args, "trace_ptw_reserved_bytes", 0))
+                if bool(getattr(args, "trace_timing_ptw", False)):
                     print(
                         f"Trace mode: Align trace mapping to mem: base=0x{aligned_base:x}, "
                         f"size=0x{final_size:x} (reserved=0x{reserved_bytes:x})"
@@ -634,11 +688,11 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
     else:
         if args.caches or args.l2cache:
             # By default the IOCache runs at the system clock
-            test_sys.iocache = IOCache(addr_ranges = test_sys.mem_ranges)
+            test_sys.iocache = IOCache(addr_ranges=test_sys.mem_ranges)
             test_sys.iocache.cpu_side = test_sys.iobus.mem_side_ports
             test_sys.iocache.mem_side = test_sys.membus.cpu_side_ports
         elif not args.external_memory_system:
-            test_sys.iobridge = Bridge(delay='50ns', ranges = test_sys.mem_ranges)
+            test_sys.iobridge = Bridge(delay="50ns", ranges=test_sys.mem_ranges)
             test_sys.iobridge.cpu_side_port = test_sys.iobus.mem_side_ports
             test_sys.iobridge.mem_side_port = test_sys.membus.cpu_side_ports
 
@@ -646,24 +700,24 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
             test_sys.cpu[i].createThreads()
             print("Create threads for test sys cpu ({})".format(type(test_sys.cpu[i])))
 
-        for opt in ['caches', 'l2cache', 'l1_to_l2_pf_hint']:
+        for opt in ["caches", "l2cache", "l1_to_l2_pf_hint"]:
             if hasattr(args, opt) and not getattr(args, opt):
                 setattr(args, opt, True)
 
         if not args.no_l3cache:
-            for opt in ['l3cache', 'l2_to_l3_pf_hint']:
+            for opt in ["l3cache", "l2_to_l3_pf_hint"]:
                 if hasattr(args, opt) and not getattr(args, opt):
                     setattr(args, opt, True)
 
         if args.xiangshan_ecore and args.no_l3cache:
-            args.l2_size = '4MB'
+            args.l2_size = "4MB"
 
         CacheConfig.config_cache(args, test_sys)
 
         MemConfig.config_mem(args, test_sys)
 
         # Align trace address mapping window to physical memory size (classic cache path)
-        if hasattr(args, 'enable_trace_mode') and args.enable_trace_mode:
+        if hasattr(args, "enable_trace_mode") and args.enable_trace_mode:
             aligned_base = None
             aligned_total = None
             try:
@@ -681,8 +735,8 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
             _apply_trace_timing_ptw_cpu_params(args, test_sys.cpu)
             if aligned_base is not None:
                 final_size = int(test_sys.cpu[0].traceAddrSize)
-                reserved_bytes = int(getattr(args, 'trace_ptw_reserved_bytes', 0))
-                if bool(getattr(args, 'trace_timing_ptw', False)):
+                reserved_bytes = int(getattr(args, "trace_ptw_reserved_bytes", 0))
+                if bool(getattr(args, "trace_timing_ptw", False)):
                     print(
                         f"Trace mode: Align trace mapping to mem: base=0x{aligned_base:x}, "
                         f"size=0x{final_size:x} (reserved=0x{reserved_bytes:x})"
@@ -710,11 +764,17 @@ def _finish_xiangshan_system(args, test_sys, TestCPUClass, ruby):
 
     # config arch db
     if args.enable_arch_db:
-        perfCCT_cmd = "CREATE TABLE LifeTimeCommitTrace(ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+        perfCCT_cmd = (
+            "CREATE TABLE LifeTimeCommitTrace(ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+        )
         perfCCT_cmd += PerfRecord.vals[0] + " bigint unsigned NOT NULL"
         for i in range(1, len(PerfRecord.vals)):
             name = PerfRecord.vals[i]
-            type_str = "bigint unsigned" if name.lower().startswith(('at', 'pc', 'result')) else "char(20)"
+            type_str = (
+                "bigint unsigned"
+                if name.lower().startswith(("at", "pc", "result"))
+                else "char(20)"
+            )
             perfCCT_cmd += "," + name + " " + type_str + " NOT NULL"
         perfCCT_cmd += ",TID int unsigned NOT NULL"
         perfCCT_cmd += ");"
@@ -747,99 +807,90 @@ CREATE TABLE LoadLifeTimeCommitTrace(
         test_sys.arch_db.dump_vaddr_trace = False
         test_sys.arch_db.dump_lifetime = args.arch_db_dump_lifetime
         test_sys.arch_db.table_cmds = [
-            "CREATE TABLE L1MissTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "PC INT NOT NULL," \
-            "SOURCE INT NOT NULL," \
-            "PADDR INT NOT NULL," \
-            "VADDR INT NOT NULL," \
-            "STAMP INT NOT NULL," \
-            "SITE TEXT);"
-            ,
-            "CREATE TABLE CacheEvictTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "Tick INT NOT NULL," \
-            "PADDR INT NOT NULL," \
-            "STAMP INT NOT NULL," \
-            "Level INT NOT NULL," \
-            "SITE TEXT);"
-            ,
-            "CREATE TABLE vaddrTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "PC INT NOT NULL," \
-            "VADDR INT NOT NULL," \
-            "Hit INT NOT NULL," \
-            "Tick INT NOT NULL," \
-            "SITE TEXT);"
-            ,
-            "CREATE TABLE MemTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "Tick INT NOT NULL," \
-            "IsLoad BOOL NOT NULL," \
-            "PC INT NOT NULL," \
-            "VADDR INT NOT NULL," \
-            "PADDR INT NOT NULL," \
-            "Issued INT NOT NULL," \
-            "Translated INT NOT NULL," \
-            "Completed INT NOT NULL," \
-            "Committed INT NOT NULL," \
-            "Writenback INT NOT NULL," \
-            "PFSrc INT NOT NULL," \
-            "SITE TEXT);"
-            ,
-            "CREATE TABLE L1PFTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "Tick INT NOT NULL," \
-            "TriggerPC INT NOT NULL," \
-            "TriggerVAddr INT NOT NULL," \
-            "PFVAddr INT NOT NULL," \
-            "PFSrc INT NOT NULL," \
-            "SITE TEXT);"
-            ,
-            "CREATE TABLE BOPTrainTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "Tick INT NOT NULL," \
-            "OldAddr INT NOT NULL," \
-            "CurAddr INT NOT NULL," \
-            "Offset INT NOT NULL," \
-            "Score INT NOT NULL," \
-            "Miss BOOL NOT NULL," \
-            "SITE TEXT);"
-            ,
-            "CREATE TABLE SMSTrainTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "Tick INT NOT NULL," \
-            "OldAddr INT NOT NULL," \
-            "CurAddr INT NOT NULL," \
-            "TriggerOffset INT NOT NULL," \
-            "Conf INT NOT NULL," \
-            "Miss BOOL NOT NULL," \
-            "SITE TEXT);"
-            ,
-            "CREATE TABLE StrideTrainTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "Tick INT NOT NULL," \
-            "Addr INT NOT NULL," \
-            "PC INT NOT NULL," \
-            "HashPC INT NOT NULL," \
-            "QueryHit BOOL NOT NULL," \
-            "IsFirstShot BOOL NOT NULL," \
-            "Miss BOOL NOT NULL," \
-            "IsTrain BOOL NOT NULL," \
-            "SITE TEXT);"
-            ,
-            "CREATE TABLE DespacitoTrainTrace(" \
-            "ID INTEGER PRIMARY KEY AUTOINCREMENT," \
-            "Tick INT NOT NULL," \
-            "vAddr INT NOT NULL," \
-            "pAddr INT NOT NULL," \
-            "PC INT NOT NULL," \
-            "hasPC BOOL NOT NULL," \
-            "Miss BOOL NOT NULL," \
-            "IsTrain BOOL NOT NULL," \
-            "SITE TEXT);"
-            ,# perfCounter CommitTrace
-            perfCCT_cmd
+            "CREATE TABLE L1MissTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "PC INT NOT NULL,"
+            "SOURCE INT NOT NULL,"
+            "PADDR INT NOT NULL,"
+            "VADDR INT NOT NULL,"
+            "STAMP INT NOT NULL,"
+            "SITE TEXT);",
+            "CREATE TABLE CacheEvictTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Tick INT NOT NULL,"
+            "PADDR INT NOT NULL,"
+            "STAMP INT NOT NULL,"
+            "Level INT NOT NULL,"
+            "SITE TEXT);",
+            "CREATE TABLE vaddrTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "PC INT NOT NULL,"
+            "VADDR INT NOT NULL,"
+            "Hit INT NOT NULL,"
+            "Tick INT NOT NULL,"
+            "SITE TEXT);",
+            "CREATE TABLE MemTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Tick INT NOT NULL,"
+            "IsLoad BOOL NOT NULL,"
+            "PC INT NOT NULL,"
+            "VADDR INT NOT NULL,"
+            "PADDR INT NOT NULL,"
+            "Issued INT NOT NULL,"
+            "Translated INT NOT NULL,"
+            "Completed INT NOT NULL,"
+            "Committed INT NOT NULL,"
+            "Writenback INT NOT NULL,"
+            "PFSrc INT NOT NULL,"
+            "SITE TEXT);",
+            "CREATE TABLE L1PFTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Tick INT NOT NULL,"
+            "TriggerPC INT NOT NULL,"
+            "TriggerVAddr INT NOT NULL,"
+            "PFVAddr INT NOT NULL,"
+            "PFSrc INT NOT NULL,"
+            "SITE TEXT);",
+            "CREATE TABLE BOPTrainTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Tick INT NOT NULL,"
+            "OldAddr INT NOT NULL,"
+            "CurAddr INT NOT NULL,"
+            "Offset INT NOT NULL,"
+            "Score INT NOT NULL,"
+            "Miss BOOL NOT NULL,"
+            "SITE TEXT);",
+            "CREATE TABLE SMSTrainTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Tick INT NOT NULL,"
+            "OldAddr INT NOT NULL,"
+            "CurAddr INT NOT NULL,"
+            "TriggerOffset INT NOT NULL,"
+            "Conf INT NOT NULL,"
+            "Miss BOOL NOT NULL,"
+            "SITE TEXT);",
+            "CREATE TABLE StrideTrainTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Tick INT NOT NULL,"
+            "Addr INT NOT NULL,"
+            "PC INT NOT NULL,"
+            "HashPC INT NOT NULL,"
+            "QueryHit BOOL NOT NULL,"
+            "IsFirstShot BOOL NOT NULL,"
+            "Miss BOOL NOT NULL,"
+            "IsTrain BOOL NOT NULL,"
+            "SITE TEXT);",
+            "CREATE TABLE DespacitoTrainTrace("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Tick INT NOT NULL,"
+            "vAddr INT NOT NULL,"
+            "pAddr INT NOT NULL,"
+            "PC INT NOT NULL,"
+            "hasPC BOOL NOT NULL,"
+            "Miss BOOL NOT NULL,"
+            "IsTrain BOOL NOT NULL,"
+            "SITE TEXT);",  # perfCounter CommitTrace
+            perfCCT_cmd,
         ]
 
     # config debug trace
@@ -856,27 +907,36 @@ CREATE TABLE LoadLifeTimeCommitTrace(
 
 def build_xiangshan_system(args):
     np = args.num_cpus
-    assert buildEnv['TARGET_ISA'] == "riscv"
+    assert buildEnv["TARGET_ISA"] == "riscv"
 
-    enable_dynamic_pf = getattr(args, 'enable_dynamic_pf', False)
+    enable_dynamic_pf = getattr(args, "enable_dynamic_pf", False)
     PrefetcherConfig.set_enable_dynamic_pf(
         enable_dynamic_pf is True or enable_dynamic_pf == "True"
     )
 
     TestCPUClass = get_xiangshan_cpu_class(args)
-    ruby = bool(hasattr(args, 'ruby') and args.ruby)
-    num_threads = np * (2 if getattr(args, 'smt', False) else 1)
+    ruby = bool(hasattr(args, "ruby") and args.ruby)
+    num_threads = np * (2 if getattr(args, "smt", False) else 1)
 
     test_sys = makeBareMetalXiangshanSystem(
-        'timing', SysConfig(mem=args.mem_size), None, np=np, ruby=ruby,
-        num_threads=num_threads)
+        "timing",
+        SysConfig(mem=args.mem_size),
+        None,
+        np=np,
+        ruby=ruby,
+        num_threads=num_threads,
+    )
 
-    if hasattr(args, 'enable_trace_mode') and args.enable_trace_mode:
-        if bool(getattr(args, 'trace_timing_ptw', False)):
+    if hasattr(args, "enable_trace_mode") and args.enable_trace_mode:
+        if bool(getattr(args, "trace_timing_ptw", False)):
             print("Trace mode: Using FS mode with timing MMU (timing-PTW enabled)")
         else:
-            print("Trace mode: Using FS mode with functional TLB to bypass MMU translation issues")
-        print("Trace mode: Configuring expanded memory ranges for trace address mapping")
+            print(
+                "Trace mode: Using FS mode with functional TLB to bypass MMU translation issues"
+            )
+        print(
+            "Trace mode: Configuring expanded memory ranges for trace address mapping"
+        )
         args.functional_tlb = True
     else:
         print("Checkpoint mode: Using standard FS mode with normal MMU translation")
@@ -884,22 +944,26 @@ def build_xiangshan_system(args):
     test_sys.xiangshan_system = True
     test_sys.enable_difftest = args.enable_difftest
 
-    if hasattr(args, 'enable_trace_mode') and args.enable_trace_mode:
+    if hasattr(args, "enable_trace_mode") and args.enable_trace_mode:
         args.difftest_ref_so = None
-        test_sys.workload.bootloader = ''
+        test_sys.workload.bootloader = ""
         test_sys.workload.xiangshan_cpt = True
         test_sys.restore_from_gcpt = False
         print("Trace mode: Running without bootloader (no GCPT)")
 
-        if args.mem_type == 'DRAMsim3' and args.dramsim3_ini is None:
+        if args.mem_type == "DRAMsim3" and args.dramsim3_ini is None:
             root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            args.dramsim3_ini = os.path.join(root_dir,
-                                             'ext/dramsim3/xiangshan_configs/xiangshan_DDR4_8Gb_x8_3200_2ch.ini')
+            args.dramsim3_ini = os.path.join(
+                root_dir,
+                "ext/dramsim3/xiangshan_configs/xiangshan_DDR4_8Gb_x8_3200_2ch.ini",
+            )
 
-        if bool(getattr(args, 'trace_timing_ptw', False)):
+        if bool(getattr(args, "trace_timing_ptw", False)):
             print("Trace mode: Timing MMU will be applied for timing-PTW")
         else:
-            print("Trace mode: FS mode with functional TLB configured to bypass MMU translation issues")
+            print(
+                "Trace mode: FS mode with functional TLB configured to bypass MMU translation issues"
+            )
     else:
         config_xiangshan_inputs(args, test_sys)
 
@@ -1022,11 +1086,11 @@ def xiangshan_system_init():
         default="Replay",
         choices=["Rollback", "Replay", "ConstCycle", "NaiveCpt"],
         help="ROB misprediction-recovery walk policy. NaiveCpt enables the "
-              "RAT-checkpoint recovery-cost model.",
+        "RAT-checkpoint recovery-cost model.",
     )
 
     # Add the ruby specific and protocol specific args
-    if '--ruby' in sys.argv:
+    if "--ruby" in sys.argv:
         Ruby.define_options(parser)
     args = parser.parse_args()
 
@@ -1035,7 +1099,7 @@ def xiangshan_system_init():
 
     args.xiangshan_system = True
     # Only enable difftest if not in trace mode - trace mode doesn't need reference model verification
-    if not (hasattr(args, 'enable_trace_mode') and args.enable_trace_mode):
+    if not (hasattr(args, "enable_trace_mode") and args.enable_trace_mode):
         if args.enable_difftest is None:
             args.enable_difftest = True
     else:

@@ -48,6 +48,7 @@ from common.LSQBankConflict import set_lsq_bank_conflict_cache_params
 from common import ObjectList
 from common.PrefetcherConfig import *
 
+
 def _get_hwp(hwp_option):
     if hwp_option == None:
         return NULL
@@ -55,36 +56,44 @@ def _get_hwp(hwp_option):
     hwpClass = ObjectList.hwp_list.get(hwp_option)
     return hwpClass()
 
+
 def _get_cache_opts(cpu, level, options):
     opts = {}
 
-    size_attr = '{}_size'.format(level)
+    size_attr = "{}_size".format(level)
     if hasattr(options, size_attr):
-        opts['size'] = getattr(options, size_attr)
+        opts["size"] = getattr(options, size_attr)
 
-    assoc_attr = '{}_assoc'.format(level)
+    assoc_attr = "{}_assoc".format(level)
     if hasattr(options, assoc_attr):
-        opts['assoc'] = getattr(options, assoc_attr)
+        opts["assoc"] = getattr(options, assoc_attr)
 
-    prefetcher_attr = '{}_hwp_type'.format(level)
+    prefetcher_attr = "{}_hwp_type".format(level)
     if hasattr(options, prefetcher_attr) and (not options.no_pf):
-        opts['prefetcher'] = create_prefetcher(cpu, level, options)
+        opts["prefetcher"] = create_prefetcher(cpu, level, options)
 
     return opts
+
 
 def config_classic_l2(options, system, l2_cache_class):
     # When using classic L2 cache, The prefetcher is inside the l2cache, instead of l2Wrapper
     # So we need to move the prefetcher from l2Wrapper to l2cache
-    if options.l2_hwp_type == 'PrefetcherForwarder' and options.l2_wrapper_hwp_type:
+    if options.l2_hwp_type == "PrefetcherForwarder" and options.l2_wrapper_hwp_type:
         options.l2_hwp_type = options.l2_wrapper_hwp_type
         options.l2_wrapper_hwp_type = None
     # Provide a clock for the L2 and the L1-to-L2 bus here as they
     # are not connected using addTwoLevelCacheHierarchy. Use the
     # same clock as the CPUs.
-    system.l2_caches = [l2_cache_class(clk_domain=system.cpu_clk_domain,
-                                    **_get_cache_opts(system.cpu[i], 'l2', options)) for i in range(options.num_cpus)]
-    system.tol2bus_list = [L1ToL2Bus(
-            clk_domain=system.cpu_clk_domain) for i in range(options.num_cpus)]
+    system.l2_caches = [
+        l2_cache_class(
+            clk_domain=system.cpu_clk_domain,
+            **_get_cache_opts(system.cpu[i], "l2", options)
+        )
+        for i in range(options.num_cpus)
+    ]
+    system.tol2bus_list = [
+        L1ToL2Bus(clk_domain=system.cpu_clk_domain) for i in range(options.num_cpus)
+    ]
     for i in range(options.num_cpus):
         # system.l2_caches.append(l2_cache_class(clk_domain=system.cpu_clk_domain,
         #                        **_get_cache_opts('l2', options)))
@@ -94,8 +103,11 @@ def config_classic_l2(options, system, l2_cache_class):
         system.tol2bus_list[i].snoop_filter.max_capacity = "16MB"
         if isinstance(system.l2_caches[i].replacement_policy, DRRIPRP):
             system.l2_caches[i].replacement_policy.num_slices = 1
-            system.l2_caches[i].replacement_policy.num_sets_per_slice = \
-                system.l2_caches[i].size // (64 * system.l2_caches[i].assoc)
+            system.l2_caches[
+                i
+            ].replacement_policy.num_sets_per_slice = system.l2_caches[i].size // (
+                64 * system.l2_caches[i].assoc
+            )
         system.l2_caches[i].do_fast_writeline = not options.kmh_align
         if options.ideal_cache:
             system.l2_caches[i].response_latency = 0
@@ -109,6 +121,7 @@ def config_classic_l2(options, system, l2_cache_class):
             system.l2_caches[i].response_latency = 66
             system.l2_caches[i].writeback_clean = False
 
+
 def config_aligned_l2(options, system, l2_cache_class):
     # Provide a clock for the L2 and the L1-to-L2 bus here as they
     # are not connected using addTwoLevelCacheHierarchy. Use the
@@ -116,33 +129,43 @@ def config_aligned_l2(options, system, l2_cache_class):
     num_l2_slices = options.l2_slices
     # Create the L2 cache system for each CPU core, which includes a
     # wrapper, an internal crossbar, and multiple slices.
-    system.l2_wrappers = [L2CacheWrapper(clk_domain=system.cpu_clk_domain,
-                                            num_slices=num_l2_slices,
-                                            cache_size=options.l2_size,
-                                            cache_assoc=options.l2_assoc,
-                                            block_bits=int(math.log2(system.cache_line_size)))
-                                            for _ in range(options.num_cpus)]
+    system.l2_wrappers = [
+        L2CacheWrapper(
+            clk_domain=system.cpu_clk_domain,
+            num_slices=num_l2_slices,
+            cache_size=options.l2_size,
+            cache_assoc=options.l2_assoc,
+            block_bits=int(math.log2(system.cache_line_size)),
+        )
+        for _ in range(options.num_cpus)
+    ]
     for i in range(options.num_cpus):
         # Create an internal L2 crossbar for the slices
-        system.l2_wrappers[i].xbar = CoherentXBar(clk_domain = system.cpu_clk_domain,
-                                                    width = 512,
-                                                    frontend_latency = 0,
-                                                    forward_latency = 0,
-                                                    response_latency = 0,
-                                                    header_latency = 0,
-                                                    snoop_response_latency = 0,
-                                                    snoop_filter = SnoopFilter(lookup_latency = 0),
-                                                    point_of_unification = True)
+        system.l2_wrappers[i].xbar = CoherentXBar(
+            clk_domain=system.cpu_clk_domain,
+            width=512,
+            frontend_latency=0,
+            forward_latency=0,
+            response_latency=0,
+            header_latency=0,
+            snoop_response_latency=0,
+            snoop_filter=SnoopFilter(lookup_latency=0),
+            point_of_unification=True,
+        )
         # Create the L2 cache slice, which contains the pipeline logic
-        system.l2_wrappers[i].slices = [L2CacheSlice(clk_domain=system.cpu_clk_domain)
-                                        for _ in range(num_l2_slices)]
+        system.l2_wrappers[i].slices = [
+            L2CacheSlice(clk_domain=system.cpu_clk_domain) for _ in range(num_l2_slices)
+        ]
         # Create the actual classic L2 cache that stores data
         for j in range(num_l2_slices):
-            system.l2_wrappers[i].slices[j].inner_cache = l2_cache_class(clk_domain=system.cpu_clk_domain,
-                                                            **_get_cache_opts(system.cpu[i], 'l2', options))
+            system.l2_wrappers[i].slices[j].inner_cache = l2_cache_class(
+                clk_domain=system.cpu_clk_domain,
+                **_get_cache_opts(system.cpu[i], "l2", options)
+            )
 
-    system.tol2bus_list = [L1ToL2Bus(
-        clk_domain=system.cpu_clk_domain) for i in range(options.num_cpus)]
+    system.tol2bus_list = [
+        L1ToL2Bus(clk_domain=system.cpu_clk_domain) for i in range(options.num_cpus)
+    ]
 
     for i in range(options.num_cpus):
         l2_wrapper = system.l2_wrappers[i]
@@ -150,7 +173,9 @@ def config_aligned_l2(options, system, l2_cache_class):
         if options.no_pf:
             l2_wrapper.prefetcher = NULL
         else:
-            l2_wrapper.prefetcher = create_prefetcher(system.cpu[i], 'l2_wrapper', options)
+            l2_wrapper.prefetcher = create_prefetcher(
+                system.cpu[i], "l2_wrapper", options
+            )
         for j in range(num_l2_slices):
             # Apply original per-L2-cache configurations to each slice's inner cache
             cache_slice = l2_wrapper.slices[j]
@@ -161,19 +186,20 @@ def config_aligned_l2(options, system, l2_cache_class):
             inner_cache.tags.indexing_policy.slice_idx = j
             if isinstance(inner_cache.replacement_policy, DRRIPRP):
                 inner_cache.replacement_policy.num_slices = num_l2_slices
-                inner_cache.replacement_policy.num_sets_per_slice = inner_cache.size // (64 * inner_cache.assoc)
+                inner_cache.replacement_policy.num_sets_per_slice = (
+                    inner_cache.size // (64 * inner_cache.assoc)
+                )
 
             l2_wrapper.addCacheAccessor(inner_cache)
             l2_wrapper.addSliceAccessor(cache_slice)
 
             cache_slice.setCacheAccessor(inner_cache)
-            if not options.no_pf and options.l2_hwp_type == 'PrefetcherForwarder':
+            if not options.no_pf and options.l2_hwp_type == "PrefetcherForwarder":
                 inner_cache.prefetcher.setRealPrefetcher(l2_wrapper.prefetcher)
 
             # Cut off the resources in inner_cache according to slice num
-            assert(int(inner_cache.mshrs) % num_l2_slices == 0)
+            assert int(inner_cache.mshrs) % num_l2_slices == 0
             inner_cache.mshrs = int(inner_cache.mshrs) // num_l2_slices
-
 
             inner_cache.do_fast_writeline = not options.kmh_align
             if options.ideal_cache:
@@ -198,6 +224,7 @@ def config_aligned_l2(options, system, l2_cache_class):
         # Connect the wrapper to the L1-L2 bus
         l2_wrapper.cpu_side = system.tol2bus_list[i].mem_side_ports
 
+
 def config_cache(options, system):
     if options.external_memory_system and (options.caches or options.l2cache):
         print("External caches and internal caches are exclusive options.\n")
@@ -213,10 +240,12 @@ def config_cache(options, system):
             print("O3_ARM_v7a_3 is unavailable. Did you compile the O3 model?")
             sys.exit(1)
 
-        dcache_class, icache_class, l2_cache_class, walk_cache_class = \
-            core.O3_ARM_v7a_DCache, core.O3_ARM_v7a_ICache, \
-            core.O3_ARM_v7aL2, \
-            None
+        dcache_class, icache_class, l2_cache_class, walk_cache_class = (
+            core.O3_ARM_v7a_DCache,
+            core.O3_ARM_v7a_ICache,
+            core.O3_ARM_v7aL2,
+            None,
+        )
     elif options.cpu_type == "HPI":
         try:
             import cores.arm.HPI as core
@@ -224,14 +253,22 @@ def config_cache(options, system):
             print("HPI is unavailable.")
             sys.exit(1)
 
-        dcache_class, icache_class, l2_cache_class, walk_cache_class = \
-            core.HPI_DCache, core.HPI_ICache, core.HPI_L2, None
+        dcache_class, icache_class, l2_cache_class, walk_cache_class = (
+            core.HPI_DCache,
+            core.HPI_ICache,
+            core.HPI_L2,
+            None,
+        )
     else:
-        dcache_class, icache_class, l2_cache_class, walk_cache_class = \
-            L1_DCache, L1_ICache, L2Cache, None
+        dcache_class, icache_class, l2_cache_class, walk_cache_class = (
+            L1_DCache,
+            L1_ICache,
+            L2Cache,
+            None,
+        )
 
-        if buildEnv['TARGET_ISA'] in ['x86', 'riscv']:
-        #if buildEnv['TARGET_ISA'] in ['x86']:
+        if buildEnv["TARGET_ISA"] in ["x86", "riscv"]:
+            # if buildEnv['TARGET_ISA'] in ['x86']:
             walk_cache_class = PageTableWalkerCache
 
     # Set the cache line size of the system
@@ -242,8 +279,7 @@ def config_cache(options, system):
     # Configure the compulsory L1 caches for the O3CPU, do not configure
     # any more caches.
     if options.l2cache:
-        assert (not hasattr(options, 'elastic_trace_en') or
-                not options.elastic_trace_en)
+        assert not hasattr(options, "elastic_trace_en") or not options.elastic_trace_en
 
     if options.l2cache:
         if options.classic_l2:
@@ -254,22 +290,25 @@ def config_cache(options, system):
         for i in range(options.num_cpus):
             system.tol2bus_list[i].snoop_filter.max_capacity = "16MB"
             if options.ideal_cache:
-                assert not options.l3cache, \
-                    "Ideal caches and L3s are exclusive options."
+                assert (
+                    not options.l3cache
+                ), "Ideal caches and L3s are exclusive options."
                 assert options.l2cache, "Ideal caches require L2s."
-                assert options.mem_type == "SimpleMemory", \
-                    "Ideal caches require SimpleMemory."
+                assert (
+                    options.mem_type == "SimpleMemory"
+                ), "Ideal caches require SimpleMemory."
 
                 system.tol2bus_list[i].frontend_latency = 0
                 system.tol2bus_list[i].response_latency = 0
                 system.tol2bus_list[i].forward_latency = 0
                 system.tol2bus_list[i].header_latency = 0
                 system.tol2bus_list[i].snoop_response_latency = 0
-                system.tol2bus_list[i].width = 256 # byte per cycle
+                system.tol2bus_list[i].width = 256  # byte per cycle
 
         if options.l3cache:
-            system.l3 = L3Cache(clk_domain=system.cpu_clk_domain,
-                                        **_get_cache_opts(NULL, 'l3', options))
+            system.l3 = L3Cache(
+                clk_domain=system.cpu_clk_domain, **_get_cache_opts(NULL, "l3", options)
+            )
             system.tol3bus = L2ToL3Bus(clk_domain=system.cpu_clk_domain)
             if not options.classic_l2:
                 # In Aligned L2, an extra 4 cycles are simulated in L2Cache Pipeline, instead of L2ToL3Bus
@@ -288,22 +327,26 @@ def config_cache(options, system):
                 if options.classic_l2:
                     system.l2_caches[i].mem_side = system.tol3bus.cpu_side_ports
                 else:
-                    system.l2_wrappers[i].xbar.mem_side_ports = system.tol3bus.cpu_side_ports
+                    system.l2_wrappers[
+                        i
+                    ].xbar.mem_side_ports = system.tol3bus.cpu_side_ports
                 # l3 -> membus
             else:
                 if options.classic_l2:
                     system.l2_caches[i].mem_side = system.membus.cpu_side_ports
                 else:
-                    system.l2_wrappers[i].xbar.mem_side_ports = system.membus.cpu_side_ports
+                    system.l2_wrappers[
+                        i
+                    ].xbar.mem_side_ports = system.membus.cpu_side_ports
 
     if options.memchecker:
         system.memchecker = MemChecker()
 
     for i in range(options.num_cpus):
         if options.caches:
-            icache = icache_class(**_get_cache_opts(system.cpu[i], 'l1i', options))
-            dcache = dcache_class(**_get_cache_opts(system.cpu[i], 'l1d', options))
-            if dcache.prefetcher != NULL and options.cpu_type == 'DerivO3CPU':
+            icache = icache_class(**_get_cache_opts(system.cpu[i], "l1i", options))
+            dcache = dcache_class(**_get_cache_opts(system.cpu[i], "l1d", options))
+            if dcache.prefetcher != NULL and options.cpu_type == "DerivO3CPU":
                 system.cpu[i].add_pf_downstream(dcache.prefetcher)
 
             if options.ideal_cache:
@@ -312,15 +355,17 @@ def config_cache(options, system):
 
             dcache.do_fast_writeline = not options.kmh_align
             dcache.pipe_latency = 3 if options.kmh_align else 0
-            l2_prefetcher = system.l2_caches[i].prefetcher if options.classic_l2 else system.l2_wrappers[i].prefetcher
+            l2_prefetcher = (
+                system.l2_caches[i].prefetcher
+                if options.classic_l2
+                else system.l2_wrappers[i].prefetcher
+            )
             if (not options.no_pf) and options.l1_to_l2_pf_hint:
-                assert dcache.prefetcher != NULL and \
-                    l2_prefetcher != NULL
+                assert dcache.prefetcher != NULL and l2_prefetcher != NULL
                 dcache.prefetcher.add_pf_downstream(l2_prefetcher)
 
             if (not options.no_pf) and options.l3cache and options.l2_to_l3_pf_hint:
-                assert l2_prefetcher != NULL and \
-                    system.l3.prefetcher != NULL
+                assert l2_prefetcher != NULL and system.l3.prefetcher != NULL
                 l2_prefetcher.add_pf_downstream(system.l3.prefetcher)
 
             # If we have a walker cache specified, instantiate two
@@ -349,8 +394,9 @@ def config_cache(options, system):
 
             # When connecting the caches, the clock is also inherited
             # from the CPU in question
-            system.cpu[i].addPrivateSplitL1Caches(icache, dcache,
-                                                  iwalkcache, dwalkcache)
+            system.cpu[i].addPrivateSplitL1Caches(
+                icache, dcache, iwalkcache, dwalkcache
+            )
 
             if options.memchecker:
                 # The mem_side ports of the caches haven't been connected yet.
@@ -364,31 +410,40 @@ def config_cache(options, system):
             # on these names.  For simplicity, we would advise configuring
             # it to use this naming scheme; if this isn't possible, change
             # the names below.
-            if buildEnv['TARGET_ISA'] in ['x86', 'arm', 'riscv']:
+            if buildEnv["TARGET_ISA"] in ["x86", "arm", "riscv"]:
                 system.cpu[i].addPrivateSplitL1Caches(
-                        ExternalCache("cpu%d.icache" % i),
-                        ExternalCache("cpu%d.dcache" % i),
-                        ExternalCache("cpu%d.itb_walker_cache" % i),
-                        ExternalCache("cpu%d.dtb_walker_cache" % i))
+                    ExternalCache("cpu%d.icache" % i),
+                    ExternalCache("cpu%d.dcache" % i),
+                    ExternalCache("cpu%d.itb_walker_cache" % i),
+                    ExternalCache("cpu%d.dtb_walker_cache" % i),
+                )
             else:
                 system.cpu[i].addPrivateSplitL1Caches(
-                        ExternalCache("cpu%d.icache" % i),
-                        ExternalCache("cpu%d.dcache" % i))
+                    ExternalCache("cpu%d.icache" % i), ExternalCache("cpu%d.dcache" % i)
+                )
 
         system.cpu[i].createInterruptController()
+        # Dedicated Hint master: use the existing memory-bus arbitration,
+        # bypassing the CPU caches and their Core LSQ request/retry path.
+        if hasattr(system.cpu[i], "hint_dma_port"):
+            system.cpu[i].hint_dma_port = system.membus.cpu_side_ports
         set_lsq_bank_conflict_cache_params(system.cpu[i], system)
         if options.l2cache:
             system.cpu[i].connectAllPorts(
                 system.tol2bus_list[i].cpu_side_ports,
-                system.membus.cpu_side_ports, system.membus.mem_side_ports)
+                system.membus.cpu_side_ports,
+                system.membus.mem_side_ports,
+            )
         elif options.external_memory_system:
             system.cpu[i].connectUncachedPorts(
-                system.membus.cpu_side_ports, system.membus.mem_side_ports)
+                system.membus.cpu_side_ports, system.membus.mem_side_ports
+            )
         else:
             system.cpu[i].connectBus(system.membus)
 
-    print('Finish memory system configuration')
+    print("Finish memory system configuration")
     return system
+
 
 # ExternalSlave provides a "port", but when that port connects to a cache,
 # the connecting CPU SimObject wants to refer to its "cpu_side".
@@ -396,17 +451,20 @@ def config_cache(options, system):
 # eliminating distracting changes elsewhere in the config code.
 class ExternalCache(ExternalSlave):
     def __getattr__(cls, attr):
-        if (attr == "cpu_side"):
+        if attr == "cpu_side":
             attr = "port"
         return super(ExternalSlave, cls).__getattr__(attr)
 
     def __setattr__(cls, attr, value):
-        if (attr == "cpu_side"):
+        if attr == "cpu_side":
             attr = "port"
         return super(ExternalSlave, cls).__setattr__(attr, value)
 
+
 def ExternalCacheFactory(port_type):
     def make(name):
-        return ExternalCache(port_data=name, port_type=port_type,
-                             addr_ranges=[AllMemory])
+        return ExternalCache(
+            port_data=name, port_type=port_type, addr_ranges=[AllMemory]
+        )
+
     return make

@@ -950,7 +950,11 @@ BaseCPU::diffWithNEMU(ThreadID tid, InstSeqNum seq)
 
     int diff_at = DiffAt::NoneDiff;
     bool npc_match = false;
-    bool is_mmio = diffInfo.curInstStrictOrdered;
+    // NC physical RAM is still architectural memory. Execute those accesses
+    // in the reference, including guest image stores and Trace readback;
+    // reflect peripheral values only for addresses outside physical RAM.
+    bool is_mmio = diffInfo.curInstStrictOrdered &&
+                   !system->isMemAddr(diffInfo.physEffAddr);
 
     if (diffInfo.inst->isStoreConditional()) {
         diffAllStates->proxy->uarchstatus_cpy(&diffAllStates->diff.sync, DIFFTEST_TO_REF);
@@ -983,6 +987,19 @@ BaseCPU::diffWithNEMU(ThreadID tid, InstSeqNum seq)
         return std::make_pair(NoneDiff, true);
     } else {
         // difftest step start
+        const uint32_t bits =
+            dynamic_cast<RiscvISA::RiscvStaticInst &>(*diffInfo.inst).machInst;
+        const unsigned csr = bits >> 20;
+        const unsigned funct3 = (bits >> 12) & 7;
+        if ((bits & 0x7f) == 0x73 && funct3 && funct3 != 4 &&
+            csr >= 0x5c0 && csr <= 0x5c2 && ((bits >> 7) & 31)) {
+            panic_if(!diffAllStates->proxy->hint_csr,
+                     "Bundle CSR difftest requires difftest_hint_csr in reference");
+            // Use this instruction's captured read result. The peripheral can
+            // advance between execution and retirement, so rereading it here
+            // would supply the reference with a different input.
+            diffAllStates->proxy->hint_csr(csr, diffInfo.scalarResults[0]);
+        }
         DPRINTF(Diff, "Step NEMU\n");
         diffAllStates->proxy->exec(1);
         if (diffInfo.inst->isFusion()) {
@@ -1956,6 +1973,28 @@ BaseCPU::setExceptionGuideExecInfo(uint64_t exception_num, uint64_t mtval, uint6
 
     // diffAllStates->diff.dynamic_config.debug_difftest = false;
     // diffAllStates->proxy->update_config(&diffAllStates->diff.dynamic_config);
+}
+
+void
+BaseCPU::syncHintBundleDma(Addr addr, const std::vector<uint8_t> &data)
+{
+    if (data.empty())
+        return;
+    panic_if(addr + data.size() - 1 < addr, "Bundle DMA sync address overflow");
+    if (_goldenMemManager) {
+        panic_if(!_goldenMemManager->inPmem(addr) ||
+                 !_goldenMemManager->inPmem(addr + data.size() - 1),
+                 "Bundle DMA sync outside golden memory");
+        std::memcpy(_goldenMemManager->guestToHost(addr), data.data(), data.size());
+    }
+    if (!enableDifftest)
+        return;
+    for (const auto &state : diffAllStates) {
+        if (state && state->hasCommit) {
+            state->proxy->memcpy(addr, const_cast<uint8_t *>(data.data()),
+                                 data.size(), DUT_TO_REF);
+        }
+    }
 }
 
 void

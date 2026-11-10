@@ -127,6 +127,65 @@ PMP::pmpCheck(const RequestPtr &req, BaseMMU::Mode mode,
 }
 
 Fault
+PMP::pmpCheckPhysical(const RequestPtr &req, BaseMMU::Mode mode,
+                      RiscvISA::PrivilegeMode launch_privilege)
+{
+    using WideAddr = unsigned __int128;
+    const WideAddr start = req->getPaddr();
+    const WideAddr end = start + req->getSize();
+    const bool machine = launch_privilege == RiscvISA::PRV_M;
+    if (!req->getSize() || end > (WideAddr(1) << 64))
+        return createAddrfault(req->getPaddr(), mode);
+
+    // Decode from raw architectural state rather than the legacy Core range
+    // cache: AddrRange has an exclusive end, whereas older PMP Core decoding
+    // subtracts one from that end. Wide arithmetic also handles all-ones NAPOT
+    // without floating point or overflowing an inclusive endpoint.
+    for (unsigned i = 0; i < pmpTable.size(); ++i) {
+        const auto &entry = pmpTable[i];
+        const auto matching = pmpGetAField(entry.pmpCfg);
+        WideAddr lower = 0, upper = 0;
+        switch (matching) {
+          case PMP_OFF:
+            continue;
+          case PMP_TOR:
+            lower = i ? WideAddr(pmpTable[i - 1].rawAddr) << 2 : 0;
+            upper = WideAddr(entry.rawAddr) << 2;
+            break;
+          case PMP_NA4:
+            lower = WideAddr(entry.rawAddr) << 2;
+            upper = lower + 4;
+            break;
+          case PMP_NAPOT: {
+            unsigned ones = 0;
+            while (ones < 64 && ((entry.rawAddr >> ones) & 1))
+                ++ones;
+            const WideAddr size = WideAddr(1) << (ones + 3);
+            lower = (WideAddr(entry.rawAddr) << 2) & ~(size - 1);
+            upper = lower + size;
+            break;
+          }
+        }
+        if (lower >= upper || start >= upper || end <= lower)
+            continue;
+        // Lowest-numbered entry matching any byte owns the access. Partial
+        // overlap is a fault even if a later entry could cover the request.
+        if (start < lower || end > upper)
+            return createAddrfault(req->getPaddr(), mode);
+        if (machine && !(entry.pmpCfg & PMP_LOCK))
+            return NoFault;
+        const unsigned permission = mode == BaseMMU::Read ? PMP_READ :
+            mode == BaseMMU::Write ? PMP_WRITE : PMP_EXEC;
+        return entry.pmpCfg & permission ? NoFault :
+            createAddrfault(req->getPaddr(), mode);
+    }
+    // With implemented PMP entries, unmatched S/U accesses are denied,
+    // including the all-OFF configuration. M-mode unmatched accesses pass.
+    return machine || pmpEntries == 0 ? NoFault :
+        createAddrfault(req->getPaddr(), mode);
+}
+
+Fault
 PMP::createAddrfault(Addr vaddr, BaseMMU::Mode mode)
 {
     RiscvISA::ExceptionCode code;

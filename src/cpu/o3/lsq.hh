@@ -48,6 +48,7 @@
 #include <deque>
 #include <functional>
 #include <list>
+#include <optional>
 #include <map>
 #include <memory>
 #include <queue>
@@ -92,6 +93,7 @@ class LSQ
 {
   public:
     class LSQRequest;
+    bool sendCoreTimingReq(PacketPtr packet);
     class SbufferRequest;
     class StoreBufferEntry;
     class StoreBuffer;
@@ -1555,6 +1557,7 @@ class LSQ
 
     /** Data port. */
     DcachePort dcachePort;
+
 
     /** The LSQ units for individual threads. */
     std::vector<LSQUnit> thread;

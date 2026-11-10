@@ -944,6 +944,18 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
     const bool predicted_identity_matches = entry.predBranchInfo.pcIsCfiEnd ?
         entry.predBranchInfo.pc == branchAddr + info.size - 2 :
         entry.predBranchInfo.pc == branchAddr;
+    if (hintBundle && inst->isIndirectCtrl() && !inst->isReturn() && taken) {
+        const bool miss = !entry.predTaken || !predicted_identity_matches ||
+            entry.predBranchInfo.target != targetAddr;
+        const __int128 cfi = __int128(branchAddr) + info.size - 2;
+        const __int128 end = std::min((__int128(entry.startPC) + 64) & ~__int128(31),
+            ((__int128(entry.startPC) >> 12) + 1) << 12);
+        if (miss && (info.size == 2 || info.size == 4) &&
+            entry.startPC <= MaxAddr - 64 && cfi >= entry.startPC && cfi < end)
+            hintBundle->recordDiscovery(entry.startPC,
+                (static_cast<Addr>(cfi) - (entry.startPC & ~Addr(31))) / 2,
+                inst->isCall(), inst->seqNum, branchAddr);
+    }
     if (h2pDiscovery && hintDiscoveryActive) {
         auto &audit = cam58DiscoveryAudit();
         const bool baseline_miss = taken ?
@@ -1015,6 +1027,23 @@ DecoupledBPUWithBTB::commitBranch(const DynInstPtr &inst, bool mispred)
             targetAddr, inst->isIndirectCtrl(), inst->isCall(),
             inst->isReturn(), taken, index, index >= 0);
     }
+
+    // The boundary instruction and its Hint sample belong to the old logical
+    // Bundle. Update desired only after recording that committed instruction.
+    if (bundleEvents.is_open()) {
+        bundleEvents << "{\"seq\":" << inst->seqNum
+            << ",\"measured\":" << (hintDiscoveryActive ? "true" : "false")
+            << ",\"pc\":\"0x" << std::hex << branchAddr
+            << "\",\"target\":\"0x" << targetAddr << std::dec
+            << "\",\"size\":" << unsigned(info.size)
+            << ",\"call\":" << (inst->isCall() ? "true" : "false")
+            << ",\"return\":" << (inst->isReturn() ? "true" : "false")
+            << ",\"indirect\":" << (inst->isIndirectCtrl() ? "true" : "false")
+            << ",\"taken\":" << (taken ? "true" : "false") << "}\n";
+        fatal_if(!bundleEvents, "Cannot write Bundle committed CFI audit");
+    }
+    if (hintBundle && taken && (inst->isCall() || inst->isReturn()))
+        hintBundle->committedBoundary(branchAddr, targetAddr, inst->seqNum, info.size);
 
     // ---------- Process misprediction and update statistics ----------
     processMisprediction(entry, branchAddr, info, taken, mispred);
@@ -1132,6 +1161,11 @@ DecoupledBPUWithBTB::commitPredWrongSource(const FetchTarget &entry)
 void
 DecoupledBPUWithBTB::notifyInstCommit(const DynInstPtr &inst)
 {
+    if (hintBundle && (!inst->isMicroop() || inst->isLastMicroop())) {
+        hintBundle->retiredInstruction();
+        if (inst->isFusion())
+            hintBundle->retiredInstruction();
+    }
     // Update committed instruction count for target
     ftq.get(inst->ftqId, inst->threadNumber).commitInstNum++;
     ftq.get(inst->ftqId, inst->threadNumber).lastRetiredPC =

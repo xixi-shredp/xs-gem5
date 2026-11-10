@@ -104,7 +104,7 @@ class PMP : public SimObject
         /** addr range corresponding to a single pmp entry */
         AddrRange pmpAddr = AddrRange(0, 0);
         /** raw addr in pmpaddr register for a pmp entry */
-        Addr rawAddr;
+        Addr rawAddr = 0;
         /** pmpcfg reg value for a pmp entry */
         uint8_t pmpCfg = 0;
     };
@@ -127,6 +127,12 @@ class PMP : public SimObject
     Fault pmpCheck(const RequestPtr &req, BaseMMU::Mode mode,
                   RiscvISA::PrivilegeMode pmode, ThreadContext *tc,
                   Addr vaddr = 0);
+
+    // Device physical access: use the explicitly latched launch privilege,
+    // never the running thread's later MSTATUS/MPRV. This also enforces locked
+    // entries in M mode. It does not change the ordinary Core translation API.
+    Fault pmpCheckPhysical(const RequestPtr &req, BaseMMU::Mode mode,
+                           RiscvISA::PrivilegeMode launch_privilege);
 
     /**
      * pmpUpdateCfg updates the pmpcfg for a pmp

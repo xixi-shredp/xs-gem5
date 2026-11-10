@@ -43,9 +43,13 @@
 #include "cpu/o3/cpu.hh"
 
 #include <cassert>
+#include <cstring>
 #include <limits>
 
 #include "arch/riscv/regs/misc.hh"
+#include "arch/riscv/mmu.hh"
+#include "arch/riscv/pmp.hh"
+#include "base/output.hh"
 #include "config/the_isa.hh"
 #include "cpu/activity.hh"
 #include "cpu/checker/cpu.hh"
@@ -58,6 +62,7 @@
 #include "cpu/pred/btb/decoupled_bpred.hh"
 #include "cpu/reg_class.hh"
 #include "cpu/simple_thread.hh"
+#include "cpu/pred/btb/hint_bundle.hh"
 #include "cpu/thread_context.hh"
 #include "debug/Activity.hh"
 #include "debug/Commit.hh"
@@ -85,6 +90,8 @@ namespace o3
 CPU::CPU(const BaseO3CPUParams &params)
     : BaseCPU(params),
       mmu(params.mmu),
+      hintDmaPort(*this),
+      hintDmaRequestorId(params.system->getRequestorId(this, "hint_dma")),
       tickEvent([this]{ tick(); }, "O3CPU tick",
                 false, Event::CPU_Tick_Pri),
       threadExitEvent([this]{ exitThreads(); }, "O3CPU exit threads",
@@ -137,6 +144,101 @@ CPU::CPU(const BaseO3CPUParams &params)
       cpuStats(this),
       valuePred(params.valuePred)
 {
+    registerExitCallback([this] {
+        if (switchedOut())
+            return;
+        const auto &a = hintDmaAudit;
+        const auto c = hintDmaCounts();
+        HintController::BufferStats buffers;
+        bool controller_present = false;
+        if (auto *bpu = dynamic_cast<
+                branch_prediction::btb_pred::DecoupledBPUWithBTB *>(fetch.getBp());
+                bpu && bpu->hasHintBundle()) {
+            controller_present = true;
+            buffers = bpu->getHintBundleController().bufferStats();
+        }
+        const std::string filename = cpuId() == 0 ? "bundle-controller-buffers.json" :
+            name() + ".bundle-controller-buffers.json";
+        auto output = simout.create(filename, false, true);
+        *output->stream() << "{\"schema\":\"hint-bundle-controller-buffers/v2\""
+            << ",\"controller_present\":" << (controller_present ? "true" : "false")
+            << ",\"measure_only\":false"
+            << ",\"boundary_owner_peak\":" << buffers.boundaryOwnerPeak
+            << ",\"read_buffer_peak_bytes\":" << buffers.readBufferPeakBytes
+            << ",\"write_buffer_peak_bytes\":" << buffers.writeBufferPeakBytes
+            << ",\"shared_slot_peak\":" << buffers.sharedSlotPeak
+            << ",\"read_slot_peak\":" << buffers.readSlotPeak
+            << ",\"write_slot_peak\":" << buffers.writeSlotPeak
+            << ",\"shared_payload_peak_bytes\":" << buffers.sharedPayloadPeakBytes
+            << ",\"completion_descriptor_peak\":" << buffers.completionDescriptorPeak
+            << ",\"max_row_bytes_per_tick\":" << buffers.maxRowBytesPerTick
+            << ",\"max_pack_bytes_per_tick\":" << buffers.maxPackBytesPerTick
+            << ",\"max_write_retire_slots_per_tick\":" << buffers.maxWriteRetireSlotsPerTick
+            << ",\"max_write_retire_records_per_tick\":" << buffers.maxWriteRetireRecordsPerTick
+            << ",\"max_submit_per_tick\":" << buffers.maxSubmitPerTick << "}\n";
+        simout.close(output);
+        if (!a.acquired)
+            return;
+        std::cout << "HINT_BUNDLE_DMA_AUDIT {\"schema\":\"hint-bundle-dma-audit/v3\""
+            << ",\"transport\":\"independent-membus-master\""
+            << ",\"direct_membus\":true,\"max_request_bytes\":64"
+            << ",\"configured_max_outstanding\":64,\"shared_slots\":64"
+            << ",\"shared_payload_bytes\":4096,\"max_send_attempts_per_cycle\":1"
+            << ",\"core_fixed_priority\":false,\"payload_static_alias\":true"
+            << ",\"port\":\"" << hintDmaPort.name() << "\""
+            << ",\"requestor_id\":" << hintDmaRequestorId
+            << ",\"lease_acquired\":" << a.acquired << ",\"lease_released\":" << a.released
+            << ",\"acquire_refused\":" << a.acquireRefused
+            << ",\"canceled_reserved\":" << a.canceledReserved
+            << ",\"released_reads\":" << a.releasedReads
+            << ",\"released_writes\":" << a.releasedWrites
+            << ",\"submitted\":" << a.submitted
+            << ",\"send_attempts\":" << a.attempts
+            << ",\"accepted\":" << a.accepted
+            << ",\"responses\":" << a.responses
+            << ",\"reads\":" << a.reads << ",\"writes\":" << a.writes
+            << ",\"response_errors\":" << a.responseErrors
+            << ",\"access_faults\":" << a.accessFaults
+            << ",\"retry_notifications\":" << a.retries
+            << ",\"retry_quota_deferred\":" << a.retryDeferred
+            << ",\"send_refused\":" << a.refused
+            << ",\"out_of_order_responses\":" << a.outOfOrderResponses
+            << ",\"out_of_order_reads\":" << a.outOfOrderReads
+            << ",\"out_of_order_writes\":" << a.outOfOrderWrites
+            << ",\"accepted_bytes\":" << a.bytes
+            << ",\"read_bytes\":" << a.readBytes << ",\"write_bytes\":" << a.writeBytes
+            << ",\"reads64\":" << a.reads64 << ",\"writes64\":" << a.writes64
+            << ",\"partial_reads\":" << a.partialReads << ",\"partial_writes\":" << a.partialWrites
+            << ",\"max_beat_bytes\":" << a.maxBeat
+            << ",\"max_attempts_per_cycle\":" << a.maxAttemptsPerCycle
+            << ",\"line_crossings\":" << a.lineCrossings
+            << ",\"leased\":" << c.leased << ",\"reserved\":" << c.reserved
+            << ",\"queued\":" << c.queued << ",\"sent\":" << c.sent
+            << ",\"response_ready\":" << c.ready
+            << ",\"read_leased\":" << c.readLeased << ",\"write_leased\":" << c.writeLeased
+            << ",\"read_sent\":" << c.readSent << ",\"write_sent\":" << c.writeSent
+            << ",\"read_ready\":" << c.readReady << ",\"write_ready\":" << c.writeReady
+            << ",\"resident_read_bytes\":" << c.readBytes
+            << ",\"resident_write_bytes\":" << c.writeBytes
+            << ",\"leased_payload_bytes\":" << c.leased * 64
+            << ",\"peak_leased\":" << a.maxLeased << ",\"peak_reserved\":" << a.maxReserved
+            << ",\"peak_queued\":" << a.maxQueued << ",\"max_outstanding\":" << a.maxOutstanding
+            << ",\"peak_response_ready\":" << a.maxReady
+            << ",\"peak_read_leased\":" << a.maxReadLeased
+            << ",\"peak_write_leased\":" << a.maxWriteLeased
+            << ",\"peak_read_sent\":" << a.maxReadSent
+            << ",\"peak_write_sent\":" << a.maxWriteSent
+            << ",\"peak_read_ready\":" << a.maxReadReady
+            << ",\"peak_write_ready\":" << a.maxWriteReady
+            << ",\"peak_mixed_sent\":" << a.maxMixedSent
+            << ",\"peak_ready_while_sent\":" << a.maxReadyWhileSent
+            << ",\"peak_resident_read_bytes\":" << a.maxReadBytes
+            << ",\"peak_resident_write_bytes\":" << a.maxWriteBytes
+            << ",\"peak_leased_payload_bytes\":" << a.maxLeased * 64
+            << ",\"blocked_send_owner\":" << unsigned(hintDmaBlocked.has_value())
+            << ",\"retry_grant_pending\":" << unsigned(hintDmaRetryGrant)
+            << ",\"pending\":" << c.leased << "}\n";
+    });
     if (!params.switched_out) {
         _status = Running;
     } else {
@@ -578,9 +680,10 @@ CPU::tick()
 
     //Tick each of the stages
 
-    if (auto *bpu = dynamic_cast<
-            branch_prediction::btb_pred::DecoupledBPUWithBTB *>(fetch.getBp())) {
-        bpu->hintCycleTick();
+    auto *hint_bpu = dynamic_cast<
+        branch_prediction::btb_pred::DecoupledBPUWithBTB *>(fetch.getBp());
+    if (hint_bpu) {
+        hint_bpu->hintCycleTick();
     }
 
     commit.tick();
@@ -588,6 +691,13 @@ CPU::tick()
     rename.tick();
     decode.tick();
     fetch.tick();
+
+    if (hint_bpu && hint_bpu->hasHintBundle()) {
+        hint_bpu->getHintBundleController().tick(curCycle());
+        serviceHintBundleDma();
+    }
+    const bool bundle_active = hint_bpu && hint_bpu->hasHintBundle() &&
+        hint_bpu->getHintBundleController().activeOperation();
 
     fetchTimebuffer.advance();
     decodeTimebuffer.advance();
@@ -606,7 +716,9 @@ CPU::tick()
             DPRINTF(O3CPU, "Switched out!\n");
             // increment stat
             lastRunningCycle = curCycle();
-        } else if (!activityRec.active() || _status == Idle) {
+        } else if ((!activityRec.active() || _status == Idle) &&
+                   !bundle_active &&
+                   !hintDmaCounts().leased) {
             DPRINTF(O3CPU, "Idle!\n");
             lastRunningCycle = curCycle();
             cpuStats.timesIdled++;
@@ -623,10 +735,414 @@ CPU::tick()
     tryDrain();
 }
 
+branch_prediction::btb_pred::HintBundleController &
+CPU::getHintBundleController()
+{
+    auto *bpu = dynamic_cast<branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
+        fetch.getBp());
+    fatal_if(!bpu || !bpu->hasHintBundle(),
+             "Hint Bundle CSR/DMA requires a Bundle-capable decoupled BPU");
+    return bpu->getHintBundleController();
+}
+
+uint64_t
+CPU::readHintBundleCsr(unsigned csr)
+{
+    return getHintBundleController().readCsr(csr);
+}
+
+uint64_t
+CPU::hintBundleTraceWritten()
+{
+    return getHintBundleController().writtenRecords();
+}
+
+std::vector<uint8_t>
+CPU::readHintBundleTrace(Addr address, unsigned size)
+{
+    // Post-run observation only. Data must already have reached physical
+    // memory through successful timing WriteResp; never flush or synthesize
+    // an unfinished transfer for the host reader.
+    auto &controller = getHintBundleController();
+    const uint64_t status = controller.readCsr(0x5c0);
+    fatal_if(status & ((7ULL << 59) | (1ULL << 50)),
+             "Cannot observe Bundle Trace before profiling/DMA drain");
+    fatal_if(hintDmaCounts().leased,
+             "Cannot observe Bundle Trace with outstanding DMA");
+    const Addr base = controller.readCsr(0x5c1) << 20;
+    const uint64_t bytes = controller.writtenRecords() * 22;
+    fatal_if(!size || size > 1024 * 1024 || address < base ||
+             address - base > bytes || size > bytes - (address - base),
+             "Bundle Trace observer is outside completed records");
+    fatal_if(address > MaxAddr - (size - 1) ||
+             !system->isMemAddr(address) ||
+             !system->isMemAddr(address + size - 1),
+             "Bundle Trace observer is outside physical RAM");
+    std::vector<uint8_t> result(size);
+    system->physProxy.readBlob(address, result.data(), size);
+    return result;
+}
+
+void
+CPU::writeHintBundleCsr(unsigned csr, uint64_t value, ThreadID tid)
+{
+    auto &controller = getHintBundleController();
+    // The write is delivered by DynInst::updateMiscRegs at retirement. Keep
+    // the launch hart and privilege fixed across asynchronous guest changes.
+    const bool idle = !controller.activeOperation();
+    const unsigned launch_privilege =
+        tcBase(tid)->readMiscRegNoEffect(RiscvISA::MISCREG_PRV);
+    // Capture before writeCsr: even a first request made by that call must
+    // observe the launching hart/privilege rather than the preceding run.
+    if (idle) {
+        hintBundleThread = tid;
+        hintBundlePrivilege = launch_privilege;
+    }
+    controller.writeCsr(csr, value);
+    wakeCPU();
+}
+
+std::optional<CPU::HintDmaToken>
+CPU::acquireHintBundleDma()
+{
+    for (unsigned i = 0; i < HintDmaSlots; ++i) {
+        auto &slot = hintDmaSlots[i];
+        if (slot.state != HintDmaSlotState::Free)
+            continue;
+        // Reuse follows release only: no Packet, callback or controller token
+        // may survive release. Thus modulo generation wrap has no live ABA
+        // peer, including wrap to zero; it is not an unbounded identity store.
+        panic_if(slot.packet || slot.done, "Free Hint lease still has an owner");
+        ++slot.generation;
+        slot.state = HintDmaSlotState::Reserved;
+        slot.bytes = 0;
+        ++hintDmaAudit.acquired;
+        sampleHintDmaCounts();
+        wakeCPU();
+        return HintDmaToken{uint8_t(i), slot.generation};
+    }
+    ++hintDmaAudit.acquireRefused;
+    return std::nullopt;
+}
+
+CPU::HintDmaSlot &
+CPU::checkedHintDmaSlot(HintDmaToken token)
+{
+    panic_if(token.slot >= HintDmaSlots, "Invalid Hint lease slot");
+    auto &slot = hintDmaSlots[token.slot];
+    panic_if(slot.state == HintDmaSlotState::Free ||
+             slot.generation != token.generation, "Stale Hint lease token");
+    return slot;
+}
+
+CPU::HintDmaPayload &
+CPU::hintBundleDmaPayload(HintDmaToken token)
+{
+    auto &slot = checkedHintDmaSlot(token);
+    panic_if(slot.state != HintDmaSlotState::Reserved &&
+             slot.state != HintDmaSlotState::Ready,
+             "Hint payload accessed while owned by transport");
+    return slot.payload;
+}
+
+bool
+CPU::submitHintBundleDma(HintDmaToken token, Addr address, bool write,
+                         unsigned bytes, HintDmaDone done)
+{
+    auto &slot = checkedHintDmaSlot(token);
+    if (slot.state != HintDmaSlotState::Reserved)
+        return false;
+    fatal_if(!bytes || bytes > 64 || address > MaxAddr - (bytes - 1) ||
+             (address & 63) + bytes > 64 || !done, "Invalid Hint DMA beat");
+    fatal_if(!hintDmaPort.isConnected(), "Hint DMA master is not connected");
+    panic_if(hintDmaQueueCount >= HintDmaSlots, "Hint submission queue overflow");
+    auto request = std::make_shared<Request>(address, bytes,
+        Request::PHYSICAL | Request::UNCACHEABLE | Request::STRICT_ORDER,
+        hintDmaRequestorId);
+    request->setContext(tcBase(hintBundleThread)->contextId());
+    slot.packet = new Packet(request, write ? MemCmd::WriteReq : MemCmd::ReadReq);
+    slot.packet->dataStatic(slot.payload.data());
+    slot.packet->senderState = new HintDmaSenderState(token);
+    slot.thread = hintBundleThread;
+    slot.privilege = hintBundlePrivilege;
+    slot.bytes = bytes;
+    slot.write = write;
+    slot.done = std::move(done);
+    slot.state = HintDmaSlotState::Queued;
+    hintDmaQueue[(hintDmaQueueHead + hintDmaQueueCount) % HintDmaSlots] = token.slot;
+    ++hintDmaQueueCount;
+    ++hintDmaAudit.submitted;
+    sampleHintDmaCounts();
+    wakeCPU();
+    return true;
+}
+
+void
+CPU::releaseHintBundleDma(HintDmaToken token)
+{
+    auto &slot = checkedHintDmaSlot(token);
+    panic_if(slot.state != HintDmaSlotState::Reserved &&
+             slot.state != HintDmaSlotState::Ready,
+             "Cannot release an unreturned Hint transaction");
+    panic_if(slot.packet || slot.done, "Released Hint lease has packet/callback owner");
+    if (slot.state == HintDmaSlotState::Reserved)
+        ++hintDmaAudit.canceledReserved;
+    else if (slot.write)
+        ++hintDmaAudit.releasedWrites;
+    else
+        ++hintDmaAudit.releasedReads;
+    slot.state = HintDmaSlotState::Free;
+    slot.bytes = 0;
+    ++hintDmaAudit.released;
+    sampleHintDmaCounts();
+}
+
+CPU::HintDmaCounts
+CPU::hintDmaCounts() const
+{
+    HintDmaCounts c;
+    for (const auto &slot : hintDmaSlots) {
+        if (slot.state == HintDmaSlotState::Free)
+            continue;
+        ++c.leased;
+        if (slot.state == HintDmaSlotState::Reserved) {
+            ++c.reserved;
+            continue;
+        }
+        if (slot.write) { ++c.writeLeased; c.writeBytes += slot.bytes; }
+        else { ++c.readLeased; c.readBytes += slot.bytes; }
+        if (slot.state == HintDmaSlotState::Queued) ++c.queued;
+        if (slot.state == HintDmaSlotState::Sent) {
+            ++c.sent;
+            if (slot.write) ++c.writeSent; else ++c.readSent;
+        }
+        if (slot.state == HintDmaSlotState::Ready) {
+            ++c.ready;
+            if (slot.write) ++c.writeReady; else ++c.readReady;
+        }
+    }
+    return c;
+}
+
+void
+CPU::sampleHintDmaCounts()
+{
+    const auto c = hintDmaCounts();
+    auto &a = hintDmaAudit;
+    panic_if(c.leased != c.reserved + c.queued + c.sent + c.ready ||
+             c.queued != hintDmaQueueCount || c.sent != hintDmaAcceptedCount ||
+             a.acquired - a.released != c.leased ||
+             a.accepted - a.responses != c.sent ||
+             (hintDmaRetryGrant && !hintDmaBlocked),
+             "Hint shared-pool ownership conservation failed");
+    a.maxLeased = std::max<uint64_t>(a.maxLeased, c.leased);
+    a.maxReserved = std::max<uint64_t>(a.maxReserved, c.reserved);
+    a.maxQueued = std::max<uint64_t>(a.maxQueued, c.queued);
+    a.maxOutstanding = std::max<uint64_t>(a.maxOutstanding, c.sent);
+    a.maxReady = std::max<uint64_t>(a.maxReady, c.ready);
+    a.maxReadLeased = std::max<uint64_t>(a.maxReadLeased, c.readLeased);
+    a.maxWriteLeased = std::max<uint64_t>(a.maxWriteLeased, c.writeLeased);
+    a.maxReadSent = std::max<uint64_t>(a.maxReadSent, c.readSent);
+    a.maxWriteSent = std::max<uint64_t>(a.maxWriteSent, c.writeSent);
+    a.maxReadReady = std::max<uint64_t>(a.maxReadReady, c.readReady);
+    a.maxWriteReady = std::max<uint64_t>(a.maxWriteReady, c.writeReady);
+    a.maxReadBytes = std::max<uint64_t>(a.maxReadBytes, c.readBytes);
+    a.maxWriteBytes = std::max<uint64_t>(a.maxWriteBytes, c.writeBytes);
+    if (c.readSent && c.writeSent)
+        a.maxMixedSent = std::max<uint64_t>(a.maxMixedSent, c.sent);
+    if (c.sent)
+        a.maxReadyWhileSent = std::max<uint64_t>(a.maxReadyWhileSent, c.ready);
+}
+
+void
+CPU::bindHintDmaPool(HintController &controller)
+{
+    controller.setDmaPool(
+        [this] { return acquireHintBundleDma(); },
+        [this](HintDmaToken t) -> HintDmaPayload & { return hintBundleDmaPayload(t); },
+        [this](HintDmaToken t, Addr a, bool w, unsigned n, HintDmaDone done) {
+            return submitHintBundleDma(t, a, w, n, std::move(done));
+        },
+        [this](HintDmaToken t) { releaseHintBundleDma(t); });
+}
+
+Port &
+CPU::getPort(const std::string &if_name, PortID idx)
+{
+    if (if_name == "hint_dma_port")
+        return hintDmaPort;
+    return BaseCPU::getPort(if_name, idx);
+}
+
+void
+CPU::serviceHintBundleDma()
+{
+    if (!hintDmaQueueCount || (hintDmaBlocked && !hintDmaRetryGrant))
+        return;
+    // Normal service and retry callbacks share the same single-cycle quota.
+    // A granted retry postponed here remains granted, not waiting for another
+    // notification that the downstream will never send.
+    if (hintDmaLastAttempt && *hintDmaLastAttempt == curCycle())
+        return;
+    const unsigned index = hintDmaQueue[hintDmaQueueHead];
+    auto &slot = hintDmaSlots[index];
+    panic_if(slot.state != HintDmaSlotState::Queued ||
+             (hintDmaBlocked && *hintDmaBlocked != index),
+             "Hint submission/retry owner mismatch");
+    auto *packet = slot.packet;
+    bool valid = true;
+    for (unsigned i = 0; valid && i < slot.bytes; ++i)
+        valid = system->isMemAddr(packet->getAddr() + i);
+    auto *tc = tcBase(slot.thread);
+    auto *riscv_mmu = dynamic_cast<RiscvISA::MMU *>(tc->getMMUPtr());
+    fatal_if(!riscv_mmu, "Hint DMA requires RISC-V protection checks");
+    if (valid) {
+        riscv_mmu->pma->check(packet->req);
+        valid = riscv_mmu->getPMP()->pmpCheckPhysical(packet->req,
+            slot.write ? BaseMMU::Write : BaseMMU::Read,
+            static_cast<RiscvISA::PrivilegeMode>(slot.privilege)) == NoFault;
+    }
+    if (!valid) {
+        ++hintDmaAudit.accessFaults;
+        auto done = std::move(slot.done);
+        slot.done = {};
+        const HintDmaToken token{uint8_t(index), slot.generation};
+        delete packet->senderState;
+        packet->senderState = nullptr;
+        delete packet;
+        slot.packet = nullptr;
+        slot.state = HintDmaSlotState::Ready;
+        hintDmaQueueHead = (hintDmaQueueHead + 1) % HintDmaSlots;
+        --hintDmaQueueCount;
+        hintDmaBlocked.reset();
+        hintDmaRetryGrant = false;
+        sampleHintDmaCounts();
+        done(token, false, uint64_t(curCycle()));
+        return;
+    }
+    hintDmaLastAttempt = curCycle();
+    hintDmaAttemptsThisCycle = 0;
+    ++hintDmaAttemptsThisCycle;
+    ++hintDmaAudit.attempts;
+    hintDmaAudit.maxAttemptsPerCycle = std::max<uint64_t>(
+        hintDmaAudit.maxAttemptsPerCycle, hintDmaAttemptsThisCycle);
+    if (hintDmaPort.sendTimingReq(packet)) {
+        slot.state = HintDmaSlotState::Sent;
+        panic_if(hintDmaAcceptedCount >= HintDmaSlots, "Hint accepted-order observer overflow");
+        hintDmaAcceptedOrder[hintDmaAcceptedCount++] = index;
+        hintDmaQueueHead = (hintDmaQueueHead + 1) % HintDmaSlots;
+        --hintDmaQueueCount;
+        hintDmaBlocked.reset();
+        hintDmaRetryGrant = false;
+        ++hintDmaAudit.accepted;
+        hintDmaAudit.bytes += slot.bytes;
+        hintDmaAudit.maxBeat = std::max<uint64_t>(hintDmaAudit.maxBeat, slot.bytes);
+        hintDmaAudit.lineCrossings += (packet->getAddr() & 63) + slot.bytes > 64;
+        if (slot.write) {
+            ++hintDmaAudit.writes; hintDmaAudit.writeBytes += slot.bytes;
+            if (slot.bytes == 64) ++hintDmaAudit.writes64;
+            else ++hintDmaAudit.partialWrites;
+        } else {
+            ++hintDmaAudit.reads; hintDmaAudit.readBytes += slot.bytes;
+            if (slot.bytes == 64) ++hintDmaAudit.reads64;
+            else ++hintDmaAudit.partialReads;
+        }
+    } else {
+        ++hintDmaAudit.refused;
+        hintDmaBlocked = index;
+        hintDmaRetryGrant = false;
+    }
+    sampleHintDmaCounts();
+}
+
+void
+CPU::HintDmaPort::recvReqRetry()
+{
+    panic_if(!cpu.hintDmaBlocked || cpu.hintDmaRetryGrant,
+             "Unexpected Hint DMA retry");
+    ++cpu.hintDmaAudit.retries;
+    cpu.hintDmaRetryGrant = true;
+    if (cpu.hintDmaLastAttempt && *cpu.hintDmaLastAttempt == cpu.curCycle())
+        ++cpu.hintDmaAudit.retryDeferred;
+    cpu.serviceHintBundleDma();
+    cpu.wakeCPU();
+}
+
+bool
+CPU::HintDmaPort::recvTimingResp(PacketPtr packet)
+{
+    auto *state = dynamic_cast<HintDmaSenderState *>(packet->senderState);
+    panic_if(!state, "Hint DMA response has no lease sender state");
+    const auto token = state->token;
+    auto &slot = cpu.checkedHintDmaSlot(token);
+    panic_if(slot.packet != packet || slot.state != HintDmaSlotState::Sent ||
+             packet->getConstPtr<uint8_t>() != slot.payload.data(),
+             "Hint DMA response owner/payload mismatch");
+    const bool success = !packet->isError();
+    unsigned position = 0;
+    while (position < cpu.hintDmaAcceptedCount &&
+           cpu.hintDmaAcceptedOrder[position] != token.slot) ++position;
+    panic_if(position == cpu.hintDmaAcceptedCount, "Response absent from acceptance observer");
+    cpu.hintDmaAudit.outOfOrderResponses += position != 0;
+    if (position) {
+        if (slot.write) ++cpu.hintDmaAudit.outOfOrderWrites;
+        else ++cpu.hintDmaAudit.outOfOrderReads;
+    }
+    for (unsigned i = position + 1; i < cpu.hintDmaAcceptedCount; ++i)
+        cpu.hintDmaAcceptedOrder[i - 1] = cpu.hintDmaAcceptedOrder[i];
+    --cpu.hintDmaAcceptedCount;
+    ++cpu.hintDmaAudit.responses;
+    cpu.hintDmaAudit.responseErrors += !success;
+    if (success && slot.write) {
+        // Difftest-only mirror, not a second functional DMA payload buffer.
+        std::vector<uint8_t> data(slot.payload.begin(), slot.payload.begin() + slot.bytes);
+        cpu.syncHintBundleDma(packet->getAddr(), data);
+    }
+    auto done = std::move(slot.done);
+    slot.done = {};
+    slot.packet = nullptr;
+    slot.state = HintDmaSlotState::Ready;
+    packet->senderState = nullptr;
+    delete state;
+    delete packet;
+    cpu.sampleHintDmaCounts();
+    done(token, success, uint64_t(cpu.curCycle()));
+    cpu.wakeCPU();
+    return true;
+}
+
+bool
+CPU::hintBundleNeedsTick() const
+{
+    // These existing accessors lack const overloads; observing status here
+    // changes neither the predictor nor the controller.
+    auto *bpu = dynamic_cast<
+        branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
+            const_cast<CPU *>(this)->fetch.getBp());
+    return hintDmaCounts().leased || (bpu && bpu->hasHintBundle() &&
+        bpu->getHintBundleController().activeOperation());
+}
+
+bool
+CPU::hintBundleNeedsDrain() const
+{
+    auto *bpu = dynamic_cast<
+        branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
+            const_cast<CPU *>(this)->fetch.getBp());
+    return hintDmaCounts().leased || (bpu && bpu->hasHintBundle() &&
+        bpu->getHintBundleController().busy());
+}
+
 void
 CPU::init()
 {
     BaseCPU::init();
+    if (auto *bpu = dynamic_cast<branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
+            fetch.getBp()); bpu && bpu->hasHintBundle()) {
+      fatal_if(!switchedOut() && !hintDmaPort.isConnected(),
+               "Bundle requires hint_dma_port");
+      bindHintDmaPool(bpu->getHintBundleController());
+    }
 
     for (ThreadID tid = 0; tid < numThreads; ++tid) {
         // Set noSquashFromTC so that the CPU doesn't squash when initially
@@ -769,7 +1285,8 @@ CPU::suspendContext(ThreadID tid)
 
     // If this was the last thread then unschedule the tick event.
     if (activeThreads.size() == 0) {
-        unscheduleTickEvent();
+        if (!hintBundleNeedsTick())
+            unscheduleTickEvent();
         lastRunningCycle = curCycle();
         _status = Idle;
     }
@@ -791,7 +1308,7 @@ CPU::haltContext(ThreadID tid)
 
     // If this was the last thread then unschedule the tick event.
     if (activeThreads.size() == 0) {
-        if (tickEvent.scheduled())
+        if (tickEvent.scheduled() && !hintBundleNeedsTick())
         {
             unscheduleTickEvent();
         }
@@ -1033,6 +1550,10 @@ bool
 CPU::isCpuDrained() const
 {
     bool drained(true);
+    if (hintBundleNeedsDrain()) {
+        DPRINTF(Drain, "Hint controller/DMA not drained.\n");
+        drained = false;
+    }
 
     if (!instList.empty() || !removeList.empty()) {
         DPRINTF(Drain, "Main CPU structures not drained.\n");
@@ -1091,7 +1612,7 @@ CPU::drainResume()
     }
 
     assert(!tickEvent.scheduled());
-    if (_status == Running)
+    if (_status == Running || hintBundleNeedsTick())
         schedule(tickEvent, nextCycle());
 
     // Reschedule any power gating event (if any)
@@ -1101,6 +1622,7 @@ CPU::drainResume()
 void
 CPU::switchOut()
 {
+    panic_if(hintBundleNeedsDrain(), "Cannot switch out outstanding Hint DMA");
     DPRINTF(O3CPU, "Switching out\n");
     BaseCPU::switchOut();
 
@@ -1115,7 +1637,22 @@ CPU::switchOut()
 void
 CPU::takeOverFrom(BaseCPU *oldCPU)
 {
+    panic_if(hintBundleNeedsDrain(), "New CPU has outstanding Hint DMA");
+    if (auto *old_o3 = dynamic_cast<CPU *>(oldCPU)) {
+        panic_if(old_o3->hintBundleNeedsDrain(),
+                 "Old CPU has outstanding Hint DMA at takeover");
+        // Normal configuration gives every CPU its own membus endpoint.
+        // Only transfer the old endpoint for legacy callers lacking one.
+        if (!hintDmaPort.isConnected() && old_o3->hintDmaPort.isConnected())
+            hintDmaPort.takeOverFrom(&old_o3->hintDmaPort);
+    }
     BaseCPU::takeOverFrom(oldCPU);
+
+    if (auto *bpu = dynamic_cast<branch_prediction::btb_pred::DecoupledBPUWithBTB *>(
+            fetch.getBp()); bpu && bpu->hasHintBundle()) {
+        fatal_if(!hintDmaPort.isConnected(), "Takeover requires Hint DMA master");
+        bindHintDmaPool(bpu->getHintBundleController());
+    }
 
     fetch.takeOverFrom();
     decode.takeOverFrom();
@@ -1917,7 +2454,7 @@ CPU::htmSendAbortSignal(ThreadID tid, uint64_t htm_uid,
     abort_pkt->setHtmTransactional(htm_uid);
 
     // TODO include correct error handling here
-    if (!iew.ldstQueue.getDataPort().sendTimingReq(abort_pkt)) {
+    if (!iew.ldstQueue.sendCoreTimingReq(abort_pkt)) {
         panic("HTM abort signal was not sent to the memory subsystem.");
     }
 }

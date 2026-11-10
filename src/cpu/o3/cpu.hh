@@ -44,6 +44,9 @@
 #define __CPU_O3_CPU_HH__
 
 #include <iostream>
+#include <array>
+#include <optional>
+#include <functional>
 #include <list>
 #include <queue>
 #include <set>
@@ -69,10 +72,12 @@
 #include "cpu/o3/rob.hh"
 #include "cpu/o3/scoreboard.hh"
 #include "cpu/o3/thread_state.hh"
+#include "cpu/pred/btb/hint_bundle.hh"
 #include "cpu/simple_thread.hh"
 #include "cpu/timebuf.hh"
 #include "cpu/valuepred/valuepred_unit.hh"
 #include "mem/cache/prefetch/base.hh"
+#include "mem/port.hh"
 #include "params/BaseO3CPU.hh"
 #include "sim/process.hh"
 #include "sim/rolling.hh"
@@ -86,6 +91,7 @@ class ThreadContext;
 
 class Checkpoint;
 class Process;
+namespace branch_prediction::btb_pred { class HintBundleController; }
 
 namespace o3
 {
@@ -125,6 +131,13 @@ class CPU : public BaseCPU
     };
 
     BaseMMU *mmu;
+    branch_prediction::btb_pred::HintBundleController &getHintBundleController();
+    uint64_t readHintBundleCsr(unsigned csr);
+    uint64_t hintBundleTraceWritten();
+    std::vector<uint8_t> readHintBundleTrace(Addr address, unsigned size);
+    void writeHintBundleCsr(unsigned csr, uint64_t value, ThreadID tid);
+    Port &getPort(const std::string &if_name,
+                  PortID idx = InvalidPortID) override;
     using LSQRequest = LSQ::LSQRequest;
 
     /** Overall CPU status. */
@@ -133,6 +146,91 @@ class CPU : public BaseCPU
   private:
 
     bool dump_done = false;
+    ThreadID hintBundleThread = 0;
+    unsigned hintBundlePrivilege = 3;
+    // This master never shares LSQ/DCACHE ownership or retry state.
+    class HintDmaPort : public RequestPort
+    {
+      private:
+        CPU &cpu;
+        bool recvTimingResp(PacketPtr packet) override;
+        void recvReqRetry() override;
+      public:
+        explicit HintDmaPort(CPU &owner)
+            : RequestPort(owner.name() + ".hint_dma_port"), cpu(owner) {}
+    };
+    HintDmaPort hintDmaPort;
+    RequestorID hintDmaRequestorId;
+    using HintController = branch_prediction::btb_pred::HintBundleController;
+    using HintDmaToken = HintController::DmaToken;
+    using HintDmaPayload = HintController::DmaPayload;
+    using HintDmaDone = HintController::DmaDone;
+    static constexpr unsigned HintDmaSlots = 64;
+    enum class HintDmaSlotState { Free, Reserved, Queued, Sent, Ready };
+    struct HintDmaSlot {
+        HintDmaPayload payload{};
+        uint64_t generation = 0;
+        HintDmaSlotState state = HintDmaSlotState::Free;
+        PacketPtr packet = nullptr;
+        HintDmaDone done;
+        ThreadID thread = 0;
+        unsigned privilege = 3, bytes = 0;
+        bool write = false;
+    };
+    struct HintDmaSenderState : public Packet::SenderState {
+        HintDmaToken token;
+        explicit HintDmaSenderState(HintDmaToken value) : token(value) {}
+    };
+    // The only functional payload storage: both directions share these slots.
+    // Packet::dataStatic aliases one slot until real response and consumption.
+    std::array<HintDmaSlot, HintDmaSlots> hintDmaSlots{};
+    std::array<unsigned, HintDmaSlots> hintDmaQueue{};
+    unsigned hintDmaQueueHead = 0, hintDmaQueueCount = 0;
+    std::optional<unsigned> hintDmaBlocked;
+    bool hintDmaRetryGrant = false;
+    std::optional<Cycles> hintDmaLastAttempt;
+    unsigned hintDmaAttemptsThisCycle = 0;
+    // Observer-only finite list, records actual acceptance order for OOO audit.
+    std::array<unsigned, HintDmaSlots> hintDmaAcceptedOrder{};
+    unsigned hintDmaAcceptedCount = 0;
+    struct HintDmaCounts {
+        unsigned leased = 0, reserved = 0, queued = 0, sent = 0, ready = 0;
+        unsigned readLeased = 0, writeLeased = 0;
+        unsigned readSent = 0, writeSent = 0;
+        unsigned readReady = 0, writeReady = 0;
+        unsigned readBytes = 0, writeBytes = 0;
+    };
+    std::optional<HintDmaToken> acquireHintBundleDma();
+    HintDmaPayload &hintBundleDmaPayload(HintDmaToken token);
+    bool submitHintBundleDma(HintDmaToken token, Addr address, bool write,
+                             unsigned bytes, HintDmaDone done);
+    void releaseHintBundleDma(HintDmaToken token);
+    HintDmaSlot &checkedHintDmaSlot(HintDmaToken token);
+    HintDmaCounts hintDmaCounts() const;
+    void sampleHintDmaCounts();
+    void bindHintDmaPool(HintController &controller);
+    void serviceHintBundleDma();
+    bool hintBundleNeedsTick() const;
+    bool hintBundleNeedsDrain() const;
+    struct HintDmaAudit {
+        uint64_t submitted = 0, attempts = 0, accepted = 0, responses = 0;
+        uint64_t reads = 0, writes = 0, responseErrors = 0, accessFaults = 0;
+        uint64_t retries = 0, refused = 0, bytes = 0, maxBeat = 0;
+        uint64_t maxOutstanding = 0, readBytes = 0, writeBytes = 0;
+        uint64_t lineCrossings = 0;
+        uint64_t reads64 = 0, writes64 = 0, partialReads = 0, partialWrites = 0;
+        uint64_t acquired = 0, released = 0, canceledReserved = 0;
+        uint64_t releasedReads = 0, releasedWrites = 0;
+        uint64_t acquireRefused = 0, retryDeferred = 0, outOfOrderResponses = 0;
+        uint64_t maxLeased = 0, maxReserved = 0, maxQueued = 0, maxReady = 0;
+        uint64_t maxReadLeased = 0, maxWriteLeased = 0;
+        uint64_t maxReadSent = 0, maxWriteSent = 0;
+        uint64_t maxReadReady = 0, maxWriteReady = 0;
+        uint64_t maxReadBytes = 0, maxWriteBytes = 0;
+        uint64_t maxAttemptsPerCycle = 0;
+        uint64_t maxMixedSent = 0, maxReadyWhileSent = 0;
+        uint64_t outOfOrderReads = 0, outOfOrderWrites = 0;
+    } hintDmaAudit;
     bool warmup_done = false;
     enum class InstructionPhase { Restore, Warmup, Measure, Finished };
     InstructionPhase instructionPhase = InstructionPhase::Measure;

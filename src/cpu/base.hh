@@ -747,6 +747,9 @@ class BaseCPU : public ClockedObject
   public:
     const unsigned MaxDestRegisters = 2;
 
+    // Mirror only completed device writes into the architectural reference.
+    void syncHintBundleDma(Addr addr, const std::vector<uint8_t> &data);
+
     struct
     {
         gem5::StaticInstPtr inst;

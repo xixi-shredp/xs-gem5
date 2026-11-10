@@ -49,6 +49,7 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "cpu/base.hh"
+#include "cpu/o3/cpu.hh"
 #include "debug/Checkpoint.hh"
 #include "debug/FloatRegs.hh"
 #include "debug/IntRegs.hh"
@@ -326,6 +327,9 @@ matrixWriteBlob(ThreadContext *tc, Addr addr, const void *src, size_t size)
     [MISCREG_HSTATEEN1]     = "HSTATEEN1",
     [MISCREG_HSTATEEN2]     = "HSTATEEN2",
     [MISCREG_HSTATEEN3]     = "HSTATEEN3",
+    [MISCREG_IBPHINTSTATUS] = "IBPHINTSTATUS",
+    [MISCREG_IBPHINTPADDR]  = "IBPHINTPADDR",
+    [MISCREG_IBPHINTLADDR]  = "IBPHINTLADDR",
     [MISCREG_FFLAGS_EXE]    = "FFLAGS_EXE",
 }};
 
@@ -602,6 +606,11 @@ ISA::readMiscRegNoEffect(int misc_reg) const
 RegVal
 ISA::readMiscReg(int misc_reg)
 {
+    if (misc_reg >= MISCREG_IBPHINTSTATUS && misc_reg <= MISCREG_IBPHINTLADDR) {
+        auto *cpu = dynamic_cast<o3::CPU *>(tc->getCpuPtr());
+        fatal_if(!cpu, "Hint Bundle CSRs require O3 timing CPU");
+        return cpu->readHintBundleCsr(CSR_IBPHINTSTATUS + misc_reg - MISCREG_IBPHINTSTATUS);
+    }
     int v = readMiscRegNoEffect(MISCREG_VIRMODE);
     auto pm = readMiscRegNoEffect(MISCREG_PRV);
     if ((v == 1) && (misc_reg == MISCREG_SSCRATCH)) {
@@ -770,6 +779,13 @@ ISA::setMiscRegNoEffect(int misc_reg, RegVal val)
 void
 ISA::setMiscReg(int misc_reg, RegVal val)
 {
+    if (misc_reg >= MISCREG_IBPHINTSTATUS && misc_reg <= MISCREG_IBPHINTLADDR) {
+        auto *cpu = dynamic_cast<o3::CPU *>(tc->getCpuPtr());
+        fatal_if(!cpu, "Hint Bundle CSRs require O3 timing CPU");
+        cpu->writeHintBundleCsr(CSR_IBPHINTSTATUS + misc_reg - MISCREG_IBPHINTSTATUS,
+                               val, tc->threadId());
+        return;
+    }
     int v = readMiscReg(MISCREG_VIRMODE);
     if (misc_reg == MISCREG_STATUS) {
         DPRINTF(RiscvMisc, "setMiscReg: setting status with %#lx\n", val);

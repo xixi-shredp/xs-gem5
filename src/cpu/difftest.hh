@@ -182,6 +182,8 @@ class RefProxy
                    bool direction) = nullptr;
     void (*regcpy)(void *dut, bool direction) = nullptr;
     void (*csrcpy)(void *dut, bool direction) = nullptr;
+    // Optional peripheral input reflection; required only for Bundle CSR reads.
+    void (*hint_csr)(uint32_t csr, uint64_t value) = nullptr;
     void (*uarchstatus_cpy)(void *dut, bool direction) = nullptr;
     int (*store_commit)(uint64_t *saddr, uint64_t *sdata,
                         uint8_t *smask) = nullptr;

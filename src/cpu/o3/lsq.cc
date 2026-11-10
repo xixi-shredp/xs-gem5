@@ -75,6 +75,7 @@
 #include "debug/StoreBuffer.hh"
 #include "debug/TagReadFail.hh"
 #include "debug/Writeback.hh"
+#include "sim/sim_exit.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 #include "mem/request.hh"
@@ -1477,9 +1478,9 @@ LSQ::processWriteback()
     bool has_thread_offloaded = false;
     for (ThreadID tid = 0; tid < numThreads; ++tid) {
         thread[(nextStoreBufferInsertTid + tid) % numThreads].offloadToStoreBuffer(offload_quota[(nextStoreBufferInsertTid + tid) % numThreads], offload_fail);
-        has_thread_offloaded |= ((offload_quota[(nextStoreBufferInsertTid + tid) % numThreads] != 0) 
+        has_thread_offloaded |= ((offload_quota[(nextStoreBufferInsertTid + tid) % numThreads] != 0)
                                 && !(offload_fail[(nextStoreBufferInsertTid + tid) % numThreads]));
-        
+
     }
 
     for (ThreadID tid = 0; tid < numThreads; ++tid) {
@@ -1695,7 +1696,7 @@ LSQ::issueSbufferPacketFromDcacheMainPipe(PacketPtr data_pkt, Tick issue_tick)
     // Issue to the real classic cache only at fake S2 so StoreBuffer misses
     // cannot allocate or merge MSHRs at fake-pipe admission time.
     if (!cacheBlocked() && cachePortAvailable(false)) {
-        if (!dcachePort.sendTimingReq(data_pkt)) {
+        if (!sendCoreTimingReq(data_pkt)) {
             result = DcacheMainPipeS2Result::Blocked;
             cache_got_blocked = true;
         }
@@ -1894,6 +1895,12 @@ LSQ::setLastRetiredHtmUid(ThreadID tid, uint64_t htmUid)
 {
     if (tid != InvalidThreadID)
         thread[tid].setLastRetiredHtmUid(htmUid);
+}
+
+bool
+LSQ::sendCoreTimingReq(PacketPtr packet)
+{
+    return dcachePort.sendTimingReq(packet);
 }
 
 void
@@ -3914,7 +3921,7 @@ LSQ::checkStaleTranslations()
     PacketPtr pkt = Packet::createRead(req);
 
     // TODO - reserve some credit for these responses?
-    if (!dcachePort.sendTimingReq(pkt)) {
+    if (!sendCoreTimingReq(pkt)) {
         panic("Couldn't send TLBI_EXT_SYNC_COMP message");
     }
 

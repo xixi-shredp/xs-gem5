@@ -345,12 +345,25 @@ def template CSRExecute {{
         RegVal data, olddata;
         auto lowestAllowedMode = (PrivilegeMode)bits(csr, 9, 8);
         auto pm = (PrivilegeMode)xc->readMiscReg(MISCREG_PRV);
+        const bool hint_csr = csr >= CSR_IBPHINTSTATUS && csr <= CSR_IBPHINTLADDR;
+        if (hint_csr && xc->readMiscReg(MISCREG_VIRMODE)) {
+            return std::make_shared<IllegalInstFault>(
+                    "Hint CSR is unavailable in virtual mode", machInst);
+        }
         if ((pm < lowestAllowedMode) && ((csr <CSR_HSTATUS
                 ) ||(csr >CSR_HGATP)) && ((csr <CSR_VSSTATUS) || (
                     csr > CSR_VSATP))) {
             return std::make_shared<IllegalInstFault>(
                     csprintf("%s is not accessible in %s\n", csrName, pm),
                     machInst);
+        }
+        // Smstateen's custom-state bit gates supervisor custom CSRs.
+        // M-mode retains access regardless of C; virtual Hint accesses were
+        // already rejected above. Check before any controller read or write.
+        if (hint_csr && pm == PRV_S &&
+            !(xc->readMiscReg(MISCREG_MSTATEEN0) & RegVal(1))) {
+            return std::make_shared<IllegalInstFault>(
+                    "Hint CSR access with mstateen0.C clear", machInst);
         }
 
         auto* isa = dynamic_cast<RiscvISA::ISA*>(xc->tcBase()->getIsaPtr());
@@ -441,12 +454,18 @@ def template CSRExecute {{
 
         %(code)s;
 
+        // CSRRW/CSRRWI always write, including zero; CSRRS/CSRRC and their
+        // immediate forms write only with a nonzero encoded source/mask.
+        // Preserve unrelated legacy CSR behavior outside this custom range.
+        if (hint_csr)
+            write = bits(machInst, 14, 12) == 1 ||
+                    bits(machInst, 14, 12) == 5 || bits(machInst, 19, 15) != 0;
         data &= maskVal_num;
         if(csr == CSR_HIE){
             xc->setMiscReg(midx, data);
         }
         // NOTE: may has bug
-        if (data != olddata || csr == CSR_FCSR || (csr == CSR_FRM && write) || csr == CSR_VCSR) {
+        if ((hint_csr ? write : data != olddata) || csr == CSR_FCSR || (csr == CSR_FRM && write) || csr == CSR_VCSR) {
             if (bits(csr, 11, 10) == 0x3) {
                 return std::make_shared<IllegalInstFault>(
                         csprintf("CSR %s is read-only\n", csrName), machInst);

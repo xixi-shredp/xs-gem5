@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -61,6 +62,8 @@ struct HintQuery
     bool overridden = false;
     uint64_t ftqId = 0;
     bool resolved = false;
+    // Simulation-only audit identity, never serialized in hardware metadata.
+    int bundleMetadata = -1;
 };
 
 class HintIndirect
@@ -71,6 +74,8 @@ class HintIndirect
         std::string mode = "off";
         std::string profileContext = "prediction";
         bool ideal = false;
+        bool runtimeControlled = false;
+        bool bundle = false;
         std::string candidatePath;
         std::string metadataPath;
         unsigned camEntries = 16;
@@ -137,15 +142,46 @@ class HintIndirect
     HintIndirect(const Config &config, statistics::Group *parent);
     ~HintIndirect();
 
-    bool enabled() const { return config.mode != "off"; }
-    bool isCollect() const { return config.mode == "collect"; }
-    bool isReplay() const { return config.mode == "replay"; }
+    bool enabled() const { return runtimeControlled || config.mode != "off"; }
+    bool isCollect() const { return runtimeControlled ? runtimeKind == 1 : config.mode == "collect"; }
+    bool isReplay() const { return runtimeControlled ? runtimeKind == 2 : config.mode == "replay"; }
     bool isIdeal() const { return config.ideal; }
     bool needsCommitProfileContext() const {
-        return isCollect() && config.profileContext == "commit-pre";
+        return !runtimeControlled && isCollect() && config.profileContext == "commit-pre";
     }
     bool isFiniteV3() const { return enabled() && !config.ideal; }
     const std::vector<Addr> &historyPCs() const { return historyPcs; }
+    void setRuntimeStage(unsigned kind) { runtimeKind = kind; }
+    void setBundleMetadata(int id) { runtimeMetadata = id; }
+    void setRuntimeAdmission(bool value) { runtimeAdmission = value; }
+    bool runtimeAdmissionEnabled() const { return !runtimeControlled || runtimeAdmission; }
+    bool runtimeQuiescent(uint64_t cycle) const;
+    bool loadRawImage(const std::vector<uint8_t> &image, unsigned kind);
+    bool beginBundleInstall(unsigned kind);
+    bool installBundleRow(unsigned row, uint64_t value);
+    bool finishBundleInstall(unsigned kind);
+    void clearRuntimeTable();
+    void setBundleStage(unsigned kind, bool running) {
+        if (running) runtimeKind = kind;
+        else runtimeAdmission = false;
+    }
+    bool canUseTable() const { return runtimeAdmissionEnabled(); }
+    bool tableReferenced(const std::shared_ptr<HintQuery> &query) const {
+        // Cancellation suppresses prediction/training, but a retained FTQ
+        // entry can still carry its local-history write and selector. Keep
+        // that table binding until the owning entry retires or is removed.
+        return query && query->hasCandidate;
+    }
+    bool bundleLoadImage(const std::vector<uint8_t> &image, unsigned kind) {
+        return loadRawImage(image, kind);
+    }
+    bool bundleQuiescent(uint64_t cycle) const { return runtimeQuiescent(cycle); }
+    using BundleDetailSink = std::function<void(uint8_t, Addr,
+        const std::array<uint32_t, 4> &, bool, bool)>;
+    void setBundleDetailSink(BundleDetailSink sink) { bundleDetailSink = std::move(sink); }
+    using BundleDetailAuditSink = std::function<void(uint8_t, Addr,
+        const std::array<uint32_t, 4> &, bool, bool, int, uint64_t, Addr)>;
+    void setBundleDetailAuditSink(BundleDetailAuditSink sink) { bundleDetailAuditSink = std::move(sink); }
 
     // Ordered [start, end) bounds. Empty or wrapped bounds consume the normal
     // query opportunity and return no candidate, matching the original BTBs.
@@ -311,6 +347,14 @@ class HintIndirect
     std::string outputName(const std::string &name) const;
 
     const Config config;
+    BundleDetailSink bundleDetailSink;
+    BundleDetailAuditSink bundleDetailAuditSink;
+    int runtimeMetadata = -1;
+    bool runtimeControlled = false;
+    bool runtimeAdmission = false;
+    unsigned runtimeKind = 3;
+    unsigned installingKind = 0;
+    unsigned installedRows = 0;
     uint64_t commitEventOrdinal = 0;
     unsigned sets = 0;
     unsigned indexBits = 0;

@@ -62,6 +62,8 @@ class HintFiniteHistory
     };
     struct Snapshot
     {
+        // Host ownership generation; only assertions use this observer.
+        uint64_t localEpoch = 0;
         std::array<uint8_t, 3> heads{};
         std::array<uint64_t, 3> writes{};
         std::array<uint16_t, 2> pathLow12{};
@@ -74,6 +76,7 @@ class HintFiniteHistory
     };
 
     void configure(const std::vector<Addr> &pcs);
+    void clearAndRebindLocals(const std::vector<Addr> &selected);
     Snapshot snapshot() const;
     // Full restore is a directed-test/collect observer helper. Runtime finite
     // replay first rewinds its bounded Hint metadata, then restores globals.
@@ -105,6 +108,7 @@ class HintFiniteHistory
     std::array<LocalRing, 16> locals{};
 
   private:
+    uint64_t localEpoch = 0;
     std::vector<Addr> pcs;
     static void push(Ring &ring, uint8_t bits);
     static void pushPath(Ring &ring, Addr pc);

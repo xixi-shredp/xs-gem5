@@ -412,6 +412,8 @@ struct HintIndirect::Statistics : public statistics::Group
     statistics::Scalar queries;
     statistics::Scalar overrides;
     statistics::Scalar committed;
+    statistics::Scalar baselineMisses;
+    statistics::Scalar finalMisses;
     statistics::Scalar corrected;
     statistics::Scalar harmed;
     statistics::Scalar queueEnqueued;
@@ -434,6 +436,10 @@ struct HintIndirect::Statistics : public statistics::Group
                    "Hint targets selected at S3 in measurement"),
           ADD_STAT(committed, statistics::units::Count::get(),
                    "Committed non-return indirect branches in measurement"),
+          ADD_STAT(baselineMisses, statistics::units::Count::get(),
+                   "Committed non-return indirect baseline target misses in measurement"),
+          ADD_STAT(finalMisses, statistics::units::Count::get(),
+                   "Committed non-return indirect final target misses in measurement"),
           ADD_STAT(corrected, statistics::units::Count::get(),
                    "Hint corrected a baseline target miss at commit"),
           ADD_STAT(harmed, statistics::units::Count::get(),
@@ -495,8 +501,21 @@ struct HintIndirect::Output
 };
 
 HintIndirect::HintIndirect(const Config &config, statistics::Group *parent)
-    : config(config)
+    : config(config), runtimeControlled(config.runtimeControlled || config.bundle)
 {
+    if (runtimeControlled) {
+        fatal_if(config.ideal || config.camEntries != 16 ||
+                 config.contextEntries != 4096 || config.ways != 2 ||
+                 config.slotEntries != 32 || config.confQueueDepth != 32 ||
+                 (config.metaEntries != 16 && config.metaEntries != 32),
+                 "Bundle runtime requires finite Hint geometry");
+        sets = 2048; indexBits = 11;
+        entries.resize(4096); slots.resize(32);
+        cam.assign(16, CamEntry{0, 0, false});
+        historyPcs.assign(16, MaxAddr);
+        if (parent) stats = std::make_unique<Statistics>(parent, *this);
+        return;
+    }
     fatal_if(config.mode != "off" && config.mode != "collect" &&
              config.mode != "replay", "Invalid Hint mode %s", config.mode);
     fatal_if(config.profileContext != "prediction" &&
@@ -576,6 +595,130 @@ HintIndirect::HintIndirect(const Config &config, statistics::Group *parent)
             [](const auto &entry) { return entry.valid; })), slots.size()};
     }
     openOutputs();
+}
+
+bool
+HintIndirect::runtimeQuiescent(uint64_t cycle) const
+{
+    return finiteMeta.empty() && finiteScoreOrder.empty() && finiteUpdates.empty() &&
+           cycle >= busyUntil;
+}
+
+void
+HintIndirect::clearRuntimeTable()
+{
+    fatal_if(!finiteMeta.empty() || !finiteUpdates.empty() || !finiteScoreOrder.empty(),
+             "Bundle cleared Hint tables before old references drained");
+    runtimeAdmission = false;
+    cam.assign(16, CamEntry{0, 0, false});
+    candidates.clear(); historyPcs.assign(16, MaxAddr);
+    entries.assign(4096, ContextEntry{}); slots.assign(32, 0);
+    residentEntries = {};
+}
+
+bool
+HintIndirect::beginBundleInstall(unsigned kind)
+{
+    if (!runtimeControlled || (kind != 1 && kind != 2) ||
+        !finiteMeta.empty() || !finiteUpdates.empty() || !finiteScoreOrder.empty())
+        return false;
+    clearRuntimeTable();
+    installingKind = kind;
+    installedRows = 0;
+    return true;
+}
+
+bool
+HintIndirect::installBundleRow(unsigned row, uint64_t value)
+{
+    if (!installingKind || row != installedRows ||
+        row >= (installingKind == 1 ? 16U : 4144U)) return false;
+    if (row < 16) {
+        if ((value >> 58) || (!(value & (1ULL << 51)) && value)) return false;
+        if (value & (1ULL << 51)) {
+            const Addr pc = expandAddress(value & ((1ULL << 47) - 1));
+            const unsigned position = (value >> 52) & 31;
+            const __int128 cfi = __int128(pc & ~Addr(31)) + position * 2;
+            const __int128 end = std::min(((__int128(pc)+64)>>5)<<5,
+                                         ((__int128(pc)>>12)+1)<<12);
+            if (pc > MaxAddr - 64 || cfi < pc || cfi >= end || cfi > MaxAddr)
+                return false;
+            for (unsigned i=0;i<row;++i)
+                if (cam[i].valid && cam[i].pc == pc) return false;
+            cam[row] = {pc, unsigned((value >> 47) & 15), true,
+                        position, bool((value >> 57) & 1)};
+        }
+    } else if (row < 4112) {
+        const unsigned pos = row - 16;
+        if ((value >> 25) || (!(value & (1U << 24)) && value)) return false;
+        if (value & (1U << 24)) {
+            const unsigned tag = value & 0x1ffff;
+            if ((pos & 1) && entries[pos-1].valid && entries[pos-1].tag == tag)
+                return false;
+            entries[pos] = {true, tag, (tag << 11) | (pos / 2),
+                           unsigned((value >> 17) & 31), unsigned((value >> 22) & 3)};
+        }
+    } else {
+        if (value >> 47) return false;
+        slots[row - 4112] = expandAddress(value);
+    }
+    ++installedRows;
+    return true;
+}
+
+bool
+HintIndirect::loadRawImage(const std::vector<uint8_t> &image, unsigned kind)
+{
+    if (!runtimeControlled || (kind != 1 && kind != 2) ||
+        image.size() != (kind == 1 ? 144 : 16784) ||
+        !finiteMeta.empty() || !finiteUpdates.empty() || !finiteScoreOrder.empty())
+        return false;
+    try {
+        const std::string magic(image.begin(), image.begin() + 8);
+        require(magic == (kind == 1 ? "H2PCAM58" : "H2PLD058"), "Bundle inner magic");
+        require(std::all_of(image.begin()+8,image.begin()+16,
+                           [](uint8_t v){return v==0;}), "Bundle inner reserved header");
+        const bool installed = installingKind == kind &&
+            installedRows == (kind == 1 ? 16U : 4144U);
+        if (!installed) {
+            // Direct helper callers retain a validation-only installation API.
+            // Runtime controller always reaches this point after row handshakes.
+            if (!beginBundleInstall(kind)) return false;
+            const unsigned rows = kind == 1 ? 16 : 4144;
+            for (unsigned row=0;row<rows;++row) {
+                const unsigned offset = row < 16 ? 16 + row * 8 :
+                    row < 4112 ? 0x90 + (row - 16) * 4 :
+                    0x4090 + (row - 4112) * 8;
+                if (!installBundleRow(row, littleWord(image, offset,
+                    row >= 16 && row < 4112 ? 4 : 8))) return false;
+            }
+        }
+        return finishBundleInstall(kind);
+    } catch (const std::exception &) {
+        runtimeAdmission = false;
+        return false;
+    }
+}
+
+bool
+HintIndirect::finishBundleInstall(unsigned kind)
+{
+    if (installingKind != kind || installedRows != (kind == 1 ? 16U : 4144U))
+        return false;
+    /* All physical row writes have completed before this atomic publish. */
+    historyPcs.clear(); candidates.clear();
+    for (const auto &row : cam) {
+        const Addr pc = row.valid ? row.pc : MaxAddr;
+        historyPcs.push_back(pc); candidates.push_back(pc);
+        if (row.valid) perPc.try_emplace(pc, Counts{});
+    }
+    runtimeKind = kind;
+    installingKind = 0; installedRows = 0;
+    residentEntries = {uint64_t(std::count_if(cam.begin(),cam.end(),
+                [](const auto &r){return r.valid;})),
+               uint64_t(std::count_if(entries.begin(),entries.end(),
+                [](const auto &r){return r.valid;})), kind == 2 ? 32U : 0U};
+    return true;
 }
 
 HintIndirect::~HintIndirect() = default;
@@ -950,6 +1093,7 @@ HintIndirect::outputName(const std::string &name) const
 void
 HintIndirect::openOutputs()
 {
+    if (runtimeControlled) return;
     if (!config.outputPrefix.empty()) {
         simout.createSubdirectory(config.outputPrefix);
     }
@@ -1014,6 +1158,7 @@ HintIndirect::openOutputs()
 void
 HintIndirect::writeHeader()
 {
+    if (runtimeControlled) return;
     std::ostringstream line;
     line << "{\"kind\":\"header\",\"format\":\"h2p-hint-profile\","
          << "\"version\":" << (config.ideal ? 3 : 7)
@@ -1068,6 +1213,7 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
     tick(cycle);
     lastQueryCycle = cycle;
     auto result = std::make_shared<HintQuery>();
+    result->bundleMetadata = runtimeMetadata;
     result->snapshot = snapshot;
     result->blockStart = block_start;
     result->blockEnd = block_end;
@@ -1082,7 +1228,8 @@ HintIndirect::query(const std::shared_ptr<const HintSnapshot> &snapshot,
     // A speculative target near the end of Addr can wrap the aligned block
     // end; the BTBs then retain no PC satisfying start <= pc < end. Preserve
     // that miss behavior, including the consumed query port and saved range.
-    if (!snapshot || block_end <= block_start) {
+    if ((runtimeControlled && !runtimeAdmission) ||
+        !snapshot || block_end <= block_start) {
         return result;
     }
     size_t matches = 0;
@@ -1385,7 +1532,7 @@ HintIndirect::resolve(const std::shared_ptr<HintQuery> &query, Addr pc,
     record.sequence = sequence;
     record.resolveCycle = cycle;
     record.scoreEligible = actual_taken && actual_indirect && !actual_return &&
-        measure_at_resolve.value_or(measurementActive) &&
+        (runtimeControlled || measure_at_resolve.value_or(measurementActive)) &&
         isReplay() &&
         query->eligible && query->tagHit && !query->canceled &&
         query->baselinePC == hintPathCoordinate(pc, instruction_size) &&
@@ -1600,7 +1747,13 @@ HintIndirect::complete(const std::shared_ptr<HintQuery> &query,
     fatal_if(query->completed, "Hint query may be completed only once");
     query->completed = true;
     query->baselineValid = taken;
-    query->baselinePC = isCollect() ? selected_pc : hintPathCoordinate(selected_pc, selected_size);
+    // Bundle snapshots always use native terminal-halfword identity, including
+    // Detail. Legacy single-table Detail retains its real-PC trace contract.
+    // A fall-through prediction has no selected control instruction, so its
+    // size may legitimately be zero. Do not invent a control identity for it.
+    query->baselinePC = !taken ? 0 :
+        (isCollect() && !runtimeControlled ? selected_pc :
+         hintPathCoordinate(selected_pc, selected_size));
     query->baselineTarget = selected_target;
     query->baselineIndirect = indirect;
     query->baselineReturn = is_return;
@@ -1653,10 +1806,30 @@ HintIndirect::commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
     const HintSnapshot *profile_snapshot, uint64_t commit_event_ordinal,
     Addr query_start_pc, unsigned instruction_size, bool actual_call, bool actual_return)
 {
-    if (!enabled() || !measurementActive || finished) {
+    if (runtimeControlled) {
+        if (isCollect() && (bundleDetailSink || bundleDetailAuditSink) && !actual_return && query &&
+            query->hasCandidate && !query->canceled &&
+            query->candidatePC() == hintPathCoordinate(pc, instruction_size)) {
+            const bool valid = query->completed && query->admitted && query->snapshot &&
+                query->snapshot->finite;
+            const bool correct_identity = query->baselineValid &&
+                query->baselinePC == hintPathCoordinate(pc, instruction_size);
+            const bool miss = query->completed ?
+                (!correct_identity || query->baselineTarget != actual) :
+                (!final_valid || final_target != actual);
+            const HintV3Contexts contexts = valid ?
+                query->snapshot->v3ContextsFor(query->camIndex) : HintV3Contexts{};
+            if (bundleDetailAuditSink)
+                bundleDetailAuditSink(query->camIndex, actual, contexts, miss, valid,
+                                      query->bundleMetadata, sequence, pc);
+            else bundleDetailSink(query->camIndex, actual, contexts, miss, valid);
+        }
+    }
+    if (!enabled() || !measurementActive || finished || actual_return) {
         return;
     }
-    const Addr matching_pc = isCollect() || config.ideal ? pc : hintPathCoordinate(pc, instruction_size);
+    const Addr matching_pc = (isCollect() && !runtimeControlled) || config.ideal ?
+        pc : hintPathCoordinate(pc, instruction_size);
     // A missing Hint snapshot cannot have changed the selected target.
     const bool have_baseline = query && query->completed;
     const bool baseline_valid = have_baseline ?
@@ -1694,10 +1867,12 @@ HintIndirect::commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
     }
     if (stats) {
         ++stats->committed;
+        stats->baselineMisses += baseline_miss;
+        stats->finalMisses += final_miss;
         stats->corrected += baseline_miss && !final_miss;
         stats->harmed += !baseline_miss && final_miss;
     }
-    if (isCollect() && entry != perPc.end()) {
+    if (!runtimeControlled && isCollect() && entry != perPc.end()) {
         if (!config.ideal)
             writeDetail(query, query_pc, pc, actual, baseline_miss,
                         instruction_size, sequence, actual_call, actual_return);
@@ -1705,7 +1880,7 @@ HintIndirect::commit(const std::shared_ptr<HintQuery> &query, uint64_t sequence,
                      baseline_pc, baseline_target, eligible, cycle,
                      profile_snapshot, commit_event_ordinal);
     }
-    if (isReplay() && !config.ideal && entry != perPc.end()) {
+    if (!runtimeControlled && isReplay() && !config.ideal && entry != perPc.end()) {
         std::ostringstream line;
         line << "{\"kind\":\"branch\",\"seq\":" << sequence
              << ",\"pc\":" << jsonString(hexAddress(pc))
@@ -1752,7 +1927,7 @@ HintIndirect::writeDetail(const std::shared_ptr<HintQuery> &query,
     Addr start_pc, Addr pc, Addr actual, bool baseline_miss,
     unsigned instruction_size, uint64_t sequence, bool actual_call, bool actual_return)
 {
-    if (actual_return) return;
+    if (runtimeControlled || actual_return) return;
     const int index = localIndex(start_pc);
     fatal_if(index < 0 || index >= 16,
              "Detail sample lacks a frozen physical CAM slot");
@@ -1824,6 +1999,7 @@ HintIndirect::writeProfile(const std::shared_ptr<HintQuery> &query,
     Addr baseline_pc, Addr baseline_target, bool eligible, uint64_t cycle,
     const HintSnapshot *profile_snapshot, uint64_t commit_event_ordinal)
 {
+    if (runtimeControlled) return;
     std::ostringstream line;
     line << "{\"kind\":\"branch\",\"seq\":" << sequence
          << ",\"pc\":" << jsonString(hexAddress(pc))
@@ -2017,6 +2193,7 @@ HintIndirect::tick(uint64_t cycle)
 void
 HintIndirect::writeConfZero(const Update &update, uint64_t cycle)
 {
+    if (runtimeControlled) return;
     const auto &query = *update.query;
     auto &line = output->confZero;
     line << "{\"pc\":" << jsonString(hexAddress(query.pc))
@@ -2092,6 +2269,9 @@ HintIndirect::resetStats(uint64_t cycle)
     queueStats.carriedIn = pendingUpdates();
     queueStats.maxOccupancy = pendingUpdates();
     detailRecords = detailInvalidQueries = detailInvalidWindows = 0;
+    // CSR runtime has no legacy host sinks. Counter reset and FIFO carry-in
+    // above are still required by gem5 restore/warmup/measure transitions.
+    if (!output) return;
     if (output->detail.is_open()) {
         output->detail.close();
         output->detail.open(simout.resolve(outputName("hint-detail.bin")),
@@ -2167,6 +2347,7 @@ HintIndirect::occupancy(Table table) const
 void
 HintIndirect::writeStats()
 {
+    if (runtimeControlled) return;
     auto out = simout.create(outputName("hint-stats.json"), false, true);
     auto &line = *out->stream();
     line << std::setprecision(17)
@@ -2253,6 +2434,9 @@ HintIndirect::finish()
     fatal_if(global.baselineMisses + global.harmed !=
              global.finalMisses + global.corrected,
              "Hint final-target accounting did not conserve misses");
+    // Finalize measured state and invariants without inventing a runtime
+    // host-output backend or draining accepted physical transactions.
+    if (runtimeControlled || !output) return;
     writeStats();
     if (output->detail.is_open()) {
         std::array<uint8_t, 22> final{};

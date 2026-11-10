@@ -25,6 +25,7 @@
 #include "cpu/pred/btb/ftq.hh"
 #include "cpu/pred/btb/hint_history.hh"
 #include "cpu/pred/btb/hint_indirect.hh"
+#include "cpu/pred/btb/hint_bundle.hh"
 #include "cpu/pred/btb/history_manager.hh"
 #include "cpu/pred/btb/mbtb.hh"
 #include "cpu/pred/btb/microtage.hh"
@@ -82,6 +83,12 @@ class DecoupledBPUWithBTB : public BPredUnit
     CPU *cpu{};
     HintIndirect::Config hintConfig;
     std::unique_ptr<HintIndirect> hint;
+    std::unique_ptr<HintBundleController> hintBundle;
+    bool hintBundleCapable = false;
+    std::ofstream bundleEvents;
+    std::ofstream bundleAudit;
+    std::ofstream bundleTraceAudit;
+    bool bundleTableQuiescent() const;
     ThreadID nextPredictTid = 0;
     const unsigned numPredictingThreads;
     unsigned predictWidth;  // max predict width, default 64
@@ -381,6 +388,8 @@ class DecoupledBPUWithBTB : public BPredUnit
     // Called at every active CPU tick, before commit/fetch. Predictor requests
     // may stall, but confidence writes still have one write port per cycle.
     void hintCycleTick();
+    HintBundleController &getHintBundleController() { return *hintBundle; }
+    bool hasHintBundle() const { return bool(hintBundle); }
     void resetStats() override;
 
     void squash(const InstSeqNum &squashed_sn, ThreadID tid)
@@ -481,7 +490,7 @@ class DecoupledBPUWithBTB : public BPredUnit
     {
         return ftq.getTargetTid(eligible, ineligibleSkips);
     }
-    
+
     int getTargetTidByFetchQueueSize(const std::array<bool, MaxThreads> &eligible,
                                      unsigned *ineligibleSkips,
                                      const std::array<unsigned, MaxThreads> &fetchQueueSizes)

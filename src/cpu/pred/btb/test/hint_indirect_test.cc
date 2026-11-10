@@ -21,6 +21,7 @@
 #include "cpu/pred/btb/hint_indirect.hh"
 #include "cpu/pred/btb/history_manager.hh"
 #include "cpu/pred/btb/test/hint_history_ideal_test.hh"
+#include "cpu/pred/btb/test/hint_bundle_test.hh"
 #include "sim/sim_exit.hh"
 
 namespace gem5::branch_prediction::btb_pred
@@ -2836,6 +2837,7 @@ HintIndirectTest::startup()
         testFiniteV3Vectors(vectors);
         testCam58Predictor();
     } else {
+        verifyHintBundleController();
         testHistory();
         testIdealHistory();
         testRetiredPrefix();
